@@ -399,4 +399,116 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             {{ "%+.2f" | format(details.live_pnl_pct) }}%
                         </td>
                         <td class="{{ 'pnl-green' if details.live_pnl_usdc >= 0 else 'pnl-red' }}">
-                            {{ "%+.2f" | format(details.
+                            {{ "%+.2f" | format(details.live_pnl_usdc) }} $
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7); background: rgba(0,0,0,0.3); padding: 12px; border-radius: 8px; border: 1px dashed rgba(255,255,255,0.2);">
+                    ✅ Žiadny aktívny obchod. Bot prísne vyčkáva na čistú príležitosť.
+                </div>
+            {% endif %}
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">📊 Živý Radar Trhu (Top Gainer Sken)</div>
+            {% if radar %}
+                <table>
+                    <tr><th>Symbol</th><th>Cena</th><th>24h Rast</th><th>Objem</th><th>Šanca</th></tr>
+                    {% for item in radar %}
+                    <tr>
+                        <td><strong>{{ item.instId }}</strong></td>
+                        <td>{{ "%.4f" | format(item.price) }}</td>
+                        <td>+{{ "%.2f" | format(item.change) }}%</td>
+                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
+                        <td><strong style="color: #00f0ff;">{{ item.probability }}%</strong></td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem burzu...</div>
+            {% endif %}
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">💰 Zostatky (OKX Demo)</div>
+            <table>
+                <tr><th>Mena</th><th>Dostupné</th></tr>
+                {% for coin, data in balances.items() %}
+                <tr>
+                    <td><strong>{{ coin }}</strong></td>
+                    <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">📅 Kalendár Výsledkov (Denný PnL)</div>
+            {% if calendar %}
+                <div class="calendar-grid">
+                    {% for day, data in calendar.items() %}
+                    <div class="calendar-day">
+                        <div>{{ day }}</div>
+                        <div style="font-weight: bold; color: #00ff88; margin-top: 4px;">{{ "%+.2f" | format(data.pnl) }} $</div>
+                        <div style="font-size: 0.65rem; color: rgba(255,255,255,0.7); margin-top: 2px;">{{ data.trades }} obch.</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Zatiaľ žiadne uzavreté obchody.</div>
+            {% endif %}
+        </div>
+
+        <div class="refresh-info">
+            CLEAN SCALPER | Obnovenie 2s | SK Čas: {{ current_time }}
+        </div>
+    </div>
+</body>
+</html>"""
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    account_balances = {"USDC": {"available_balance": 0.0}}
+    try:
+        balance_res = okx_request('GET', '/api/v5/account/balance')
+        if balance_res.get('code') == '0':
+            found = {}
+            for acc in balance_res.get('data', []):
+                for detail in acc.get('details', []):
+                    ccy = detail.get('ccy')
+                    avail = float(detail.get('availBal', 0))
+                    if avail > 0:
+                        found[ccy] = {"available_balance": avail}
+            if found:
+                account_balances = found
+    except Exception:
+        pass
+
+    template = Template(HTML_TEMPLATE_CONTENT)
+    rendered_html = template.render(
+        balances=account_balances,
+        trades=ACTIVE_TRADES,
+        radar=MARKET_RADAR,
+        calendar=DAILY_PNL_CALENDAR,
+        current_stage=CURRENT_STAGE,
+        current_time=get_sk_time_str()
+    )
+    return rendered_html
+
+@app.get("/api/status")
+async def api_status():
+    return {
+        "status": "online",
+        "bot_type": "Apex Clean Scalper",
+        "current_stage": CURRENT_STAGE,
+        "active_trades": ACTIVE_TRADES,
+        "market_radar": MARKET_RADAR,
+        "calendar": DAILY_PNL_CALENDAR,
+        "sk_time": get_sk_time_str()
+    }
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
