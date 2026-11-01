@@ -21,7 +21,6 @@ TELEGRAM_BOT_TOKEN = "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8"
 TELEGRAM_CHAT_ID = "9130979784"
 
 def send_telegram_msg(message: str):
-    """Pomocná funkcia pre odosielanie správ na Telegram"""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("DOPLŇ"):
         return
     try:
@@ -327,7 +326,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # --- 🌆 ŽIVÝ KYBERPUNKOVÝ HTML DASHBOARD ---
-DASHBOARD_TEMPLATE = """<!DOCTYPE html>
+DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
@@ -430,3 +429,241 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
         }
 
         .card:hover { border-color: var(--neon-blue); }
+
+        h2 { 
+            margin-top: 0; 
+            color: var(--neon-blue); 
+            font-size: 1.1rem; 
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1); 
+            padding-bottom: 12px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center;
+            letter-spacing: 0.5px;
+        }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); font-size: 0.9rem; }
+        th { color: var(--text-dim); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 1px; }
+
+        .tag-green { color: var(--neon-green); font-weight: bold; text-shadow: 0 0 8px rgba(0, 255, 102, 0.4); }
+        
+        .badge-prob { 
+            background: rgba(255, 0, 127, 0.15); 
+            color: var(--neon-pink); 
+            padding: 4px 10px; 
+            border-radius: 8px; 
+            font-weight: 700; 
+            font-size: 0.8rem; 
+            border: 1px solid rgba(255, 0, 127, 0.4);
+            box-shadow: 0 0 10px rgba(255, 0, 127, 0.2);
+        }
+
+        .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; margin-top: 15px; }
+        .calendar-day { 
+            background: rgba(5, 7, 15, 0.6); 
+            border: 1px solid rgba(0, 240, 255, 0.2); 
+            border-radius: 12px; 
+            padding: 12px; 
+            text-align: center; 
+        }
+
+        .calendar-date { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 6px; }
+        .calendar-pnl { font-size: 1rem; font-weight: bold; }
+        .pnl-plus { color: var(--neon-green); text-shadow: 0 0 8px rgba(0, 255, 102, 0.3); }
+        .pnl-minus { color: #ff3366; }
+
+        .refresh-info { text-align: center; color: var(--text-dim); font-size: 0.8rem; margin-top: 25px; }
+    </style>
+    <meta http-equiv="refresh" content="10">
+</head>
+<body>
+    <canvas id="canvas-bg"></canvas>
+
+    <div class="container">
+        <div class="header">
+            <div class="logo-area">
+                <h1>⚡ APEX SCALPER PRO</h1>
+                <p>Cyberpunk OKX Terminal & Autonomous Top Gainer Scalper</p>
+            </div>
+            <div>
+                <div class="status-badge">
+                    <div class="pulse-dot"></div> TERMINÁL ONLINE
+                </div>
+            </div>
+        </div>
+
+        <div class="grid-top">
+            <div class="card">
+                <h2>💰 Reálne Zostatky (OKX Demo)</h2>
+                <table>
+                    <tr><th>Mena</th><th>Dostupné</th></tr>
+                    {% for coin, data in balances.items() %}
+                    <tr>
+                        <td><strong>{{ coin }}</strong></td>
+                        <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+
+            <div class="card">
+                <h2>📈 Aktívne Obchody</h2>
+                {% if trades %}
+                    <table>
+                        <tr><th>Pár</th><th>Vstup</th><th>Stop-Loss</th></tr>
+                        {% for t, details in trades.items() %}
+                        <tr>
+                            <td><strong style="color: var(--neon-blue);">{{ details.market_pair }}</strong></td>
+                            <td>{{ "%.4f" | format(details.entry_price) }}</td>
+                            <td>{{ "%.4f" | format(details.current_sl_price) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </table>
+                {% else %}
+                    <p style="color: var(--text-dim); text-align: center; margin-top: 35px; font-size: 0.9rem;">Žiadny aktívny obchod. Čakám na signál...</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card" style="margin-top: 25px;">
+            <h2>
+                <span>⚡ Živý Radar Trhu (Top Gainers 2% - 25% | Objem >50k)</span>
+                <span style="font-size: 0.8rem; color: var(--neon-pink);">AI Volatility Radar</span>
+            </h2>
+            {% if radar %}
+                <table>
+                    <tr><th>Symbol</th><th>Cena (USDC)</th><th>Rast za 24h</th><th>Objem (USDC)</th><th>Pravdepodobnosť výstrelu</th></tr>
+                    {% for item in radar %}
+                    <tr>
+                        <td><strong>{{ item.instId }}</strong></td>
+                        <td>{{ "%.4f" | format(item.price) }}</td>
+                        <td class="tag-green">+{{ "%.2f" | format(item.change) }}%</td>
+                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
+                        <td><span class="badge-prob">{{ item.probability }}% Šanca</span></td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <p style="color: var(--text-dim); text-align: center; margin-top: 20px;">Skenujem trh, čakám na mince spĺňajúce kritériá...</p>
+            {% endif %}
+        </div>
+
+        <div class="card" style="margin-top: 25px;">
+            <h2>📅 Kalendár Denných Výsledkov (PnL Tracker)</h2>
+            {% if calendar %}
+                <div class="calendar-grid">
+                    {% for day, data in calendar.items() %}
+                    <div class="calendar-day">
+                        <div class="calendar-date">{{ day }}</div>
+                        <div class="calendar-pnl {% if data.pnl >= 0 %}pnl-plus{% else %}pnl-minus{% endif %}">
+                            {{ "%+.2f" | format(data.pnl) }} $
+                        </div>
+                        <div class="calendar-trades">{{ data.trades }} obchodov</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <p style="color: var(--text-dim); text-align: center; margin-top: 15px; font-size: 0.9rem;">Zatiaľ žiadne uzavreté obchody v tomto období.</p>
+            {% endif %}
+        </div>
+
+        <div class="refresh-info">
+            Cyberpunk Terminal sa automaticky obnovuje každých 10 sekúnd. | Čas: {{ current_time }}
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas-bg');
+        const ctx = canvas.getContext('2d');
+        let width = canvas.width = window.innerWidth;
+        let height = canvas.height = window.innerHeight;
+
+        window.addEventListener('resize', () => {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+        });
+
+        const particles = [];
+        for(let i = 0; i < 45; i++) {
+            particles.push({
+                x: Math.random() * width,
+                y: Math.random() * height,
+                radius: Math.random() * 2 + 1,
+                color: i % 2 === 0 ? '#00f0ff' : '#ff007f',
+                vx: (Math.random() - 0.5) * 0.5,
+                vy: (Math.random() - 0.5) * 0.5,
+                alpha: Math.random() * 0.5 + 0.2
+            });
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, width, height);
+            
+            particles.forEach(p => {
+                p.x += p.vx;
+                p.y += p.vy;
+
+                if(p.x < 0) p.x = width;
+                if(p.x > width) p.x = 0;
+                if(p.y < 0) p.y = height;
+                if(p.y > height) p.y = 0;
+
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                ctx.fillStyle = p.color;
+                ctx.globalAlpha = p.alpha;
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = p.color;
+                ctx.fill();
+            });
+
+            requestAnimationFrame(draw);
+        }
+        draw();
+    </script>
+</body>
+</html>"""
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    account_balances = {"USDC": {"available_balance": 0.0}}
+    try:
+        balance_res = okx_request('GET', '/api/v5/account/balance')
+        if balance_res.get('code') == '0':
+            found = {}
+            for acc in balance_res.get('data', []):
+                for detail in acc.get('details', []):
+                    ccy = detail.get('ccy')
+                    avail = float(detail.get('availBal', 0))
+                    if avail > 0:
+                        found[ccy] = {"available_balance": avail}
+            if found:
+                account_balances = found
+    except Exception:
+        pass
+
+    template = Template(DASHBOARD_TEMPLATE)
+    rendered_html = template.render(
+        balances=account_balances,
+        trades=ACTIVE_TRADES,
+        radar=MARKET_RADAR,
+        calendar=DAILY_PNL_CALENDAR,
+        current_time=get_sk_time_str()
+    )
+    return rendered_html
+
+@app.get("/api/status")
+async def api_status():
+    return {
+        "status": "online",
+        "bot_type": "Apex Gainer Scalper Pro (Cyberpunk Edition)",
+        "active_trades": ACTIVE_TRADES,
+        "market_radar": MARKET_RADAR,
+        "calendar": DAILY_PNL_CALENDAR,
+        "sk_time": get_sk_time_str()
+    }
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
