@@ -36,7 +36,8 @@ def send_telegram_msg(message: str):
         print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
 ACTIVE_TRADES = {}
-MARKET_RADAR = []  # Tu ukladáme mince, ktoré momentálne spĺňajú kritériá pre rast
+MARKET_RADAR = []  
+DAILY_PNL_CALENDAR = {} # Kalendár denných výsledkov PnL (formát "YYYY-MM-DD": {"pnl": suma, "trades": pocet})
 LAST_TRADE_TIME = {}  
 MAX_PARALLEL_TRADES = 1  
 trade_lock = asyncio.Lock()
@@ -44,6 +45,18 @@ trade_lock = asyncio.Lock()
 def get_sk_time_str() -> str:
     sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
     return sk_time.strftime("%Y-%m-%d %H:%M:%S")
+
+def get_sk_date_str() -> str:
+    sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
+    return sk_time.strftime("%Y-%m-%d")
+
+def record_daily_pnl(pnl_amount: float):
+    """Zaznamená výsledok obchodu do denného kalendára"""
+    day_str = get_sk_date_str()
+    if day_str not in DAILY_PNL_CALENDAR:
+        DAILY_PNL_CALENDAR[day_str] = {"pnl": 0.0, "trades": 0}
+    DAILY_PNL_CALENDAR[day_str]["pnl"] += pnl_amount
+    DAILY_PNL_CALENDAR[day_str]["trades"] += 1
 
 # --- OKX EEA DEMO PROSTREDIE & AUTENTIFIKÁCIA ---
 def okx_request(method: str, path: str, body: str = ''):
@@ -71,7 +84,7 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 AUTONÓMNY SKENER TOP GAINEROV ---
+# --- 🔍 AUTONÓMNY SKENER TOP GAINEROV (Podľa nemenných podmienok) ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR
     await asyncio.sleep(10)
@@ -101,17 +114,23 @@ async def top_gainer_scanner_loop():
                     if open24h > 0 and last_p > 0 and vol24h > 50000:
                         change_pct = ((last_p - open24h) / open24h) * 100
                         if 2.0 <= change_pct <= 25.0:
+                            # Výpočet pravdepodobnosti vystrelenia (0-100%) na základe rastu a objemu
+                            # Čím vyšší objem a rast v rozmedzí 2-25%, tým vyššia pravdepodobnosť
+                            vol_score = min(vol24h / 500000.0, 1.0) * 40 # max 40 bodov za objem
+                            growth_score = (change_pct / 25.0) * 60 # max 60 bodov za rast
+                            probability = int(min(max(vol_score + growth_score, 45), 98)) # rozmedzie 45% - 98%
+
                             candidates.append({
                                 "instId": inst_id,
                                 "price": last_p,
                                 "change": change_pct,
-                                "volume": vol24h
+                                "volume": vol24h,
+                                "probability": probability
                             })
                 except Exception:
                     continue
 
             candidates.sort(key=lambda x: x['change'], reverse=True)
-            # Uložíme top kandidátov na rast pre webový radar
             MARKET_RADAR = candidates[:10]
 
             if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
@@ -184,7 +203,8 @@ async def top_gainer_scanner_loop():
                     "bought_at": get_sk_time_str(),
                     "market_pair": best_target['instId'],
                     "highest_price": current_price,
-                    "partial_tp_activated": False
+                    "partial_tp_activated": False,
+                    "invested_usdc": safe_budget
                 }
 
                 send_telegram_msg(
@@ -201,7 +221,7 @@ async def top_gainer_scanner_loop():
 
         await asyncio.sleep(15)
 
-# --- 🛡️ MONITOROVACÍ CYKLUS PRE VLNY ---
+# --- 🛡️ MONITOROVACÍ CYKLUS PRE VLNY (Nemenný Risk Management) ---
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES
     await asyncio.sleep(5)
@@ -230,6 +250,7 @@ async def advanced_risk_monitor_loop():
                         })
                         okx_request('POST', '/api/v5/trade/order', order_body)
                         send_telegram_msg(f"⏳ <b>[GTC EXSPIRÁCIA 48h]</b> Uzatvorený pár {symbol}")
+                        record_daily_pnl(0.0)
                         del ACTIVE_TRADES[coin]
                     except Exception:
                         pass
@@ -251,6 +272,9 @@ async def advanced_risk_monitor_loop():
                             })
                             okx_request('POST', '/api/v5/trade/order', order_body)
                             
+                            est_pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
+                            record_daily_pnl(est_pnl_usdc)
+
                             send_telegram_msg(
                                 f"🚨 <b>UZAVRETÝ OBCHOD {reason}</b>\n"
                                 f"<b>Pár:</b> {symbol}\n"
@@ -276,6 +300,9 @@ async def advanced_risk_monitor_loop():
                                 })
                                 okx_request('POST', '/api/v5/trade/order', order_body)
                                 
+                                est_pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
+                                record_daily_pnl(est_pnl_usdc)
+
                                 send_telegram_msg(
                                     f"💰 <b>[ÚSPEŠNÝ TRAILING EXIT VLNY]</b>\n"
                                     f"<b>Pár:</b> {symbol}\n"
@@ -302,140 +329,29 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- HTML DASHBOARD ŠABLÓNA ---
+# --- 🌟 PROFESIONÁLNY TRADINGOVÝ VIZUÁL DASHBOARDU ---
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Top Gainer Scalper Dashboard</title>
+    <title>Apex Scalper Pro | OKX Demo Dashboard</title>
     <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
-        .container { max-width: 1100px; margin: 0 auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; background: #1e293b; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        .status-badge { background: #22c55e; color: white; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 0.9em; }
-        .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
-        .card { background: #1e293b; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        h2 { margin-top: 0; color: #38bdf8; font-size: 1.2em; border-bottom: 2px solid #334155; padding-bottom: 8px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #334155; font-size: 0.9em; }
-        th { color: #94a3b8; }
-        .refresh-info { text-align: center; color: #64748b; font-size: 0.8em; margin-top: 15px; }
-        .tag-green { color: #22c55e; font-weight: bold; }
-    </style>
-    <meta http-equiv="refresh" content="10">
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <div>
-                <h1>🤖 Top Gainer Scalper</h1>
-                <p style="margin: 0; color: #94a3b8;">Full-Auto Bot & Živý Radar Trhu</p>
-            </div>
-            <div>
-                <span class="status-badge">ONLINE</span>
-            </div>
-        </div>
-
-        <div class="card-grid">
-            <div class="card">
-                <h2>💰 Reálne Zostatky (OKX Demo)</h2>
-                <table>
-                    <tr><th>Mena</th><th>Dostupné</th></tr>
-                    {% for coin, data in balances.items() %}
-                    <tr>
-                        <td><strong>{{ coin }}</strong></td>
-                        <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            </div>
-
-            <div class="card">
-                <h2>📈 Aktívne Obchody</h2>
-                {% if trades %}
-                    <table>
-                        <tr><th>Pár</th><th>Vstup</th><th>Stop-Loss</th></tr>
-                        {% for t, details in trades.items() %}
-                        <tr>
-                            <td>{{ details.market_pair }}</td>
-                            <td>{{ "%.4f" | format(details.entry_price) }}</td>
-                            <td>{{ "%.4f" | format(details.current_sl_price) }}</td>
-                        </tr>
-                        {% endfor %}
-                    </table>
-                {% else %}
-                    <p style="color: #94a3b8; text-align: center; margin-top: 25px;">Žiadny aktívny obchod. Čakám na signál...</p>
-                {% endif %}
-            </div>
-        </div>
-
-        <!-- Živý Radar Trhu s mincami, ktoré pravdepodobne vystrelia -->
-        <div class="card" style="margin-top: 20px;">
-            <h2>⚡ Živý Radar Trhu (Mince rastúce 2% - 25% s objemom >50k)</h2>
-            {% if radar %}
-                <table>
-                    <tr><th>Symbol</th><th>Cena</th><th>Rast za 24h</th><th>Objem (USDC)</th></tr>
-                    {% for item in radar %}
-                    <tr>
-                        <td><strong>{{ item.instId }}</strong></td>
-                        <td>{{ "%.4f" | format(item.price) }}</td>
-                        <td class="tag-green">+{{ "%.2f" | format(item.change) }}%</td>
-                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            {% else %}
-                <p style="color: #94a3b8; text-align: center; margin-top: 15px;">Skenujem trh, čakám na mince spĺňajúce kritériá...</p>
-            {% endif %}
-        </div>
-
-        <div class="refresh-info">
-            Stránka sa automaticky obnovuje každých 10 sekúnd. | Aktuálny čas: {{ current_time }}
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    account_balances = {"USDC": {"available_balance": 0.0}}
-    try:
-        balance_res = okx_request('GET', '/api/v5/account/balance')
-        if balance_res.get('code') == '0':
-            found = {}
-            for acc in balance_res.get('data', []):
-                for detail in acc.get('details', []):
-                    ccy = detail.get('ccy')
-                    avail = float(detail.get('availBal', 0))
-                    if avail > 0:
-                        found[ccy] = {"available_balance": avail}
-            if found:
-                account_balances = found
-    except Exception:
-        pass
-
-    template = Template(DASHBOARD_TEMPLATE)
-    rendered_html = template.render(
-        balances=account_balances,
-        trades=ACTIVE_TRADES,
-        radar=MARKET_RADAR,
-        current_time=get_sk_time_str()
-    )
-    return rendered_html
-
-@app.get("/api/status")
-async def api_status():
-    return {
-        "status": "online",
-        "bot_type": "Full-Auto Top Gainer Scalper (1.5% - 20% waves)",
-        "active_trades": ACTIVE_TRADES,
-        "market_radar": MARKET_RADAR,
-        "sk_time": get_sk_time_str()
-    }
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+        :root {
+            --bg-main: #0b0f19;
+            --bg-card: #131c2e;
+            --border-color: #1e293b;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --accent-blue: #38bdf8;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg-main); color: var(--text-main); margin: 0; padding: 25px; }
+        .container { max-width: 1300px; margin: 0 auto; }
+        
+        .header { display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 20px 30px; border-radius: 16px; border: 1px solid var(--border-color); box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); }
+        .logo-area h1 { margin: 0; font-size: 1.6rem; color: var(--accent-blue); letter-spacing: 0.5px; }
+        .logo-area p { margin: 4px 0 0 0; color: var(--text-muted); font-size: 0.85rem; }
+        .status-badge { display: flex; align-items: center; gap: 8px; background: rgba(16, 185, 129, 0.15); color: var(--accent
