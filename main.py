@@ -116,7 +116,7 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(5)
                 continue
 
-            # Kontrola dostupného zostatku (preferujeme USDC, ak je kladný, prípadne USDT)
+            # Kontrola reálne dostupného zostatku (availBal)
             balance_res = okx_request('GET', '/api/v5/account/balance')
             if balance_res.get('code') != '0':
                 CURRENT_STAGE = "STAV: ⚠️ Chyba pri načítavaní zostatku z OKX."
@@ -130,8 +130,11 @@ async def top_gainer_scanner_loop():
                 for detail in acc.get('details', []):
                     ccy = detail.get('ccy')
                     if ccy in ["USDC", "USDT"]:
-                        avail = float(detail.get('availBal', 0) or detail.get('cashBal', 0) or 0)
-                        print(f"💰 Zistený zostatok pre {ccy}: {avail}", flush=True)
+                        # 🛡️ Striktne berieme IBA availBal, žiadny fallback na cashBal
+                        avail_raw = detail.get('availBal', 0)
+                        avail = float(avail_raw) if avail_raw else 0.0
+                        print(f"💰 Reálny availBal pre {ccy}: {avail}", flush=True)
+                        
                         if ccy == "USDC" and avail > 0:
                             free_capital = avail
                             active_currency = "USDC"
@@ -141,11 +144,11 @@ async def top_gainer_scanner_loop():
                             active_currency = "USDT"
 
             if free_capital < 10.0:
-                CURRENT_STAGE = f"STAV: 🛑 Nedostatok prostriedkov ({free_capital:.2f}$). Skontrolujte zostatok USDC/USDT na OKX!"
+                CURRENT_STAGE = f"STAV: 🛑 Nedostatok voľného kapitálu (availBal < 10). USDC/USDT je zablokované alebo 0."
                 await asyncio.sleep(10)
                 continue
 
-            CURRENT_STAGE = f"STAV: 🟢 MIMO OBCHODU [{CURRENT_MODE}]. Používam {active_currency} ({free_capital:.2f}$). Skenujem trh..."
+            CURRENT_STAGE = f"STAV: 🟢 MIMO OBCHODU [{CURRENT_MODE}]. Používam {active_currency} (Dostupné: {free_capital:.2f}$). Skenujem..."
             tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
             if tickers_res.get('code') != '0' or not tickers_res.get('data'):
                 await asyncio.sleep(5)
@@ -619,7 +622,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         <div class="section-block">
             <div class="section-title">💰 Zostatky (OKX Demo - USDC, USDT, EUR)</div>
             <table>
-                <tr><th>Mena</th><th>Dostupné</th></tr>
+                <tr><th>Mena</th><th>Dostupné (availBal)</th></tr>
                 {% for coin, data in balances.items() %}
                 <tr><td><strong>{{ coin }}</strong></td><td>{{ "%.4f" | format(data.available_balance | float) }}</td></tr>
                 {% endfor %}
@@ -694,7 +697,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    # Inicializujeme predvolene len povolené meny s 0
     account_balances = {curr: {"available_balance": 0.0} for curr in ALLOWED_CURRENCIES}
     try:
         balance_res = okx_request('GET', '/api/v5/account/balance')
@@ -704,7 +706,9 @@ async def dashboard():
                 for detail in acc.get('details', []):
                     ccy = detail.get('ccy')
                     if ccy in ALLOWED_CURRENCIES:
-                        avail = float(detail.get('availBal', 0) or detail.get('cashBal', 0) or 0)
+                        # V dashboardi zobrazujeme striktne availBal
+                        avail_raw = detail.get('availBal', 0)
+                        avail = float(avail_raw) if avail_raw else 0.0
                         found[ccy] = {"available_balance": avail}
             if found:
                 for curr in ALLOWED_CURRENCIES:
