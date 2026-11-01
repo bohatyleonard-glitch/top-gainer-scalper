@@ -40,16 +40,14 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živý trh podľa checklistu..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz[cite: 1, 3]
+MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
 # Režimy zodpovedajúce tvojmu Pine Script indikátoru v5.4.4
 CURRENT_STRATEGY_MODE = "Agresívny Momentum (Breakout)"
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
-
-# 🛡️ BLACKLIST: Automaticky sa sem pridajú mince s reštrikciami z demo účtu
-EXCLUDED_COINS = ["ZAMA", "OKB"]
+EXCLUDED_COINS = ["ZAMA"]
 
 
 def get_sk_time_str() -> str:
@@ -187,16 +185,16 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
   return result
 
 
-# --- 🔍 AUTOMATICKÝ SKENER S CHECKLISTOM ---
+# --- 🔍 AUTOMATICKÝ TOP GAINER SKENER S REAL-TIME VALIDÁCIOU ---
 async def top_gainer_scanner_loop():
-  global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING, EXCLUDED_COINS
+  global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING
   await asyncio.sleep(5)
 
-  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.6 SPUSTENÝ [Checklist Mode]"
+  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.6 SPUSTENÝ [Dynamic Top Gainers Checklist]"
   print(start_msg, flush=True)
   send_telegram_msg(
-      "🤖 <b>Apex Scalper 3.6 spustený!</b> Režim s kompletným checklistom je"
-      " aktívny."
+      "🤖 <b>Apex Scalper 3.6 spustený!</b> Hľadám Top Gainers s priamou"
+      " validáciou Demo účtu."
   )
 
   while True:
@@ -234,7 +232,7 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(10)
         continue
 
-      CURRENT_STAGE = f"STAV: 🟢 SKENER [Režim: {CURRENT_STRATEGY_MODE}]. Skenujem trh..."
+      CURRENT_STAGE = f"STAV: 🟢 SKENER Top Gainers [Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
       if tickers_res.get("code") != "0" or not tickers_res.get("data"):
         await asyncio.sleep(5)
@@ -242,7 +240,7 @@ async def top_gainer_scanner_loop():
 
       min_vol = 15000.0
       min_change = 0.5
-      max_change = 40.0
+      max_change = 50.0
 
       candidates = []
       for item in tickers_res["data"]:
@@ -296,101 +294,101 @@ async def top_gainer_scanner_loop():
       if candidates:
         MARKET_RADAR = candidates[:10]
 
-      best_target = None
       for cand in candidates:
-        if cand["buy_ready"]:
-          coin_name = cand["instId"].split("-")[0]
-          now_ts = datetime.now().timestamp()
-          if coin_name in LAST_TRADE_TIME:
-            if now_ts - LAST_TRADE_TIME[coin_name] < 600:
+        if not cand["buy_ready"]:
+          continue
+
+        coin_name = cand["instId"].split("-")[0]
+        now_ts = datetime.now().timestamp()
+        if (
+            coin_name in LAST_TRADE_TIME
+            and now_ts - LAST_TRADE_TIME[coin_name] < 600
+        ):
+          continue
+
+        async with trade_lock:
+          if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
+            break
+
+          IS_ORDER_PROCESSING = True
+          safe_budget = min(free_capital * 0.95, 500.0)
+          current_price = cand["price"]
+
+          coin_amount = safe_budget / current_price
+          formatted_sz = round(coin_amount, 2)
+          if formatted_sz <= 0:
+            formatted_sz = round(coin_amount, 4)
+
+          order_body = json.dumps({
+              "instId": cand["instId"],
+              "tdMode": "cash",
+              "side": "buy",
+              "ordType": "limit",
+              "px": str(round(current_price, 4)),
+              "sz": str(formatted_sz),
+              "tgtCcy": "base_ccy",
+          })
+
+          order_res = okx_request("POST", "/api/v5/trade/order", order_body)
+
+          if order_res.get("code") != "0":
+            err_data = order_res.get("data", [{}])
+            s_code = (
+                err_data[0].get("sCode")
+                if isinstance(err_data, list) and len(err_data) > 0
+                else ""
+            )
+
+            if s_code == "51155" or "compliance" in str(order_res).lower():
+              print(
+                  f"⏩ {cand['instId']} blokovaný demo účtom. Skúšam ďalšieho"
+                  " Top Gainera...",
+                  flush=True,
+              )
+              IS_ORDER_PROCESSING = False
               continue
-          best_target = cand
-          break
 
-      if not best_target:
-        await asyncio.sleep(5)
-        continue
+            print(f"❌ Nákup zlyhal pre {cand['instId']}: {order_res}", flush=True)
+            IS_ORDER_PROCESSING = False
+            break
 
-      coin_name = best_target["instId"].split("-")[0]
+          LAST_TRADE_TIME[coin_name] = datetime.now().timestamp()
+          tp_price = current_price * 1.012
+          sl_price = current_price * 0.99
+          PRICE_HISTORY = [current_price]
 
-      async with trade_lock:
-        if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
-          continue
+          ACTIVE_TRADES[coin_name] = {
+              "market_pair": cand["instId"],
+              "entry_price": current_price,
+              "current_price": current_price,
+              "highest_price": current_price,
+              "target_tp_price": tp_price,
+              "current_sl_price": sl_price,
+              "break_even_activated": False,
+              "trailing_tp_activated": False,
+              "amount": formatted_sz,
+              "bought_at": get_sk_time_str(),
+              "invested_usdc": safe_budget,
+              "live_pnl_pct": 0.0,
+              "live_pnl_usdc": 0.0,
+          }
 
-        IS_ORDER_PROCESSING = True
-        LAST_TRADE_TIME[coin_name] = datetime.now().timestamp()
-        CURRENT_STAGE = f"STAV: ⚡ Checklist splnený pre {best_target['instId']}! Vystavujem nákup..."
-
-        safe_budget = min(free_capital * 0.95, 500.0)
-        current_price = best_target["price"]
-
-        coin_amount = safe_budget / current_price
-        formatted_sz = round(coin_amount, 2)
-        if formatted_sz <= 0:
-          formatted_sz = round(coin_amount, 4)
-
-        order_body = json.dumps({
-            "instId": best_target["instId"],
-            "tdMode": "cash",
-            "side": "buy",
-            "ordType": "limit",
-            "px": str(round(current_price, 4)),
-            "sz": str(formatted_sz),
-            "tgtCcy": "base_ccy",
-        })
-
-        order_res = okx_request("POST", "/api/v5/trade/order", order_body)
-        
-        # 🛡️ Ochrana proti compliance reštrikciám (kód 51155)
-        if order_res.get("code") != "0":
-          err_data = order_res.get("data", [{}])
-          s_code = err_data[0].get("sCode") if isinstance(err_data, list) and len(err_data) > 0 else ""
-          
-          if s_code == "51155" or "compliance" in str(order_res).lower():
-            print(f"⚠️ Pár {best_target['instId']} blokovaný demo účtom (Compliance). Pridávam na blacklist.", flush=True)
-            if coin_name not in EXCLUDED_COINS:
-              EXCLUDED_COINS.append(coin_name)
-          
-          print(f"❌ Nákup zlyhal: {order_res}", flush=True)
           IS_ORDER_PROCESSING = False
-          await asyncio.sleep(3)
-          continue
+          CURRENT_STAGE = (
+              f"STAV: 🔴 V OBCHODE [{cand['instId']}] (Režim:"
+              f" {CURRENT_STRATEGY_MODE})..."
+          )
 
-        tp_price = current_price * 1.012
-        sl_price = current_price * 0.99
-        PRICE_HISTORY = [current_price]
-
-        ACTIVE_TRADES[coin_name] = {
-            "market_pair": best_target["instId"],
-            "entry_price": current_price,
-            "current_price": current_price,
-            "highest_price": current_price,
-            "target_tp_price": tp_price,
-            "current_sl_price": sl_price,
-            "break_even_activated": False,
-            "trailing_tp_activated": False,
-            "amount": formatted_sz,
-            "bought_at": get_sk_time_str(),
-            "invested_usdc": safe_budget,
-            "live_pnl_pct": 0.0,
-            "live_pnl_usdc": 0.0,
-        }
-
-        IS_ORDER_PROCESSING = False
-        CURRENT_STAGE = (
-            f"STAV: 🔴 V OBCHODE [{best_target['instId']}] (Režim:"
-            f" {CURRENT_STRATEGY_MODE})..."
-        )
-
-        send_telegram_msg(
-            f"🟢 <b>[CHECKLIST NÁKUP - {CURRENT_STRATEGY_MODE}]</b>\n"
-            f"<b>Pár:</b> {best_target['instId']}\n"
-            f"<b>24h Rast:</b> +{best_target['change']:.2f}%\n"
-            f"<b>Pravdepodobnosť:</b> {best_target['probability']}%\n"
-            f"<b>Cena:</b> {current_price:.4f}\n"
-            f"<b>Investícia:</b> ~{safe_budget:.2f} {currency_to_use}\n"
-            f"<b>Stop-Loss:</b> {sl_price:.4f} (-1%)"
-        )
+          send_telegram_msg(
+              f"🟢 <b>[CHECKLIST NÁKUP - {CURRENT_STRATEGY_MODE}]</b>\n"
+              f"<b>Pár:</b> {cand['instId']}\n"
+              f"<b>24h Rast:</b> +{cand['change']:.2f}%\n"
+              f"<b>Pravdepodobnosť:</b> {cand['probability']}%\n"
+              f"<b>Cena:</b> {current_price:.4f}\n"
+              f"<b>Investícia:</b> ~{safe_budget:.2f} {currency_to_use}\n"
+              f"<b>Stop-Loss:</b> {sl_price:.4f} (-1%)"
+          )
+          break
 
     except Exception as scan_err:
       IS_ORDER_PROCESSING = False
@@ -638,8 +636,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .pnl-green { color: #00ff88; font-weight: bold; }
         .pnl-red { color: #ff4444; font-weight: bold; }
         .chart-container { background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(0, 255, 255, 0.2); border-radius: 10px; padding: 10px; margin-top: 10px; height: 150px; }
-        .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(95px, 1fr)); gap: 8px; margin-top: 4px; }
-        .calendar-day { background: rgba(0, 0, 0, 0.70); border: 1px solid rgba(0, 255, 255, 0.30); border-radius: 8px; padding: 8px; text-align: center; font-size: 0.75rem; }
         .refresh-info { color: rgba(255, 255, 255, 0.6); font-size: 0.7rem; margin-top: 20px; font-weight: 600; text-align: left; }
     </style>
     <meta http-equiv="refresh" content="2">
