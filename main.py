@@ -42,7 +42,7 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []       
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem trh..."
 LAST_TRADE_TIME = {}  
-MAX_PARALLEL_TRADES = 1  # 🛡️ Anti-Fragmentation: Výhradne 1 obchod naraz[cite: 1]
+MAX_PARALLEL_TRADES = 1  # 🛡️ Anti-Fragmentation: Výhradne 1 obchod naraz
 trade_lock = asyncio.Lock()  
 
 CURRENT_MODE = "AGGRESSIVE" # AGGRESSIVE / CONSERVATIVE
@@ -100,7 +100,7 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 AUTOMATICKÝ SKENER TRHU (VÝHRADNE USDC) ---
+# --- 🔍 AUTOMATICKÝ SKENER TRHU (VÝHRADNE USDC SPOT) ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE
     await asyncio.sleep(5)
@@ -148,14 +148,14 @@ async def top_gainer_scanner_loop():
                 min_change = 2.0
                 max_change = 15.0
             else:
-                min_vol = 10000.0  # Obrat > 10 000 USDC[cite: 1]
-                min_change = 1.0   # Rast od 1.0%[cite: 1]
-                max_change = 30.0  # Rast do 30.0%[cite: 1]
+                min_vol = 10000.0  # Obrat > 10 000 USDC
+                min_change = 1.0   # Rast od 1.0%
+                max_change = 30.0  # Rast do 30.0%
 
             candidates = []
             for item in tickers_res['data']:
                 inst_id = item.get('instId', '').upper()
-                if not inst_id.endswith('-USDC'): # Striktne -USDC páry[cite: 1]
+                if not inst_id.endswith('-USDC'): # Striktne -USDC páry
                     continue
                 if inst_id in ['USDC-USDC', 'USDT-USDC', 'BTC-USDC', 'ETH-USDC']:
                     continue
@@ -192,7 +192,7 @@ async def top_gainer_scanner_loop():
 
             now_ts = datetime.now().timestamp()
             if coin_name in LAST_TRADE_TIME:
-                if now_ts - LAST_TRADE_TIME[coin_name] < 60: # 60s cooldown[cite: 1]
+                if now_ts - LAST_TRADE_TIME[coin_name] < 60: # 60s cooldown
                     await asyncio.sleep(5)
                     continue
 
@@ -203,7 +203,7 @@ async def top_gainer_scanner_loop():
                 LAST_TRADE_TIME[coin_name] = now_ts
                 CURRENT_STAGE = f"STAV: Kupujem {best_target['instId']}..."
                 
-                safe_budget = min(free_capital * 0.98, 1000.0) # Max 98%, strop 1000 USDC[cite: 1]
+                safe_budget = min(free_capital * 0.98, 1000.0) # Max 98%, strop 1000 USDC
                 current_price = best_target['price']
                 coin_amount = safe_budget / current_price
 
@@ -211,14 +211,14 @@ async def top_gainer_scanner_loop():
                 if formatted_sz <= 0:
                     formatted_sz = round(coin_amount, 4)
 
-                # 🛡️ Presné nastavenie pre čistý SPOT Cash nákup USDC bez marže
+                # 🛡️ Vynútenie čistého Spot cash obchodu s USDC bez marže
                 order_body = json.dumps({
                     "instId": best_target['instId'],
                     "tdMode": "cash",
                     "side": "buy",
                     "ordType": "market",
                     "sz": str(formatted_sz),
-                    "tgtCcy": "base_ccy" # Vynúti nákup podľa množstva základu, aby OKX neskúšalo riešiť USD požičiavanie
+                    "tgtCcy": "base_ccy"
                 })
 
                 order_res = okx_request('POST', '/api/v5/trade/order', order_body)
@@ -229,7 +229,7 @@ async def top_gainer_scanner_loop():
                     continue
 
                 tp_price = current_price * 1.02
-                sl_price = current_price * 0.985 # Stop-Loss (-1.5%)[cite: 1]
+                sl_price = current_price * 0.985 # Stop-Loss (-1.5%)
                 PRICE_HISTORY = [current_price]
 
                 ACTIVE_TRADES[coin_name] = {
@@ -284,7 +284,7 @@ async def advanced_risk_monitor_loop():
                 
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
                 
-                # 15-minútová časová poistka[cite: 1]
+                # 15-minútová časová poistka
                 if now_time - bought_time > timedelta(minutes=15):
                     try:
                         order_body = json.dumps({
@@ -329,7 +329,7 @@ async def advanced_risk_monitor_loop():
                             if new_trailing_sl > trade["current_sl_price"]:
                                 trade["current_sl_price"] = new_trailing_sl
 
-                    # Break-Even na +0.7%[cite: 1]
+                    # Break-Even na +0.7%
                     if not trade["break_even_activated"] and pnl_pct >= 0.7:
                         trade["break_even_activated"] = True
                         if trade["entry_price"] > trade["current_sl_price"]:
@@ -340,7 +340,7 @@ async def advanced_risk_monitor_loop():
                                 f"<b>Ochrana na vstupe:</b> {trade['entry_price']:.4f} USDC"
                             )
 
-                    # Trailing TP aktivácia od +1.2%[cite: 1]
+                    # Trailing TP aktivácia od +1.2%
                     if not trade["trailing_tp_activated"] and pnl_pct >= 1.2:
                         trade["trailing_tp_activated"] = True
                         send_telegram_msg(
@@ -349,7 +349,7 @@ async def advanced_risk_monitor_loop():
                             f"<b>Zisk:</b> +{pnl_pct:.2f}%. Sledujem vlnu."
                         )
 
-                    # Výstup pri poklese o 0.4% z maxima[cite: 1]
+                    # Výstup pri poklese o 0.4% z maxima
                     if trade["trailing_tp_activated"]:
                         drop_from_peak = ((trade["highest_price"] - current_price) / trade["highest_price"]) * 100
                         if drop_from_peak >= 0.4:
@@ -709,7 +709,7 @@ async def dashboard():
     total_trades = len(CLOSED_TRADES_HISTORY)
     winning_trades = sum(1 for t in CLOSED_TRADES_HISTORY if t["pnl_pct"] > 0)
     win_rate = round((winning_trades / total_trades * 100) if total_trades > 0 else 0.0, 1)
-    total_pnl_usdc = sum(t["pnl_usdc"] for t in CLOSED_TRALES_HISTORY) if 'CLOSED_TRADES_HISTORY' in globals() else 0.0
+    total_pnl_usdc = sum(t["pnl_usdc"] for t in CLOSED_TRADES_HISTORY) if 'CLOSED_TRADES_HISTORY' in globals() else 0.0
 
     template = Template(HTML_TEMPLATE_CONTENT)
     return template.render(
