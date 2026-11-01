@@ -38,7 +38,7 @@ def send_telegram_msg(message: str):
 # Globálny stav bota pre Dashboard a logiku
 bot_state = {
     "status": "online",
-    "bot_type": "Apex Scalper Pro (Clean Notifications)",
+    "bot_type": "Apex Scalper Pro (Smart Limit Orders)",
     "last_scan": "Zatiaľ neskenované",
     "account_balances": {},
     "active_trades": {},
@@ -117,7 +117,7 @@ DASHBOARD_TEMPLATE = """
     <div class="container">
         <div class="header">
             <div>
-                <h1>⚡ Apex Scalper Pro</h1>
+                <h1>⚡ Apex Scalper Pro (Smart Limit)</h1>
                 <p style="margin: 0; color: #94a3b8;">Spot USDC Scalper (OKX Demo)</p>
             </div>
             <div>
@@ -179,8 +179,8 @@ DASHBOARD_TEMPLATE = """
 async def top_gainer_scanner_loop():
     global bot_state, LAST_TRADE_TIME
     await asyncio.sleep(5)
-    log_message("⚡ Skener spustený [USDC Spot Režim]...")
-    send_telegram_msg("🤖 <b>Apex Scalper Pro spustený!</b> Skenujem USDC páry na OKX.")
+    log_message("⚡ Skener so Smart Limit nákupmi spustený...")
+    send_telegram_msg("🤖 <b>Apex Scalper Pro spustený!</b> Používam inteligentné Limitné príkazy.")
 
     while True:
         try:
@@ -253,7 +253,6 @@ async def top_gainer_scanner_loop():
 
             now_ts = datetime.now().timestamp()
             if coin_name in LAST_TRADE_TIME:
-                # 🛡️ 1-HODINOVÝ COOLDOWN na rovnakú mincu po predaji
                 if now_ts - LAST_TRADE_TIME[coin_name] < 3600:
                     await asyncio.sleep(10)
                     continue
@@ -263,40 +262,45 @@ async def top_gainer_scanner_loop():
                     continue
 
                 LAST_TRADE_TIME[coin_name] = now_ts
-                log_message(f"🎯 Vybraný kandidát: {best_target['instId']} (+{best_target['change']:.2f}%)")
+                log_message(f"🎯 Vybraný kandidát na Limit nákup: {best_target['instId']} (+{best_target['change']:.2f}%)")
 
                 safe_budget = min(free_capital * 0.95, 500.0)
                 current_price = best_target['price']
-                coin_amount = safe_budget / current_price
+                
+                # 💡 SMART LIMIT: Nastavíme nákupnú cenu o 0.15% vyššie ako aktuálna cena, aby sa príkaz okamžite chytil bez nevýhodného sklzu (slippage)
+                limit_buy_price = current_price * 1.0015
+                coin_amount = safe_budget / limit_buy_price
 
                 formatted_sz = round(coin_amount, 2)
                 if formatted_sz <= 0:
                     formatted_sz = round(coin_amount, 4)
 
+                # Odoslanie LIMITNÉHO príkazu namiesto Market
                 order_body = json.dumps({
                     "instId": best_target['instId'],
                     "tdMode": "cash",
                     "side": "buy",
-                    "ordType": "market",
+                    "ordType": "limit",
+                    "px": str(round(limit_buy_price, 4)),
                     "sz": str(formatted_sz),
                     "tgtCcy": "base_ccy"
                 })
 
                 order_res = okx_request('POST', '/api/v5/trade/order', order_body)
                 if order_res.get('code') != '0':
-                    log_message(f"❌ Nákup zlyhal: {order_res}")
-                    send_telegram_msg(f"❌ <b>Chyba nákupu USDC:</b> {order_res.get('msg', 'Neznáma')}")
+                    log_message(f"❌ Limit nákup zlyhal: {order_res}")
+                    send_telegram_msg(f"❌ <b>Chyba Limit nákupu USDC:</b> {order_res.get('msg', 'Neznáma')}")
                     await asyncio.sleep(10)
                     continue
 
-                tp_price = current_price * 1.025
-                sl_price = current_price * 0.98
+                tp_price = limit_buy_price * 1.025
+                sl_price = limit_buy_price * 0.98
 
                 bot_state["active_trades"][coin_name] = {
                     "market_pair": best_target['instId'],
-                    "entry_price": current_price,
-                    "current_price": current_price,
-                    "highest_price": current_price,
+                    "entry_price": limit_buy_price,
+                    "current_price": limit_buy_price,
+                    "highest_price": limit_buy_price,
                     "target_tp_price": tp_price,
                     "current_sl_price": sl_price,
                     "break_even_activated": False,
@@ -308,11 +312,10 @@ async def top_gainer_scanner_loop():
                     "live_pnl_usdc": 0.0
                 }
 
-                # 🟢 ČISTÁ TELEGRAM SPRÁVA O NÁKUPE (ZELENÁ BODKA)
                 send_telegram_msg(
-                    f"🟢 <b>[SPOT NÁKUP USDC]</b>\n"
+                    f"🟢 <b>[SMART LIMIT NÁKUP USDC]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
-                    f"<b>Vstupná cena:</b> {current_price:.4f} USDC\n"
+                    f"<b>Limit cena (+0.15%):</b> {limit_buy_price:.4f} USDC\n"
                     f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
                     f"<b>Stop-Loss:</b> {sl_price:.4f} USDC (-2%)"
                 )
@@ -322,7 +325,7 @@ async def top_gainer_scanner_loop():
 
         await asyncio.sleep(10)
 
-# --- 🛡️ MONITOROVACÍ CYKLUS (RISK MANAGEMENT - BEZ ČASOVÉHO LIMITU) ---
+# --- 🛡️ MONITOROVACÍ CYKLUS (RISK MANAGEMENT) ---
 async def advanced_risk_monitor_loop():
     global bot_state
     await asyncio.sleep(5)
@@ -339,8 +342,6 @@ async def advanced_risk_monitor_loop():
                     continue
                 trade = bot_state["active_trades"][coin]
                 symbol = trade["market_pair"]
-                
-                # ŽIADNY ČASOVÝ LIMIT - pozícia čaká výhradne na TP alebo SL
                 
                 ticker_res = okx_request('GET', f'/api/v5/market/ticker?instId={symbol}')
                 if ticker_res.get('code') == '0' and ticker_res.get('data'):
@@ -359,17 +360,14 @@ async def advanced_risk_monitor_loop():
                             if new_trailing_sl > trade["current_sl_price"]:
                                 trade["current_sl_price"] = new_trailing_sl
 
-                    # Break-Even na +0.8%
                     if not trade["break_even_activated"] and pnl_pct >= 0.8:
                         trade["break_even_activated"] = True
                         if trade["entry_price"] > trade["current_sl_price"]:
                             trade["current_sl_price"] = trade["entry_price"]
 
-                    # Trailing TP od +1.5%
                     if not trade["trailing_tp_activated"] and pnl_pct >= 1.5:
                         trade["trailing_tp_activated"] = True
 
-                    # 🎯 TAKE PROFIT VÝSTUP
                     if trade["trailing_tp_activated"]:
                         drop_from_peak = ((trade["highest_price"] - current_price) / trade["highest_price"]) * 100
                         if drop_from_peak >= 0.5:
@@ -380,7 +378,6 @@ async def advanced_risk_monitor_loop():
                                 okx_request('POST', '/api/v5/trade/order', order_body)
                                 log_message(f"🎯 Take Profit pre {symbol} s výnosom {pnl_pct:+.2f}%")
                                 
-                                # 🔵 ČISTÁ TELEGRAM SPRÁVA O ÚSPEŠNOM PREDAJI
                                 send_telegram_msg(
                                     f"🎯 <b>[TAKE PROFIT - VÝSLEDOK]</b>\n"
                                     f"<b>Pár:</b> {symbol}\n"
@@ -393,7 +390,6 @@ async def advanced_risk_monitor_loop():
                                 del bot_state["active_trades"][coin]
                             continue
 
-                    # 🚨 STOP-LOSS / OCHRANA VÝSTUP
                     if current_price <= trade["current_sl_price"]:
                         try:
                             order_body = json.dumps({
@@ -402,7 +398,6 @@ async def advanced_risk_monitor_loop():
                             okx_request('POST', '/api/v5/trade/order', order_body)
                             log_message(f"🚨 Stop-loss pre {symbol} pri {pnl_pct:+.2f}%")
                             
-                            # 🔴 ČISTÁ TELEGRAM SPRÁVA O PREDAJI V STRATE/OCHRANE
                             send_telegram_msg(
                                 f"🚨 <b>[STOP-LOSS / OCHRANA - VÝSLEDOK]</b>\n"
                                 f"<b>Pár:</b> {symbol}\n"
@@ -457,5 +452,4 @@ def api_status():
     }
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    port
