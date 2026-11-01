@@ -7,7 +7,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 import requests
 from jinja2 import Template
@@ -35,31 +35,45 @@ def send_telegram_msg(message: str):
     except Exception as err:
         print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
-# Globálny stav bota pre Dashboard a logiku
-bot_state = {
-    "status": "online",
-    "bot_type": "Apex Scalper Pro (Smart Limit Fixed)",
-    "last_scan": "Zatiaľ neskenované",
-    "account_balances": {},
-    "active_trades": {},
-    "logs": []
-}
+# --- STAV BOT-A & PROFILY ---
+ACTIVE_TRADES = {}       
+MARKET_RADAR = []        
+DAILY_PNL_CALENDAR = {}  
+CLOSED_TRADES_HISTORY = [] 
+PRICE_HISTORY = []       
+CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem trh..."
+LAST_TRADE_TIME = {}  
+MAX_PARALLEL_TRADES = 1  # 🛡️ Anti-Fragmentation: Výhradne 1 obchod naraz
+trade_lock = asyncio.Lock()  
 
-def log_message(msg):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    formatted = f"[{timestamp}] {msg}"
-    print(formatted, flush=True)
-    bot_state["logs"].insert(0, formatted)
-    if len(bot_state["logs"]) > 50:
-        bot_state["logs"].pop()
-
-LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Výhradne 1 aktívna pozícia naraz
-trade_lock = asyncio.Lock()
+CURRENT_MODE = "AGGRESSIVE" # AGGRESSIVE / CONSERVATIVE
+ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 
 def get_sk_time_str() -> str:
     sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
     return sk_time.strftime("%Y-%m-%d %H:%M:%S")
+
+def get_sk_date_str() -> str:
+    sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
+    return sk_time.strftime("%Y-%m-%d")
+
+def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
+    global CLOSED_TRADES_HISTORY
+    day_str = get_sk_date_str()
+    if day_str not in DAILY_PNL_CALENDAR:
+        DAILY_PNL_CALENDAR[day_str] = {"pnl": 0.0, "trades": 0}
+    DAILY_PNL_CALENDAR[day_str]["pnl"] += pnl_usdc
+    DAILY_PNL_CALENDAR[day_str]["trades"] += 1
+
+    CLOSED_TRADES_HISTORY.insert(0, {
+        "pair": pair,
+        "pnl_pct": pnl_pct,
+        "pnl_usdc": pnl_usdc,
+        "reason": reason,
+        "time": get_sk_time_str()
+    })
+    if len(CLOSED_TRADES_HISTORY) > 20:
+        CLOSED_TRADES_HISTORY.pop()
 
 # --- OKX EEA DEMO PROSTREDIE & AUTENTIFIKÁCIA ---
 def okx_request(method: str, path: str, body: str = ''):
@@ -87,141 +101,60 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- HTML DASHBOARD ŠABLÓNA ---
-DASHBOARD_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="sk">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - Dashboard</title>
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
-        .container { max-width: 1000px; margin: 0 auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; background: #1e293b; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        .status-badge { background: #22c55e; color: white; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 0.9em; }
-        .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
-        .card { background: #1e293b; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
-        h2 { margin-top: 0; color: #38bdf8; font-size: 1.2em; border-bottom: 2px solid #334155; padding-bottom: 8px; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #334155; font-size: 0.9em; }
-        th { color: #94a3b8; }
-        .logs-box { background: #090d16; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 0.85em; height: 200px; overflow-y: auto; color: #34d399; margin-top: 20px; }
-        .refresh-info { text-align: center; color: #64748b; font-size: 0.8em; margin-top: 15px; }
-        .pnl-green { color: #22c55e; font-weight: bold; }
-        .pnl-red { color: #ef4444; font-weight: bold; }
-    </style>
-    <meta http-equiv="refresh" content="10">
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <div>
-                <h1>⚡ Apex Scalper Pro (Smart Limit)</h1>
-                <p style="margin: 0; color: #94a3b8;">Spot USDC Scalper (OKX Demo)</p>
-            </div>
-            <div>
-                <span class="status-badge">ONLINE</span>
-            </div>
-        </div>
-
-        <div class="card-grid">
-            <div class="card">
-                <h2>💰 Zostatky (availBal)</h2>
-                <table>
-                    <tr><th>Mena</th><th>Dostupné</th></tr>
-                    {% for coin, data in balances.items() %}
-                    <tr>
-                        <td><strong>{{ coin }}</strong></td>
-                        <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            </div>
-
-            <div class="card">
-                <h2>📈 Aktívne Obchody</h2>
-                {% if trades %}
-                    <table>
-                        <tr><th>Pár</th><th>Vstup</th><th>PnL (%)</th></tr>
-                        {% for t, details in trades.items() %}
-                        <tr>
-                            <td><strong>{{ details.market_pair }}</strong></td>
-                            <td>{{ "%.4f" | format(details.entry_price) }}</td>
-                            <td class="{{ 'pnl-green' if details.live_pnl_pct >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(details.live_pnl_pct) }}%</td>
-                        </tr>
-                        {% endfor %}
-                    </table>
-                {% else %}
-                    <p style="color: #94a3b8; text-align: center; margin-top: 30px;">✅ Žiadny aktívny obchod. Skenujem trh...</p>
-                {% endif %}
-            </div>
-        </div>
-
-        <div class="card" style="margin-top: 20px;">
-            <h2>📋 Živé Logy Bota</h2>
-            <div class="logs-box">
-                {% for log in logs %}
-                <div>{{ log }}</div>
-                {% endfor %}
-            </div>
-        </div>
-
-        <div class="refresh-info">
-            Stránka sa automaticky obnovuje každých 10 sekúnd. | Aktuálny čas: {{ current_time }}
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-# --- 🔍 SKENOVACIA SLUČKA (BACKGROUND WORKER) ---
+# --- 🔍 AUTOMATICKÝ SKENER TRHU (SMART LIMIT + 1H COOLDOWN) ---
 async def top_gainer_scanner_loop():
-    global bot_state, LAST_TRADE_TIME
+    global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE
     await asyncio.sleep(5)
-    log_message("⚡ Skener so Smart Limit nákupmi spustený...")
-    send_telegram_msg("🤖 <b>Apex Scalper Pro spustený!</b> Používam inteligentné Limitné príkazy.")
+    
+    start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER PRO SPUSTENÝ [Smart Limit USDC Režim]"
+    print(start_msg, flush=True)
+    send_telegram_msg(f"🤖 <b>Apex Scalper Pro spustený!</b> Používam inteligentné Limitné príkazy.")
 
     while True:
         try:
-            bot_state["last_scan"] = get_sk_time_str()
+            if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
+                CURRENT_STAGE = "STAV: 🔴 V OBCHODE! Čakám na dokončenie pozície..."
+                await asyncio.sleep(5)
+                continue
 
             balance_res = okx_request('GET', '/api/v5/account/balance')
-            if balance_res.get('code') == '0':
-                acc_bals = {}
-                free_capital = 0.0
-                for acc in balance_res.get('data', []):
-                    for detail in acc.get('details', []):
-                        ccy = detail.get('ccy')
-                        if ccy in ["USDC", "USDT", "EUR"]:
-                            avail = float(detail.get('availBal', 0) or 0)
-                            acc_bals[ccy] = {"available_balance": avail}
-                            if ccy == 'USDC':
-                                free_capital = avail
-                bot_state["account_balances"] = acc_bals
-
-            if len(bot_state["active_trades"]) >= MAX_PARALLEL_TRADES:
-                await asyncio.sleep(10)
-                continue
-
             if balance_res.get('code') != '0':
+                CURRENT_STAGE = "STAV: ⚠️ Chyba pri načítavaní zostatku z OKX."
                 await asyncio.sleep(10)
                 continue
+
+            free_capital = 0.0
+            for acc in balance_res.get('data', []):
+                for detail in acc.get('details', []):
+                    if detail.get('ccy') == 'USDC':
+                        avail_raw = detail.get('availBal', 0)
+                        free_capital = float(avail_raw) if avail_raw else 0.0
+                        break
 
             if free_capital < 10.0:
-                log_message(f"🛑 Nedostatok USDC kapitálu: {free_capital:.2f}")
-                await asyncio.sleep(15)
-                continue
-
-            tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
-            if tickers_res.get('code') != '0' or not tickers_res.get('data'):
+                CURRENT_STAGE = f"STAV: 🛑 Nedostatok USDC ({free_capital:.2f}$). Skontrolujte zostatok na OKX!"
                 await asyncio.sleep(10)
                 continue
+
+            CURRENT_STAGE = f"STAV: 🟢 MIMO OBCHODU [{CURRENT_MODE}]. USDC OK ({free_capital:.2f}$). Skenujem trh..."
+            tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
+            if tickers_res.get('code') != '0' or not tickers_res.get('data'):
+                await asyncio.sleep(5)
+                continue
+
+            if CURRENT_MODE == "CONSERVATIVE":
+                min_vol = 50000.0
+                min_change = 2.0
+                max_change = 15.0
+            else:
+                min_vol = 20000.0  # Min objem 20k USDC
+                min_change = 1.5   # Rast od 1.5%
+                max_change = 25.0  # Rast do 25.0%
 
             candidates = []
             for item in tickers_res['data']:
                 inst_id = item.get('instId', '').upper()
-                if not inst_id.endswith('-USDC'):
+                if not inst_id.endswith('-USDC'): 
                     continue
                 if inst_id in ['USDC-USDC', 'USDT-USDC', 'BTC-USDC', 'ETH-USDC']:
                     continue
@@ -231,42 +164,49 @@ async def top_gainer_scanner_loop():
                     last_p = float(item.get('last', 0))
                     vol24h = float(item.get('volCcy24h', 0) or item.get('vol24h', 0) or 0)
 
-                    if open24h > 0 and last_p > 0 and vol24h >= 20000:
+                    if open24h > 0 and last_p > 0 and vol24h >= min_vol:
                         change_pct = ((last_p - open24h) / open24h) * 100
-                        if 1.5 <= change_pct <= 25.0:
+                        if min_change <= change_pct <= max_change:
+                            probability = int(min(max((change_pct / max_change) * 100, 50), 99))
                             candidates.append({
                                 "instId": inst_id,
                                 "price": last_p,
                                 "change": change_pct,
-                                "volume": vol24h
+                                "volume": vol24h,
+                                "probability": probability
                             })
                 except Exception:
                     continue
 
+            candidates.sort(key=lambda x: x['change'], reverse=True)
+            if candidates:
+                MARKET_RADAR = candidates[:10]
+
             if not candidates:
-                await asyncio.sleep(15)
+                await asyncio.sleep(5)
                 continue
 
-            candidates.sort(key=lambda x: x['change'], reverse=True)
             best_target = candidates[0]
             coin_name = best_target['instId'].split('-')[0]
 
             now_ts = datetime.now().timestamp()
             if coin_name in LAST_TRADE_TIME:
+                # 🛡️ 1-HODINOVÝ COOLDOWN na rovnakú mincu po predaji
                 if now_ts - LAST_TRADE_TIME[coin_name] < 3600:
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(5)
                     continue
 
             async with trade_lock:
-                if len(bot_state["active_trades"]) >= MAX_PARALLEL_TRADES:
+                if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
                     continue
 
                 LAST_TRADE_TIME[coin_name] = now_ts
-                log_message(f"🎯 Vybraný kandidát na Limit nákup: {best_target['instId']} (+{best_target['change']:.2f}%)")
-
+                CURRENT_STAGE = f"STAV: Vystavujem Limit nákup pre {best_target['instId']}..."
+                
                 safe_budget = min(free_capital * 0.95, 500.0)
                 current_price = best_target['price']
                 
+                # 💡 SMART LIMIT: Nákupná cena o 0.15% vyššie ako aktuálna pre istotu exekúcie bez slippage
                 limit_buy_price = current_price * 1.0015
                 coin_amount = safe_budget / limit_buy_price
 
@@ -286,15 +226,16 @@ async def top_gainer_scanner_loop():
 
                 order_res = okx_request('POST', '/api/v5/trade/order', order_body)
                 if order_res.get('code') != '0':
-                    log_message(f"❌ Limit nákup zlyhal: {order_res}")
-                    send_telegram_msg(f"❌ <b>Chyba Limit nákupu USDC:</b> {order_res.get('msg', 'Neznáma')}")
-                    await asyncio.sleep(10)
+                    print(f"❌ Limit nákup zlyhal na burze: {order_res}", flush=True)
+                    send_telegram_msg(f"❌ <b>Chyba Limit nákupu USDC:</b> {order_res.get('msg', 'Neznáma chyba')}")
+                    await asyncio.sleep(5)
                     continue
 
                 tp_price = limit_buy_price * 1.025
                 sl_price = limit_buy_price * 0.98
+                PRICE_HISTORY = [limit_buy_price]
 
-                bot_state["active_trades"][coin_name] = {
+                ACTIVE_TRADES[coin_name] = {
                     "market_pair": best_target['instId'],
                     "entry_price": limit_buy_price,
                     "current_price": limit_buy_price,
@@ -310,6 +251,8 @@ async def top_gainer_scanner_loop():
                     "live_pnl_usdc": 0.0
                 }
 
+                CURRENT_STAGE = f"STAV: 🔴 V OBCHODE ({best_target['instId']}) - Čakám na vývoj..."
+
                 send_telegram_msg(
                     f"🟢 <b>[SMART LIMIT NÁKUP USDC]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
@@ -319,31 +262,36 @@ async def top_gainer_scanner_loop():
                 )
 
         except Exception as scan_err:
-            log_message(f"❌ Chyba v skeneri: {scan_err}")
+            print(f"❌ Chyba v skeneri: {scan_err}", flush=True)
 
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
 
-# --- 🛡️ MONITOROVACÍ CYKLUS (RISK MANAGEMENT) ---
+# --- 🛡️ MONITOR OBCHODU & RISK MANAGEMENT (BEZ 15M LIMITU) ---
 async def advanced_risk_monitor_loop():
-    global bot_state
-    await asyncio.sleep(5)
-    log_message("🛡️ Risk Management Monitor spustený...")
-
+    global ACTIVE_TRADES, CURRENT_STAGE, PRICE_HISTORY
+    await asyncio.sleep(3)
+    
     while True:
-        if not bot_state["active_trades"]:
-            await asyncio.sleep(3)
+        if not ACTIVE_TRADES:
+            await asyncio.sleep(2)
             continue
             
         try:
-            for coin in list(bot_state["active_trades"].keys()):
-                if coin not in bot_state["active_trades"]:
+            for coin in list(ACTIVE_TRADES.keys()):
+                if coin not in ACTIVE_TRADES:
                     continue
-                trade = bot_state["active_trades"][coin]
+                trade = ACTIVE_TRADES[coin]
                 symbol = trade["market_pair"]
+                
+                # ŽIADNY ČASOVÝ LIMIT - pozícia čaká výhradne na TP alebo SL
                 
                 ticker_res = okx_request('GET', f'/api/v5/market/ticker?instId={symbol}')
                 if ticker_res.get('code') == '0' and ticker_res.get('data'):
                     current_price = float(ticker_res['data'][0]['last'])
+                    PRICE_HISTORY.append(current_price)
+                    if len(PRICE_HISTORY) > 30:
+                        PRICE_HISTORY.pop(0)
+
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
                     pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
 
@@ -358,14 +306,17 @@ async def advanced_risk_monitor_loop():
                             if new_trailing_sl > trade["current_sl_price"]:
                                 trade["current_sl_price"] = new_trailing_sl
 
+                    # Break-Even na +0.8%
                     if not trade["break_even_activated"] and pnl_pct >= 0.8:
                         trade["break_even_activated"] = True
                         if trade["entry_price"] > trade["current_sl_price"]:
                             trade["current_sl_price"] = trade["entry_price"]
 
+                    # Trailing TP aktivácia od +1.5%
                     if not trade["trailing_tp_activated"] and pnl_pct >= 1.5:
                         trade["trailing_tp_activated"] = True
 
+                    # Výstup pri poklese o 0.5% z maxima
                     if trade["trailing_tp_activated"]:
                         drop_from_peak = ((trade["highest_price"] - current_price) / trade["highest_price"]) * 100
                         if drop_from_peak >= 0.5:
@@ -374,18 +325,19 @@ async def advanced_risk_monitor_loop():
                                     "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                                 })
                                 okx_request('POST', '/api/v5/trade/order', order_body)
-                                log_message(f"🎯 Take Profit pre {symbol} s výnosom {pnl_pct:+.2f}%")
-                                
+                                record_closed_trade(symbol, pnl_pct, pnl_usdc, "Take Profit")
+
                                 send_telegram_msg(
                                     f"🎯 <b>[TAKE PROFIT - VÝSLEDOK]</b>\n"
                                     f"<b>Pár:</b> {symbol}\n"
                                     f"<b>Výsledný zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:+.2f} USDC)"
                                 )
                             except Exception as err:
-                                log_message(f"❌ Chyba Take Profit: {err}")
+                                print(f"❌ Chyba Take Profit: {err}", flush=True)
 
-                            if coin in bot_state["active_trades"]:
-                                del bot_state["active_trades"][coin]
+                            if coin in ACTIVE_TRADES:
+                                del ACTIVE_TRADES[coin]
+                            CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Zisk uzamknutý!"
                             continue
 
                     if current_price <= trade["current_sl_price"]:
@@ -394,24 +346,25 @@ async def advanced_risk_monitor_loop():
                                 "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                             })
                             okx_request('POST', '/api/v5/trade/order', order_body)
-                            log_message(f"🚨 Stop-loss pre {symbol} pri {pnl_pct:+.2f}%")
-                            
+                            record_closed_trade(symbol, pnl_pct, pnl_usdc, "Stop-Loss / Ochrana")
+
                             send_telegram_msg(
                                 f"🚨 <b>[STOP-LOSS / OCHRANA - VÝSLEDOK]</b>\n"
                                 f"<b>Pár:</b> {symbol}\n"
                                 f"<b>Výsledok:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} USDC)"
                             )
                         except Exception as err:
-                            log_message(f"❌ Chyba SL: {err}")
+                            print(f"❌ Chyba SL: {err}", flush=True)
 
-                        if coin in bot_state["active_trades"]:
-                            del bot_state["active_trades"][coin]
+                        if coin in ACTIVE_TRADES:
+                            del ACTIVE_TRADES[coin]
+                        CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Pozícia zatvorená."
                         continue
 
         except Exception as main_err:
-            log_message(f"❌ Chyba v monitorovaní: {main_err}")
+            print(f"❌ Chyba v monitorovaní: {main_err}", flush=True)
             
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -423,32 +376,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- WEBOVÉ CESTY (ROUTES) ---
-@app.get("/", response_class=HTMLResponse)
-def dashboard():
-    balances = bot_state["account_balances"]
-    if not balances:
-        balances = {"USDC": {"available_balance": "0.00"}}
-    
-    template = Template(DASHBOARD_TEMPLATE)
-    rendered_html = template.render(
-        balances=balances,
-        trades=bot_state["active_trades"],
-        logs=bot_state["logs"],
-        current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    )
-    return rendered_html
+# --- API ENDPOINTS ---
+@app.get("/api/set-mode/{mode}")
+async def set_mode(mode: str):
+    global CURRENT_MODE
+    if mode in ["AGGRESSIVE", "CONSERVATIVE"]:
+        CURRENT_MODE = mode
+        return JSONResponse({"status": "success", "mode": CURRENT_MODE})
+    return JSONResponse({"status": "error", "message": "Neplatný režim."})
 
-@app.get("/api/status")
-def api_status():
-    return {
-        "status": bot_state["status"],
-        "bot_type": bot_state["bot_type"],
-        "account_balances": bot_state["account_balances"],
-        "active_trades": bot_state["active_trades"],
-        "sk_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+@app.post("/api/emergency-sell")
+async def emergency_
