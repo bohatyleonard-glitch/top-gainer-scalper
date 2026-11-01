@@ -50,6 +50,9 @@ IS_ORDER_PROCESSING = False
 CURRENT_MODE = "AGGRESSIVE" 
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 
+# 🛡️ BLACKLIST: Mince, ktoré na demo účte robia drobenie a trieštenie objednávok, natvrdo vynecháme
+EXCLUDED_COINS = ["ZAMA"]
+
 def get_sk_time_str() -> str:
     sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
     return sk_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -102,14 +105,14 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 AUTOMATICKÝ SKENER TRHU (BEZ DROBENIA) ---
+# --- 🔍 AUTOMATICKÝ SKENER TRHU (S BLACKLISTOM PROTI ZAMA) ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE, IS_ORDER_PROCESSING
     await asyncio.sleep(5)
     
-    start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER PRO SPUSTENÝ [Anti-Fragmentation Režim]"
+    start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER PRO SPUSTENÝ [Anti-Fragmentation & Blacklist Režim]"
     print(start_msg, flush=True)
-    send_telegram_msg(f"🤖 <b>Apex Scalper Pro spustený!</b> Optimalizované proti drobeniu objednávok.")
+    send_telegram_msg(f"🤖 <b>Apex Scalper Pro spustený!</b> Blacklist pre problémové coiny je aktívny.")
 
     while True:
         try:
@@ -143,13 +146,12 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(5)
                 continue
 
-            # 🛡️ Sprísnené podmienky objemu, aby sa ignorovali nelikvidné mince robící drobenie
             if CURRENT_MODE == "CONSERVATIVE":
                 min_vol = 100000.0
                 min_change = 2.0
                 max_change = 15.0
             else:
-                min_vol = 50000.0  # Zvýšené z 20k na 50k USDC objem
+                min_vol = 50000.0  
                 min_change = 1.5   
                 max_change = 25.0  
 
@@ -159,6 +161,11 @@ async def top_gainer_scanner_loop():
                 if not inst_id.endswith('-USDC'): 
                     continue
                 if inst_id in ['USDC-USDC', 'USDT-USDC', 'BTC-USDC', 'ETH-USDC']:
+                    continue
+
+                # 🛡️ Kontrola Blacklistu (vynecháme ZAMA a iné zakázané coiny)
+                coin_base = inst_id.split('-')[0]
+                if coin_base in EXCLUDED_COINS:
                     continue
 
                 try:
@@ -213,7 +220,6 @@ async def top_gainer_scanner_loop():
                 if formatted_sz <= 0:
                     formatted_sz = round(coin_amount, 4)
 
-                # 🛡️ Použitie štandardného limitného príkazu s presným množstvom (zamedzenie fragmentácie)
                 order_body = json.dumps({
                     "instId": best_target['instId'],
                     "tdMode": "cash",
