@@ -38,7 +38,7 @@ def send_telegram_msg(message: str):
 # Globálny stav bota pre Dashboard a logiku
 bot_state = {
     "status": "online",
-    "bot_type": "Apex Scalper Pro (Stabilized USDC Spot)",
+    "bot_type": "Apex Scalper Pro (Clean Notifications)",
     "last_scan": "Zatiaľ neskenované",
     "account_balances": {},
     "active_trades": {},
@@ -117,7 +117,7 @@ DASHBOARD_TEMPLATE = """
     <div class="container">
         <div class="header">
             <div>
-                <h1>⚡ Apex Scalper Pro (Stabilized)</h1>
+                <h1>⚡ Apex Scalper Pro</h1>
                 <p style="margin: 0; color: #94a3b8;">Spot USDC Scalper (OKX Demo)</p>
             </div>
             <div>
@@ -179,14 +179,13 @@ DASHBOARD_TEMPLATE = """
 async def top_gainer_scanner_loop():
     global bot_state, LAST_TRADE_TIME
     await asyncio.sleep(5)
-    log_message("⚡ Stabilizovaný Skener spustený [USDC Spot Režim]...")
-    send_telegram_msg("🤖 <b>Apex Scalper Pro spustený!</b> Skenujem USDC páry s ochranou proti zacykleniu.")
+    log_message("⚡ Skener spustený [USDC Spot Režim]...")
+    send_telegram_msg("🤖 <b>Apex Scalper Pro spustený!</b> Skenujem USDC páry na OKX.")
 
     while True:
         try:
             bot_state["last_scan"] = get_sk_time_str()
 
-            # Aktualizácia zostatkov pre dashboard
             balance_res = okx_request('GET', '/api/v5/account/balance')
             if balance_res.get('code') == '0':
                 acc_bals = {}
@@ -232,9 +231,9 @@ async def top_gainer_scanner_loop():
                     last_p = float(item.get('last', 0))
                     vol24h = float(item.get('volCcy24h', 0) or item.get('vol24h', 0) or 0)
 
-                    if open24h > 0 and last_p > 0 and vol24h >= 20000: # Zvýšený objem pre istotu
+                    if open24h > 0 and last_p > 0 and vol24h >= 20000:
                         change_pct = ((last_p - open24h) / open24h) * 100
-                        if 1.5 <= change_pct <= 25.0: # Konzervatívnejšie rozpätie rastu
+                        if 1.5 <= change_pct <= 25.0:
                             candidates.append({
                                 "instId": inst_id,
                                 "price": last_p,
@@ -254,8 +253,8 @@ async def top_gainer_scanner_loop():
 
             now_ts = datetime.now().timestamp()
             if coin_name in LAST_TRADE_TIME:
-                # 🛡️ 5-MINÚTOVÝ COOLDOWN (žiadne bleskové opakovanie tej istej mince)
-                if now_ts - LAST_TRADE_TIME[coin_name] < 300:
+                # 🛡️ 1-HODINOVÝ COOLDOWN na rovnakú mincu po predaji
+                if now_ts - LAST_TRADE_TIME[coin_name] < 3600:
                     await asyncio.sleep(10)
                     continue
 
@@ -264,9 +263,9 @@ async def top_gainer_scanner_loop():
                     continue
 
                 LAST_TRADE_TIME[coin_name] = now_ts
-                log_message(f"🎯 Vybraný stabilný kandidát: {best_target['instId']} (+{best_target['change']:.2f}%)")
+                log_message(f"🎯 Vybraný kandidát: {best_target['instId']} (+{best_target['change']:.2f}%)")
 
-                safe_budget = min(free_capital * 0.95, 500.0) # Bezpečnejšia alokácia
+                safe_budget = min(free_capital * 0.95, 500.0)
                 current_price = best_target['price']
                 coin_amount = safe_budget / current_price
 
@@ -291,7 +290,7 @@ async def top_gainer_scanner_loop():
                     continue
 
                 tp_price = current_price * 1.025
-                sl_price = current_price * 0.98  # Bezpečnejší Stop-Loss (-2%)
+                sl_price = current_price * 0.98
 
                 bot_state["active_trades"][coin_name] = {
                     "market_pair": best_target['instId'],
@@ -309,12 +308,13 @@ async def top_gainer_scanner_loop():
                     "live_pnl_usdc": 0.0
                 }
 
+                # 🟢 ČISTÁ TELEGRAM SPRÁVA O NÁKUPE (ZELENÁ BODKA)
                 send_telegram_msg(
-                    f"🟢 <b>[STABILIZOVANÝ SPOT NÁKUP]</b>\n"
+                    f"🟢 <b>[SPOT NÁKUP USDC]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
-                    f"<b>Vstup:</b> {current_price:.4f} USDC\n"
+                    f"<b>Vstupná cena:</b> {current_price:.4f} USDC\n"
                     f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
-                    f"<b>Stop-Loss:</b> {sl_price:.4f} USDC"
+                    f"<b>Stop-Loss:</b> {sl_price:.4f} USDC (-2%)"
                 )
 
         except Exception as scan_err:
@@ -322,11 +322,11 @@ async def top_gainer_scanner_loop():
 
         await asyncio.sleep(10)
 
-# --- 🛡️ MONITOROVACÍ CYKLUS (RISK MANAGEMENT) ---
+# --- 🛡️ MONITOROVACÍ CYKLUS (RISK MANAGEMENT - BEZ ČASOVÉHO LIMITU) ---
 async def advanced_risk_monitor_loop():
     global bot_state
     await asyncio.sleep(5)
-    log_message("🛡️ Stabilný Risk Management Monitor spustený...")
+    log_message("🛡️ Risk Management Monitor spustený...")
 
     while True:
         if not bot_state["active_trades"]:
@@ -334,31 +334,13 @@ async def advanced_risk_monitor_loop():
             continue
             
         try:
-            now_time = datetime.now(timezone.utc) + timedelta(hours=1)
-            
             for coin in list(bot_state["active_trades"].keys()):
                 if coin not in bot_state["active_trades"]:
                     continue
                 trade = bot_state["active_trades"][coin]
                 symbol = trade["market_pair"]
                 
-                bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
-                
-                # Predĺžený 30-minútový časový limit na priestor pre rast
-                if now_time - bought_time > timedelta(minutes=30):
-                    try:
-                        order_body = json.dumps({
-                            "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
-                        })
-                        okx_request('POST', '/api/v5/trade/order', order_body)
-                        log_message(f"⏱️ 30m časový limit vypršal pre {symbol}")
-                        send_telegram_msg(f"⏱️ <b>[30m LIMIT - UZATVORENÉ]</b> Pár {symbol} ({trade['live_pnl_pct']:+.2f}%)")
-                    except Exception:
-                        pass
-                    
-                    if coin in bot_state["active_trades"]:
-                        del bot_state["active_trades"][coin]
-                    continue
+                # ŽIADNY ČASOVÝ LIMIT - pozícia čaká výhradne na TP alebo SL
                 
                 ticker_res = okx_request('GET', f'/api/v5/market/ticker?instId={symbol}')
                 if ticker_res.get('code') == '0' and ticker_res.get('data'):
@@ -382,13 +364,12 @@ async def advanced_risk_monitor_loop():
                         trade["break_even_activated"] = True
                         if trade["entry_price"] > trade["current_sl_price"]:
                             trade["current_sl_price"] = trade["entry_price"]
-                            send_telegram_msg(f"🛡️ <b>[BREAK-EVEN]</b> {symbol} zabezpečený na vstupe.")
 
                     # Trailing TP od +1.5%
                     if not trade["trailing_tp_activated"] and pnl_pct >= 1.5:
                         trade["trailing_tp_activated"] = True
-                        send_telegram_msg(f"🌊 <b>[TRAILING TP AKTÍVNY]</b> Pár {symbol} (+{pnl_pct:.2f}%)")
 
+                    # 🎯 TAKE PROFIT VÝSTUP
                     if trade["trailing_tp_activated"]:
                         drop_from_peak = ((trade["highest_price"] - current_price) / trade["highest_price"]) * 100
                         if drop_from_peak >= 0.5:
@@ -397,23 +378,36 @@ async def advanced_risk_monitor_loop():
                                     "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                                 })
                                 okx_request('POST', '/api/v5/trade/order', order_body)
-                                log_message(f"🎯 Trailing TP pre {symbol} s výnosom {pnl_pct:+.2f}%")
-                                send_telegram_msg(f"🎯 <b>[TAKE PROFIT]</b> {symbol} uzavretý v zisku +{pnl_pct:.2f}% (+{pnl_usdc:+.2f} USDC)")
+                                log_message(f"🎯 Take Profit pre {symbol} s výnosom {pnl_pct:+.2f}%")
+                                
+                                # 🔵 ČISTÁ TELEGRAM SPRÁVA O ÚSPEŠNOM PREDAJI
+                                send_telegram_msg(
+                                    f"🎯 <b>[TAKE PROFIT - VÝSLEDOK]</b>\n"
+                                    f"<b>Pár:</b> {symbol}\n"
+                                    f"<b>Výsledný zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:+.2f} USDC)"
+                                )
                             except Exception as err:
-                                log_message(f"❌ Chyba Trailing TP: {err}")
+                                log_message(f"❌ Chyba Take Profit: {err}")
 
                             if coin in bot_state["active_trades"]:
                                 del bot_state["active_trades"][coin]
                             continue
 
+                    # 🚨 STOP-LOSS / OCHRANA VÝSTUP
                     if current_price <= trade["current_sl_price"]:
                         try:
                             order_body = json.dumps({
                                 "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                             })
                             okx_request('POST', '/api/v5/trade/order', order_body)
-                            log_message(f"🚨 Stop-loss / Ochrana pre {symbol} pri {pnl_pct:+.2f}%")
-                            send_telegram_msg(f"🚨 <b>[STOP-LOSS / OCHRANA]</b> Pár {symbol} ({pnl_pct:+.2f}%)")
+                            log_message(f"🚨 Stop-loss pre {symbol} pri {pnl_pct:+.2f}%")
+                            
+                            # 🔴 ČISTÁ TELEGRAM SPRÁVA O PREDAJI V STRATE/OCHRANE
+                            send_telegram_msg(
+                                f"🚨 <b>[STOP-LOSS / OCHRANA - VÝSLEDOK]</b>\n"
+                                f"<b>Pár:</b> {symbol}\n"
+                                f"<b>Výsledok:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} USDC)"
+                            )
                         except Exception as err:
                             log_message(f"❌ Chyba SL: {err}")
 
