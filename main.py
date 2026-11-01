@@ -40,7 +40,7 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živý trh podľa checklistu..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Maximálne 1 obchod naraz[cite: 1]
+MAX_PARALLEL_TRADES = 1  # 🛡️ Maximálne 1 obchod naraz
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
@@ -192,7 +192,7 @@ async def top_gainer_scanner_loop():
   await asyncio.sleep(5)
 
   start_msg = (
-      f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.8 SPUSTENÝ [TF:"
+      f"[{get_sk_time_str()}] ⚡ APEX SCALPER SPUSTENÝ [TF:"
       f" {CURRENT_TIMEFRAME}]"
   )
   print(start_msg, flush=True)
@@ -227,22 +227,23 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(10)
         continue
 
-      CURRENT_STAGE = f"STAV: 🟢 SKENER USDC [TF: {CURRENT_TIMEFRAME} | Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
+      CURRENT_STAGE = f"STAV: 🟢 SKENER TRHU [TF: {CURRENT_TIMEFRAME} | Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
       if tickers_res.get("code") != "0" or not tickers_res.get("data"):
         await asyncio.sleep(4)
         continue
 
-      min_vol = 15000.0
-      min_change = 0.5
-      max_change = 50.0
+      min_vol = 10000.0
+      min_change = 0.1
+      max_change = 100.0
 
       candidates = []
       for item in tickers_res["data"]:
         inst_id = item.get("instId", "").upper()
-        if not inst_id.endswith("-USDC"):
+        # Flexibilnejší výber párov (priorita USDC a USDT)
+        if not inst_id.endswith("-USDC") and not inst_id.endswith("-USDT"):
           continue
-        if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC"]:
+        if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC", "BTC-USDT", "ETH-USDT"]:
           continue
 
         coin_base = inst_id.split("-")[0]
@@ -280,7 +281,7 @@ async def top_gainer_scanner_loop():
           reverse=True,
       )
       if candidates:
-        MARKET_RADAR = candidates[:10]
+        MARKET_RADAR = candidates[:12]
 
       for cand in candidates:
         if not cand["buy_ready"]:
@@ -508,7 +509,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-# --- 🎛️ API ENDPOINTS PRE PREPÍNANIE STRATÉGIE A TIMEFRAME ---
+# --- 🎛️ API ENDPOINTS ---
 @app.get("/api/set-strategy/{mode}")
 async def set_strategy(mode: str):
   global CURRENT_STRATEGY_MODE
@@ -524,7 +525,6 @@ async def set_strategy(mode: str):
 @app.get("/api/set-tf/{tf}")
 async def set_timeframe(tf: str):
   global CURRENT_TIMEFRAME
-  # Podpora pre TF od 3m do 4h (vrátane 5m, 15m, 30m, 1h)
   allowed_tfs = ["3m", "5m", "15m", "30m", "1h", "4h"]
   if tf in allowed_tfs:
     CURRENT_TIMEFRAME = tf
@@ -581,13 +581,13 @@ async def emergency_sell():
     })
 
 
-# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE WITH 3M-4H TIMEFRAME SELECTOR ---
+# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE S FAREBNÝMI BODKAMI V RADARI ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - CyberHUD 3.8 (3m to 4h TF)</title>
+    <title>Apex Scalper Pro - CyberHUD 3.9</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -645,7 +645,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 3.8 (TF: 3m - 4h)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 3.9 (Radar & Checklist)</div>
         </div>
 
         <div class="controls-row">
@@ -702,13 +702,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
-                    ✅ Žiadny aktívny obchod. Skenujem USDC Top Gainers na <strong>{{ current_tf }}</strong> TF...
+                    ✅ Žiadny aktívny obchod. Skenujem trh na <strong>{{ current_tf }}</strong> TF...
                 </div>
             {% endif %}
         </div>
 
         <div class="section-block">
-            <div class="section-title">📊 Živý Radar Trhu & Check-list (TF: {{ current_tf }})</div>
+            <div class="section-title">📊 Živý Radar Trhu & Farebné Bodky (TF: {{ current_tf }})</div>
             {% if radar %}
                 <table>
                     <tr><th>Symbol</th><th>24h Rast</th><th>Objemový Mom.</th><th>Impulz / Fib</th><th>Pripravenosť</th></tr>
@@ -716,14 +716,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <tr>
                         <td><strong>{{ item.instId }}</strong></td>
                         <td>+{{ "%.2f" | format(item.change) }}%</td>
-                        <td><span style="color: {{ '#00ff88' if item.volume_status else '#ff4444' }};">{{ '🟢 Silný' if item.volume_status else '🔴 Slabý' }}</span></td>
-                        <td><span style="color: {{ '#00ff88' if item.impulse_status else '#ff4444' }};">{{ '🟢 OK' if item.impulse_status else '⚪ Čaká' }}</span></td>
+                        <td><span style="color: {{ '#00ff88' if item.volume_status else '#ff4444' }}; font-size: 0.9rem;">{{ '🟢' if item.volume_status else '🔴' }}</span></td>
+                        <td><span style="color: {{ '#00ff88' if item.impulse_status else '#ff4444' }}; font-size: 0.9rem;">{{ '🟢' if item.impulse_status else '⚪' }}</span></td>
                         <td><strong style="color: {{ '#00ff88' if item.buy_ready else '#00f0ff' }};">{{ '🚀 NAKUPOVAT' if item.buy_ready else item.probability|string + '%' }}</strong></td>
                     </tr>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem USDC trh...</div>
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Načítavam trhové dáta do radaru...</div>
             {% endif %}
         </div>
 
@@ -757,7 +757,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </table>
         </div>
 
-        <div class="refresh-info">APEX HUD 3.8 | Režim: {{ current_mode }} | TF: {{ current_tf }} | SK Čas: {{ current_time }}</div>
+        <div class="refresh-info">APEX HUD 3.9 | Režim: {{ current_mode }} | TF: {{ current_tf }} | SK Čas: {{ current_time }}</div>
     </div>
 
     <script>
@@ -863,7 +863,7 @@ async def dashboard():
 async def api_status():
   return {
       "status": "online",
-      "bot_type": "Apex Scalper Pro 3.8 (3m-4h Mode)",
+      "bot_type": "Apex Scalper Pro 3.9 (Radar Mode)",
       "mode": CURRENT_STRATEGY_MODE,
       "timeframe": CURRENT_TIMEFRAME,
       "current_stage": CURRENT_STAGE,
