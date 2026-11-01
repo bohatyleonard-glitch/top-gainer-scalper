@@ -40,12 +40,13 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živý trh podľa checklistu..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz[cite: 1]
+MAX_PARALLEL_TRADES = 1  # 🛡️ Maximálne 1 obchod naraz[cite: 1]
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
-# Režimy zodpovedajúce tvojmu Pine Script indikátoru v5.4.4
+# Režimy & Rozšírené Timeframes (3m až 4h)
 CURRENT_STRATEGY_MODE = "Agresívny Momentum (Breakout)"
+CURRENT_TIMEFRAME = "5m"  # Predvolený TF
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 EXCLUDED_COINS = ["ZAMA"]
 
@@ -113,7 +114,7 @@ def okx_request(method: str, path: str, body: str = ""):
     return {"code": "-1", "msg": str(err)}
 
 
-# --- 📈 5M INDIKÁTOROVÁ LOGIKA PODĽA PINE SCRIPT v5.4.4 ---
+# --- 📈 INDIKÁTOROVÁ LOGIKA S ROZŠÍRENÝM TIMEFRAME ---
 def evaluate_strategy_checklist(inst_id: str) -> dict:
   result = {
       "volume_status": False,
@@ -123,7 +124,7 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
       "probability": 0,
   }
   try:
-    url = f"/api/v5/market/candles?instId={inst_id}&bar=5m&limit=40"
+    url = f"/api/v5/market/candles?instId={inst_id}&bar={CURRENT_TIMEFRAME}&limit=40"
     res = okx_request("GET", url)
     if res.get("code") != "0" or not res.get("data"):
       return result
@@ -185,23 +186,22 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
   return result
 
 
-# --- 🔍 AUTOMATICKÝ TOP GAINER USDC SKENER S REAL-TIME VALIDÁCIOU ---
+# --- 🔍 AUTOMATICKÝ SKENER ---
 async def top_gainer_scanner_loop():
   global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING
   await asyncio.sleep(5)
 
-  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.6 SPUSTENÝ [USDC Top Gainers Checklist]"
-  print(start_msg, flush=True)
-  send_telegram_msg(
-      "🤖 <b>Apex Scalper 3.6 spustený!</b> Skenujem USDC Top Gainers s"
-      " validáciou Demo účtu."
+  start_msg = (
+      f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.8 SPUSTENÝ [TF:"
+      f" {CURRENT_TIMEFRAME}]"
   )
+  print(start_msg, flush=True)
 
   while True:
     try:
       if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
         CURRENT_STAGE = "STAV: 🔴 V OBCHODE / SPRACOVÁVAM PRÍKAZ! Čakám..."
-        await asyncio.sleep(5)
+        await asyncio.sleep(4)
         continue
 
       balance_res = okx_request("GET", "/api/v5/account/balance")
@@ -227,10 +227,10 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(10)
         continue
 
-      CURRENT_STAGE = f"STAV: 🟢 SKENER USDC Top Gainers [Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
+      CURRENT_STAGE = f"STAV: 🟢 SKENER USDC [TF: {CURRENT_TIMEFRAME} | Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
       if tickers_res.get("code") != "0" or not tickers_res.get("data"):
-        await asyncio.sleep(5)
+        await asyncio.sleep(4)
         continue
 
       min_vol = 15000.0
@@ -240,7 +240,6 @@ async def top_gainer_scanner_loop():
       candidates = []
       for item in tickers_res["data"]:
         inst_id = item.get("instId", "").upper()
-        # 🎯 ZAMERANIE VÝHRADNE NA USDC PÁRY PODĽA ZOTATKU NA DEMO ÚČTE
         if not inst_id.endswith("-USDC"):
           continue
         if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC"]:
@@ -291,7 +290,7 @@ async def top_gainer_scanner_loop():
         now_ts = datetime.now().timestamp()
         if (
             coin_name in LAST_TRADE_TIME
-            and now_ts - LAST_TRADE_TIME[coin_name] < 600
+            and now_ts - LAST_TRADE_TIME[coin_name] < 300
         ):
           continue
 
@@ -364,12 +363,12 @@ async def top_gainer_scanner_loop():
 
           IS_ORDER_PROCESSING = False
           CURRENT_STAGE = (
-              f"STAV: 🔴 V OBCHODE [{cand['instId']}] (Režim:"
+              f"STAV: 🔴 V OBCHODE [{cand['instId']}] (TF: {CURRENT_TIMEFRAME} |"
               f" {CURRENT_STRATEGY_MODE})..."
           )
 
           send_telegram_msg(
-              f"🟢 <b>[CHECKLIST NÁKUP - {CURRENT_STRATEGY_MODE}]</b>\n"
+              f"🟢 <b>[NÁKUP - TF {CURRENT_TIMEFRAME}]</b>\n"
               f"<b>Pár:</b> {cand['instId']}\n"
               f"<b>24h Rast:</b> +{cand['change']:.2f}%\n"
               f"<b>Pravdepodobnosť:</b> {cand['probability']}%\n"
@@ -383,7 +382,7 @@ async def top_gainer_scanner_loop():
       IS_ORDER_PROCESSING = False
       print(f"❌ Chyba v skeneri: {scan_err}", flush=True)
 
-    await asyncio.sleep(10)
+    await asyncio.sleep(5)
 
 
 # --- 🛡️ MONITOR OBCHODU & RISK MANAGEMENT ---
@@ -509,7 +508,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-# --- API ENDPOINTS ---
+# --- 🎛️ API ENDPOINTS PRE PREPÍNANIE STRATÉGIE A TIMEFRAME ---
 @app.get("/api/set-strategy/{mode}")
 async def set_strategy(mode: str):
   global CURRENT_STRATEGY_MODE
@@ -520,6 +519,16 @@ async def set_strategy(mode: str):
   )
   CURRENT_STRATEGY_MODE = decoded_mode
   return JSONResponse({"status": "success", "mode": CURRENT_STRATEGY_MODE})
+
+
+@app.get("/api/set-tf/{tf}")
+async def set_timeframe(tf: str):
+  global CURRENT_TIMEFRAME
+  # Podpora pre TF od 3m do 4h (vrátane 5m, 15m, 30m, 1h)
+  allowed_tfs = ["3m", "5m", "15m", "30m", "1h", "4h"]
+  if tf in allowed_tfs:
+    CURRENT_TIMEFRAME = tf
+  return JSONResponse({"status": "success", "timeframe": CURRENT_TIMEFRAME})
 
 
 @app.post("/api/emergency-sell")
@@ -572,13 +581,13 @@ async def emergency_sell():
     })
 
 
-# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE S CHECKLISTOM ---
+# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE WITH 3M-4H TIMEFRAME SELECTOR ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - CyberHUD 3.6 (Checklist & Strategy Mode)</title>
+    <title>Apex Scalper Pro - CyberHUD 3.8 (3m to 4h TF)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -590,7 +599,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             color: #ffffff; min-height: 100vh;
         }
         .container { 
-            max-width: 720px; margin: 0; background: rgba(0, 0, 0, 0.78);
+            max-width: 760px; margin: 0; background: rgba(0, 0, 0, 0.78);
             backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 18px; padding: 22px;
             box-shadow: 0 0 35px rgba(0, 255, 255, 0.25);
@@ -599,13 +608,17 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .brand-title { font-size: 1rem; font-weight: 800; color: #00f0ff; letter-spacing: 2px; text-transform: uppercase; }
         
         .controls-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,255,255,0.08); border: 1px solid rgba(0,255,255,0.2); padding: 10px 14px; border-radius: 10px; margin-bottom: 15px; flex-wrap: wrap; gap: 8px; }
-        .mode-buttons a { text-decoration: none; background: rgba(0,0,0,0.5); border: 1px solid #00f0ff; color: #fff; padding: 6px 12px; font-size: 0.7rem; font-weight: bold; border-radius: 6px; display: inline-block; transition: all 0.2s; }
+        .mode-buttons a { text-decoration: none; background: rgba(0,0,0,0.5); border: 1px solid #00f0ff; color: #fff; padding: 5px 9px; font-size: 0.68rem; font-weight: bold; border-radius: 6px; display: inline-block; transition: all 0.2s; }
         .mode-buttons a.active { background: #00f0ff; color: #000; box-shadow: 0 0 10px #00f0ff; }
         
+        .tf-buttons { display: flex; gap: 4px; flex-wrap: wrap; }
+        .tf-buttons a { text-decoration: none; background: rgba(0,0,0,0.5); border: 1px solid #ff00ff; color: #fff; padding: 5px 8px; font-size: 0.68rem; font-weight: bold; border-radius: 6px; display: inline-block; transition: all 0.2s; }
+        .tf-buttons a.active { background: #ff00ff; color: #000; box-shadow: 0 0 10px #ff00ff; }
+
         .kill-switch-btn {
             background: linear-gradient(135deg, #ff0055, #990033);
-            color: #fff; border: 1px solid #ff0055; padding: 6px 12px;
-            border-radius: 6px; font-weight: 800; font-size: 0.7rem;
+            color: #fff; border: 1px solid #ff0055; padding: 5px 10px;
+            border-radius: 6px; font-weight: 800; font-size: 0.68rem;
             cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
             box-shadow: 0 0 10px rgba(255, 0, 85, 0.4);
         }
@@ -632,16 +645,23 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 3.6 (USDC Top Gainers)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 3.8 (TF: 3m - 4h)</div>
         </div>
 
         <div class="controls-row">
             <div class="mode-buttons">
-                <span style="font-size: 0.7rem; color: #00f0ff; font-weight: bold; margin-right: 4px;">STRATÉGIA:</span>
                 <a href="/api/set-strategy/Breakout" class="{{ 'active' if 'Breakout' in current_mode else '' }}">⚡ Breakout</a>
-                <a href="/api/set-strategy/Fibonacci" class="{{ 'active' if 'Fibonacci' in current_mode else '' }}">🎯 Fib 0.786</a>
+                <a href="/api/set-strategy/Fibonacci" class="{{ 'active' if 'Fibonacci' in current_mode else '' }}">🎯 Fib</a>
             </div>
-            <button class="kill-switch-btn" onclick="triggerKillSwitch()">🚨 KILL SWITCH</button>
+            <div class="tf-buttons">
+                <a href="/api/set-tf/3m" class="{{ 'active' if current_tf == '3m' else '' }}">3m</a>
+                <a href="/api/set-tf/5m" class="{{ 'active' if current_tf == '5m' else '' }}">5m</a>
+                <a href="/api/set-tf/15m" class="{{ 'active' if current_tf == '15m' else '' }}">15m</a>
+                <a href="/api/set-tf/30m" class="{{ 'active' if current_tf == '30m' else '' }}">30m</a>
+                <a href="/api/set-tf/1h" class="{{ 'active' if current_tf == '1h' else '' }}">1h</a>
+                <a href="/api/set-tf/4h" class="{{ 'active' if current_tf == '4h' else '' }}">4h</a>
+            </div>
+            <button class="kill-switch-btn" onclick="triggerKillSwitch()">🚨 KILL</button>
         </div>
 
         <div class="stats-grid">
@@ -650,7 +670,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <div class="stat-value">{{ total_trades }}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Úspešność (Win Rate)</div>
+                <div class="stat-label">Úspešnosť (Win Rate)</div>
                 <div class="stat-value" style="color: #00ff88;">{{ win_rate }}%</div>
             </div>
             <div class="stat-card">
@@ -682,13 +702,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
-                    ✅ Žiadny aktívny obchod. Skenujem USDC Top Gainers podľa checklistu...
+                    ✅ Žiadny aktívny obchod. Skenujem USDC Top Gainers na <strong>{{ current_tf }}</strong> TF...
                 </div>
             {% endif %}
         </div>
 
         <div class="section-block">
-            <div class="section-title">📊 Živý Radar Trhu & Check-list (5m TF)</div>
+            <div class="section-title">📊 Živý Radar Trhu & Check-list (TF: {{ current_tf }})</div>
             {% if radar %}
                 <table>
                     <tr><th>Symbol</th><th>24h Rast</th><th>Objemový Mom.</th><th>Impulz / Fib</th><th>Pripravenosť</th></tr>
@@ -737,7 +757,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </table>
         </div>
 
-        <div class="refresh-info">APEX HUD 3.6 | Režim: {{ current_mode }} | SK Čas: {{ current_time }}</div>
+        <div class="refresh-info">APEX HUD 3.8 | Režim: {{ current_mode }} | TF: {{ current_tf }} | SK Čas: {{ current_time }}</div>
     </div>
 
     <script>
@@ -832,6 +852,7 @@ async def dashboard():
       win_rate=win_rate,
       total_pnl_usdc=total_pnl_usdc,
       current_mode=CURRENT_STRATEGY_MODE,
+      current_tf=CURRENT_TIMEFRAME,
       current_stage=CURRENT_STAGE,
       price_history=PRICE_HISTORY,
       current_time=get_sk_time_str(),
@@ -842,8 +863,9 @@ async def dashboard():
 async def api_status():
   return {
       "status": "online",
-      "bot_type": "Apex Scalper Pro 3.6 (USDC Checklist Mode)",
+      "bot_type": "Apex Scalper Pro 3.8 (3m-4h Mode)",
       "mode": CURRENT_STRATEGY_MODE,
+      "timeframe": CURRENT_TIMEFRAME,
       "current_stage": CURRENT_STAGE,
       "active_trades": ACTIVE_TRADES,
       "market_radar": MARKET_RADAR,
