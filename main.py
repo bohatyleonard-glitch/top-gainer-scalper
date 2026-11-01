@@ -35,7 +35,11 @@ def send_telegram_msg(message: str):
         print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
 ACTIVE_TRADES = {}
-MARKET_RADAR = []  
+# Predvolené testovacie dáta v radaru, aby tabuľka hneď niečo ukazovala pokiaľ skener hľadá
+MARKET_RADAR = [
+    {"instId": "SOL-USDC", "price": 184.20, "change": 4.50, "volume": 88000, "probability": 88},
+    {"instId": "XRP-USDC", "price": 0.6210, "change": 3.20, "volume": 65000, "probability": 74}
+]  
 DAILY_PNL_CALENDAR = {} 
 LAST_TRADE_TIME = {}  
 MAX_PARALLEL_TRADES = 1  
@@ -127,7 +131,8 @@ async def top_gainer_scanner_loop():
                     continue
 
             candidates.sort(key=lambda x: x['change'], reverse=True)
-            MARKET_RADAR = candidates[:10]
+            if candidates:
+                MARKET_RADAR = candidates[:10]
 
             if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
                 await asyncio.sleep(10)
@@ -325,7 +330,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ VÁŠ VLASTNÝ NEÓNOVÝ WALLPAPER + ČIERNE PÍSMO NA ĽAVEJ STRANE ---
+# --- 🖼️ HTML ŠABLÓNA ---
 DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -335,4 +340,87 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
     <style>
         * { box-sizing: border-box; }
         body { 
-            font-family:
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            margin: 0; 
+            padding: 25px;
+            background: url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=1920&auto=format&fit=crop') no-repeat center center fixed;
+            background-size: cover;
+            color: #000000;
+            min-height: 100vh;
+        }
+        .container { 
+            max-width: 580px; 
+            margin: 0; 
+            background: transparent; 
+            padding: 0;
+            box-shadow: none;
+        }
+        .brand-title {
+            font-size: 0.8rem;
+            font-weight: 800;
+            color: #000000;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            margin-bottom: 20px;
+        }
+        .section-block {
+            margin-bottom: 22px;
+        }
+        .section-title {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: #000000;
+            margin-bottom: 6px;
+        }
+        table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+        th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid rgba(0,0,0,0.25); font-size: 0.78rem; color: #000000; }
+        th { font-weight: 700; color: #111111; text-transform: uppercase; font-size: 0.68rem; }
+        .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(85px, 1fr)); gap: 6px; margin-top: 4px; }
+        .calendar-day { 
+            background: rgba(255, 255, 255, 0.25); 
+            border: 1px solid rgba(0,0,0,0.3); 
+            border-radius: 4px; 
+            padding: 5px; 
+            text-align: center; 
+            font-size: 0.72rem;
+            color: #000000;
+        }
+        .refresh-info { color: #111111; font-size: 0.68rem; margin-top: 20px; font-weight: 600; }
+    </style>
+    <meta http-equiv="refresh" content="10">
+</head>
+<body>
+    <div class="container">
+        <div class="brand-title">Apex Scalper Pro</div>
+
+        <div class="section-block">
+            <div class="section-title">💰 Zoznam zostatkov (OKX Demo)</div>
+            <table>
+                <tr><th>Mena</th><th>Dostupné</th></tr>
+                {% for coin, data in balances.items() %}
+                <tr>
+                    <td><strong>{{ coin }}</strong></td>
+                    <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">⚡ Živý Radar Trhu (Top Gainers 2% - 25% | Objem >50k)</div>
+            {% if radar %}
+                <table>
+                    <tr><th>Symbol</th><th>Cena</th><th>Rast</th><th>Objem</th><th>Šanca</th></tr>
+                    {% for item in radar %}
+                    <tr>
+                        <td><strong>{{ item.instId }}</strong></td>
+                        <td>{{ "%.4f" | format(item.price) }}</td>
+                        <td>+{{ "%.2f" | format(item.change) }}%</td>
+                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
+                        <td><strong>{{ item.probability }}%</strong></td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style
+                
