@@ -84,7 +84,7 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 SKENER: NAKUPUJE IBA JEDENKRÁT ---
+# --- 🔍 SKENER ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, MARKET_RADAR, CURRENT_STAGE
     await asyncio.sleep(5)
@@ -321,7 +321,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ CYBERPUNK HUD S VLASTNOU TAPETOU V ĽAVEJ ČASTI ---
+# --- 🖼️ CYBERPUNK HUD S VLOŽENOU FOTKOU V ĽAVEJ ČASTI ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -334,7 +334,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
             margin: 0; 
             padding: 25px;
-            background: linear-gradient(rgba(0,0,0,0.3), rgba(0,0,0,0.3)), url('/static/wallpaper.jpg');
+            background: linear-gradient(rgba(0,0,0,0.35), rgba(0,0,0,0.35)), url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=1920&auto=format&fit=crop');
             background-size: cover;
             background-position: center center;
             background-repeat: no-repeat;
@@ -469,10 +469,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 </body>
 </html>"""
 
-from fastapi.staticfiles import StaticFiles
-import os as std_os
-std_os.makedirs("static", exist_ok=True)
-
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     account_balances = {"USDC": {"available_balance": 0.0}}
@@ -513,9 +509,6 @@ async def api_status():
         "calendar": DAILY_PNL_CALENDAR,
         "sk_time": get_sk_time_str()
     }
-
-# Ošetrenie statických súborov pre tapetu
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
