@@ -38,7 +38,7 @@ def send_telegram_msg(message: str):
 # Globálny stav bota pre Dashboard a logiku
 bot_state = {
     "status": "online",
-    "bot_type": "Apex Scalper Pro (Smart Limit Orders)",
+    "bot_type": "Apex Scalper Pro (Smart Limit Fixed)",
     "last_scan": "Zatiaľ neskenované",
     "account_balances": {},
     "active_trades": {},
@@ -267,7 +267,6 @@ async def top_gainer_scanner_loop():
                 safe_budget = min(free_capital * 0.95, 500.0)
                 current_price = best_target['price']
                 
-                # 💡 SMART LIMIT: Nastavíme nákupnú cenu o 0.15% vyššie ako aktuálna cena, aby sa príkaz okamžite chytil bez nevýhodného sklzu (slippage)
                 limit_buy_price = current_price * 1.0015
                 coin_amount = safe_budget / limit_buy_price
 
@@ -275,7 +274,6 @@ async def top_gainer_scanner_loop():
                 if formatted_sz <= 0:
                     formatted_sz = round(coin_amount, 4)
 
-                # Odoslanie LIMITNÉHO príkazu namiesto Market
                 order_body = json.dumps({
                     "instId": best_target['instId'],
                     "tdMode": "cash",
@@ -452,4 +450,5 @@ def api_status():
     }
 
 if __name__ == "__main__":
-    port
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
