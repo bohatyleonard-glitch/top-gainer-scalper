@@ -329,7 +329,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ VYTVORENIE INDEX.HTML PRI ŠTARTE (BEZ RIZIKA SYNTAX CHÝB) ---
+# --- 🖼️ HTML ŠABLÓNA S BIELYM PÍSMOM ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -344,7 +344,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             padding: 25px;
             background: url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=1920&auto=format&fit=crop') no-repeat center center fixed;
             background-size: cover;
-            color: #000000;
+            color: #ffffff; /* Všetky texty predvolene biele */
             min-height: 100vh;
         }
         .container { 
@@ -357,7 +357,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .brand-title {
             font-size: 0.8rem;
             font-weight: 800;
-            color: #000000;
+            color: #ffffff;
             letter-spacing: 1.5px;
             text-transform: uppercase;
             margin-bottom: 20px;
@@ -368,23 +368,23 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .section-title {
             font-size: 0.85rem;
             font-weight: 700;
-            color: #000000;
+            color: #ffffff;
             margin-bottom: 6px;
         }
         table { width: 100%; border-collapse: collapse; margin-top: 4px; }
-        th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid rgba(0,0,0,0.25); font-size: 0.78rem; color: #000000; }
-        th { font-weight: 700; color: #111111; text-transform: uppercase; font-size: 0.68rem; }
+        th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.25); font-size: 0.78rem; color: #ffffff; }
+        th { font-weight: 700; color: #ffffff; text-transform: uppercase; font-size: 0.68rem; }
         .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(85px, 1fr)); gap: 6px; margin-top: 4px; }
         .calendar-day { 
-            background: rgba(255, 255, 255, 0.25); 
-            border: 1px solid rgba(0,0,0,0.3); 
+            background: rgba(0, 0, 0, 0.45); 
+            border: 1px solid rgba(255,255,255,0.3); 
             border-radius: 4px; 
             padding: 5px; 
             text-align: center; 
             font-size: 0.72rem;
-            color: #000000;
+            color: #ffffff;
         }
-        .refresh-info { color: #111111; font-size: 0.68rem; margin-top: 20px; font-weight: 600; }
+        .refresh-info { color: #dddddd; font-size: 0.68rem; margin-top: 20px; font-weight: 600; }
     </style>
     <meta http-equiv="refresh" content="10">
 </head>
@@ -421,7 +421,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.78rem; color: #111111;">Skenujem trh, čakám na mince spĺňajúce kritériá...</div>
+                <div style="font-size: 0.78rem; color: #dddddd;">Skenujem trh, čakám na mince spĺňajúce kritériá...</div>
             {% endif %}
         </div>
 
@@ -438,7 +438,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% endfor %}
                 </div>
             {% else %}
-                <div style="font-size: 0.78rem; color: #111111;">Zatiaľ žiadne uzavreté obchody.</div>
+                <div style="font-size: 0.78rem; color: #dddddd;">Zatiaľ žiadne uzavreté obchody.</div>
             {% endif %}
         </div>
 
@@ -456,7 +456,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.78rem; color: #111111;">Žiadny aktívny obchod. Čakám na signál...</div>
+                <div style="font-size: 0.78rem; color: #dddddd;">Žiadny aktívny obchod. Čakám na signál...</div>
             {% endif %}
         </div>
 
