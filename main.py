@@ -5,7 +5,7 @@ import json
 import asyncio
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 import requests
@@ -35,15 +35,19 @@ def send_telegram_msg(message: str):
     except Exception as err:
         print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
-# --- STAV BOT-A ---
+# --- STAV BOT-A & PROFILY ---
 ACTIVE_TRADES = {}       
 MARKET_RADAR = []        
 DAILY_PNL_CALENDAR = {}  
-PRICE_HISTORY = []       # Pre živý graf v dashboarde
-CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem trh pre stabilný scalp..."
+CLOSED_TRADES_HISTORY = [] # História pre štatistiky a Win Rate
+PRICE_HISTORY = []       
+CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem trh..."
 LAST_TRADE_TIME = {}  
 MAX_PARALLEL_TRADES = 1  
 trade_lock = asyncio.Lock()  
+
+# Aktívny režim skenera (Agresívny / Konzervatívny)
+CURRENT_MODE = "AGGRESSIVE" # Možnosti: AGGRESSIVE, CONSERVATIVE
 
 def get_sk_time_str() -> str:
     sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -53,12 +57,26 @@ def get_sk_date_str() -> str:
     sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
     return sk_time.strftime("%Y-%m-%d")
 
-def record_daily_pnl(pnl_amount: float):
+def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
+    global CLOSED_TRADES_HISTORY
     day_str = get_sk_date_str()
+    
+    # Zápis do denného kalendára
     if day_str not in DAILY_PNL_CALENDAR:
         DAILY_PNL_CALENDAR[day_str] = {"pnl": 0.0, "trades": 0}
-    DAILY_PNL_CALENDAR[day_str]["pnl"] += pnl_amount
+    DAILY_PNL_CALENDAR[day_str]["pnl"] += pnl_usdc
     DAILY_PNL_CALENDAR[day_str]["trades"] += 1
+
+    # Pridanie do histórie pre štatistiky
+    CLOSED_TRADES_HISTORY.insert(0, {
+        "pair": pair,
+        "pnl_pct": pnl_pct,
+        "pnl_usdc": pnl_usdc,
+        "reason": reason,
+        "time": get_sk_time_str()
+    })
+    if len(CLOSED_TRADES_HISTORY) > 20:
+        CLOSED_TRADES_HISTORY.pop()
 
 # --- OKX EEA DEMO PROSTREDIE & AUTENTIFIKÁCIA ---
 def okx_request(method: str, path: str, body: str = ''):
@@ -86,12 +104,12 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 SKENER ---
+# --- 🔍 SKENER S PODPOROU PREPÍNANIA REŽIMOV ---
 async def top_gainer_scanner_loop():
-    global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY
+    global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE
     await asyncio.sleep(5)
     
-    start_msg = f"[{get_sk_time_str()}] ⚡ PRO SCALPER SPUSTENÝ (HUD 2.0 s Grafom & Kill Switch)"
+    start_msg = f"[{get_sk_time_str()}] ⚡ PRO SCALPER SPUSTENÝ (Režim: {CURRENT_MODE})"
     print(start_msg, flush=True)
     send_telegram_msg(start_msg)
 
@@ -102,11 +120,21 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(5)
                 continue
 
-            CURRENT_STAGE = "STAV: 🟢 MIMO OBCHODU. Skenujem trh..."
+            CURRENT_STAGE = f"STAV: 🟢 MIMO OBCHODU [{CURRENT_MODE}]. Skenujem trh..."
             tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
             if tickers_res.get('code') != '0' or not tickers_res.get('data'):
                 await asyncio.sleep(5)
                 continue
+
+            # Dynamické nastavenie filtrov podľa zvoleného režimu
+            if CURRENT_MODE == "CONSERVATIVE":
+                min_vol = 50000.0  # Vyšší objem pre väčšiu stabilitu
+                min_change = 2.0   # Prísnejší rast od 2%
+                max_change = 15.0  # Nižší strop
+            else: # AGGRESSIVE
+                min_vol = 10000.0  # Nižší objem pre častejšie obchody
+                min_change = 1.0   # Širší rast od 1%
+                max_change = 30.0  # Vyšší strop
 
             candidates = []
             for item in tickers_res['data']:
@@ -121,10 +149,10 @@ async def top_gainer_scanner_loop():
                     last_p = float(item.get('last', 0))
                     vol24h = float(item.get('volCcy24h', 0) or item.get('vol24h', 0) or 0)
 
-                    if open24h > 0 and last_p > 0 and vol24h > 10000:
+                    if open24h > 0 and last_p > 0 and vol24h >= min_vol:
                         change_pct = ((last_p - open24h) / open24h) * 100
-                        if 1.0 <= change_pct <= 30.0:
-                            probability = int(min(max((change_pct / 30.0) * 100, 50), 99))
+                        if min_change <= change_pct <= max_change:
+                            probability = int(min(max((change_pct / max_change) * 100, 50), 99))
                             candidates.append({
                                 "instId": inst_id,
                                 "price": last_p,
@@ -220,7 +248,7 @@ async def top_gainer_scanner_loop():
                 CURRENT_STAGE = f"STAV: 🔴 V OBCHODE ({best_target['instId']}) - Sledujem vlnu..."
 
                 send_telegram_msg(
-                    f"🟢 <b>[⚡ ČISTÝ SPOT NÁKUP]</b>\n"
+                    f"🟢 <b>[⚡ SPOT NÁKUP ({CURRENT_MODE})]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
                     f"<b>Vstupná cena:</b> {current_price:.4f} USDC\n"
                     f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
@@ -260,7 +288,7 @@ async def advanced_risk_monitor_loop():
                         })
                         okx_request('POST', '/api/v5/trade/order', order_body)
                         pnl_usdc = trade.get("live_pnl_usdc", 0.0)
-                        record_daily_pnl(pnl_usdc)
+                        record_closed_trade(symbol, trade['live_pnl_pct'], pnl_usdc, "Časový limit 15m")
 
                         send_telegram_msg(
                             f"⏱️ <b>[ČASOVÝ LIMIT 15m - UZATVORENÉ]</b>\n"
@@ -323,7 +351,7 @@ async def advanced_risk_monitor_loop():
                                     "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                                 })
                                 okx_request('POST', '/api/v5/trade/order', order_body)
-                                record_daily_pnl(pnl_usdc)
+                                record_closed_trade(symbol, pnl_pct, pnl_usdc, "Trailing TP")
 
                                 send_telegram_msg(
                                     f"🎯 <b>[TRAILING TAKE PROFIT 🎉]</b>\n"
@@ -344,7 +372,7 @@ async def advanced_risk_monitor_loop():
                                 "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                             })
                             okx_request('POST', '/api/v5/trade/order', order_body)
-                            record_daily_pnl(pnl_usdc)
+                            record_closed_trade(symbol, pnl_pct, pnl_usdc, "Stop-Loss / Break-Even")
 
                             sl_type_msg = "Zabezpečený výstup (Break-Even/Trailing)" if pnl_pct >= 0 else "Stop-Loss"
                             send_telegram_msg(
@@ -375,7 +403,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🚨 API ENDPOINT FOR EMERGENCY SELL (KILL SWITCH) ---
+# --- API PRE PREPÍNANIE REŽIMOV A EMERGENCY SELL ---
+@app.post("/api/set-mode")
+async def set_mode(mode: str = Form(...)):
+    global CURRENT_MODE
+    if mode in ["AGGRESSIVE", "CONSERVATIVE"]:
+        CURRENT_MODE = mode
+        return JSONResponse({"status": "success", "mode": CURRENT_MODE})
+    return JSONResponse({"status": "error", "message": "Neplatný režim."})
+
 @app.post("/api/emergency-sell")
 async def emergency_sell():
     global ACTIVE_TRADES, CURRENT_STAGE
@@ -391,9 +427,9 @@ async def emergency_sell():
                 order_body = json.dumps({
                     "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                 })
-                res = okx_request('POST', '/api/v5/trade/order', order_body)
+                okx_request('POST', '/api/v5/trade/order', order_body)
                 pnl_usdc = trade.get("live_pnl_usdc", 0.0)
-                record_daily_pnl(pnl_usdc)
+                record_closed_trade(symbol, trade.get('live_pnl_pct', 0.0), pnl_usdc, "Manuálny Kill Switch")
 
                 send_telegram_msg(
                     f"🚨 <b>[NÚDZOVÝ MANUÁLNY PREDAJ / KILL SWITCH]</b>\n"
@@ -409,13 +445,13 @@ async def emergency_sell():
         CURRENT_STAGE = "STAV: 🟢 Mimo obchodu (Ručný výstup). Skenujem..."
         return JSONResponse({"status": "success", "sold": sold_summary})
 
-# --- 🖼️ CYBERPUNK HUD S GRAFOM, SOUND ALERTS A KILL SWITCH ---
+# --- 🖼️ CYBERPUNK HUD 3.0 S KOMPLETNÝMI ŠTATISTIKÁMI A PREPÍNAČOM ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - CyberHUD 2.0</title>
+    <title>Apex Scalper Pro - CyberHUD 3.0</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -427,31 +463,43 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             color: #ffffff; min-height: 100vh;
         }
         .container { 
-            max-width: 650px; margin: 0; background: rgba(0, 0, 0, 0.70);
+            max-width: 680px; margin: 0; background: rgba(0, 0, 0, 0.75);
             backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 18px; padding: 22px;
             box-shadow: 0 0 35px rgba(0, 255, 255, 0.25);
         }
         .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
         .brand-title { font-size: 1rem; font-weight: 800; color: #00f0ff; letter-spacing: 2px; text-transform: uppercase; }
+        
+        /* Prepínač režimov a Kill Switch */
+        .controls-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,255,255,0.08); border: 1px solid rgba(0,255,255,0.2); padding: 10px 14px; border-radius: 10px; margin-bottom: 15px; }
+        .mode-buttons button { background: rgba(0,0,0,0.5); border: 1px solid #00f0ff; color: #fff; padding: 6px 12px; font-size: 0.75rem; font-weight: bold; cursor: pointer; border-radius: 6px; transition: all 0.2s; }
+        .mode-buttons button.active { background: #00f0ff; color: #000; box-shadow: 0 0 10px #00f0ff; }
+        
         .kill-switch-btn {
             background: linear-gradient(135deg, #ff0055, #990033);
-            color: #fff; border: 1px solid #ff0055; padding: 8px 14px;
-            border-radius: 8px; font-weight: 800; font-size: 0.75rem;
+            color: #fff; border: 1px solid #ff0055; padding: 6px 12px;
+            border-radius: 6px; font-weight: 800; font-size: 0.75rem;
             cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
-            box-shadow: 0 0 12px rgba(255, 0, 85, 0.4);
-            transition: all 0.2s ease;
+            box-shadow: 0 0 10px rgba(255, 0, 85, 0.4);
         }
-        .kill-switch-btn:hover { background: #ff0055; box-shadow: 0 0 20px rgba(255, 0, 85, 0.8); }
-        .status-banner { background: rgba(0, 240, 255, 0.15); border: 2px solid #00f0ff; border-radius: 10px; padding: 14px; font-size: 0.88rem; font-weight: 700; color: #ffffff; margin-bottom: 22px; }
-        .section-block { margin-bottom: 24px; }
+        .kill-switch-btn:hover { background: #ff0055; }
+
+        /* Štatistiky Panel (Win Rate & Zisk) */
+        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
+        .stat-card { background: rgba(0,0,0,0.6); border: 1px solid rgba(0,255,255,0.25); border-radius: 10px; padding: 10px; text-align: center; }
+        .stat-label { font-size: 0.7rem; color: #00f0ff; text-transform: uppercase; font-weight: bold; }
+        .stat-value { font-size: 1.1rem; font-weight: bold; margin-top: 4px; }
+
+        .status-banner { background: rgba(0, 240, 255, 0.15); border: 2px solid #00f0ff; border-radius: 10px; padding: 12px; font-size: 0.85rem; font-weight: 700; color: #ffffff; margin-bottom: 20px; }
+        .section-block { margin-bottom: 22px; }
         .section-title { font-size: 0.85rem; font-weight: 700; color: #00f0ff; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
         table { width: 100%; border-collapse: collapse; margin-top: 4px; }
         th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(0, 255, 255, 0.20); font-size: 0.8rem; color: #ffffff; }
         th { font-weight: 700; color: #00f0ff; text-transform: uppercase; font-size: 0.72rem; }
         .pnl-green { color: #00ff88; font-weight: bold; }
         .pnl-red { color: #ff4444; font-weight: bold; }
-        .chart-container { background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(0, 255, 255, 0.2); border-radius: 10px; padding: 10px; margin-top: 10px; height: 160px; }
+        .chart-container { background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(0, 255, 255, 0.2); border-radius: 10px; padding: 10px; margin-top: 10px; height: 150px; }
         .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(95px, 1fr)); gap: 8px; margin-top: 4px; }
         .calendar-day { background: rgba(0, 0, 0, 0.70); border: 1px solid rgba(0, 255, 255, 0.30); border-radius: 8px; padding: 8px; text-align: center; font-size: 0.75rem; }
         .refresh-info { color: rgba(255, 255, 255, 0.6); font-size: 0.7rem; margin-top: 20px; font-weight: 600; text-align: left; }
@@ -461,8 +509,33 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper Pro HUD 2.0</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 3.0</div>
+        </div>
+
+        <!-- 🎛️ OVLÁDACÍ PANEL: REŽIM + KILL SWITCH -->
+        <div class="controls-row">
+            <div class="mode-buttons">
+                <span style="font-size: 0.75rem; color: #00f0ff; font-weight: bold; margin-right: 6px;">REŽIM:</span>
+                <button class="{{ 'active' if current_mode == 'AGGRESSIVE' else '' }}" onclick="setMode('AGGRESSIVE')">Agresívny</button>
+                <button class="{{ 'active' if current_mode == 'CONSERVATIVE' else '' }}" onclick="setMode('CONSERVATIVE')">Konzervatívny</button>
+            </div>
             <button class="kill-switch-btn" onclick="triggerKillSwitch()">🚨 KILL SWITCH</button>
+        </div>
+
+        <!-- 📊 CELKOVÉ ŠTATISTIKY (WIN RATE & ZISK) -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Celkovo Obchodov</div>
+                <div class="stat-value">{{ total_trades }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Úspešnosť (Win Rate)</div>
+                <div class="stat-value" style="color: #00ff88;">{{ win_rate }}%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Kumulatívny Zisk</div>
+                <div class="stat-value {{ 'pnl-green' if total_pnl_usdc >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(total_pnl_usdc) }} $</div>
+            </div>
         </div>
         
         <div class="status-banner">{{ current_stage }}</div>
@@ -483,8 +556,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </tr>
                     {% endfor %}
                 </table>
-
-                <!-- 📈 MINI GRAF PRIAMO V HUD -->
                 <div class="chart-container">
                     <canvas id="livePriceChart"></canvas>
                 </div>
@@ -492,6 +563,26 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
                     ✅ Žiadny aktívny obchod. Bot vyčkáva na príležitosť.
                 </div>
+            {% endif %}
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">📜 História Posledných Obchodov</div>
+            {% if history %}
+                <table>
+                    <tr><th>Čas</th><th>Pár</th><th>Dôvod</th><th>Výsledok (%)</th><th>Výsledok ($)</th></tr>
+                    {% for h in history %}
+                    <tr>
+                        <td>{{ h.time }}</td>
+                        <td><strong>{{ h.pair }}</strong></td>
+                        <td>{{ h.reason }}</td>
+                        <td class="{{ 'pnl-green' if h.pnl_pct >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(h.pnl_pct) }}%</td>
+                        <td class="{{ 'pnl-green' if h.pnl_usdc >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(h.pnl_usdc) }} $</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Zatiaľ žiadne uzavreté obchody v tejto relácii.</div>
             {% endif %}
         </div>
 
@@ -542,30 +633,21 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% endif %}
         </div>
 
-        <div class="refresh-info">APEX HUD 2.0 | Obnovenie 2s | SK Čas: {{ current_time }}</div>
+        <div class="refresh-info">APEX HUD 3.0 | Obnovenie 2s | SK Čas: {{ current_time }}</div>
     </div>
 
     <script>
-        // 🔊 WEB AUDIO SYNTH ZVUKOVÉ UPOZORNENIA
-        function playAlertSound(freq = 880, type = 'sine') {
-            try {
-                const ctx = new (window.AudioContext || window.webkitAudioContext)();
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.type = type;
-                osc.frequency.value = freq;
-                gain.gain.setValueAtTime(0.1, ctx.currentTime);
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                osc.start();
-                osc.stop(ctx.currentTime + 0.25);
-            } catch(e){}
+        // 🎛️ PREPÍNANIE REŽIMU JEDNÝM KLIKNUTÍM
+        async function setMode(mode) {
+            const formData = new URLSearchParams();
+            formData.append('mode', mode);
+            await fetch('/api/set-mode', { method: 'POST', body: formData });
+            window.location.reload();
         }
 
-        // 🚨 NÚDZOVÉ TLAČIDLO (KILL SWITCH)
+        // 🚨 NÚDZOVÉ TLAČIDLO
         async function triggerKillSwitch() {
             if (confirm("⚠️ Naozaj chceš okamžite predajom zatvoriť aktívnu pozíciu?")) {
-                playAlertSound(440, 'sawtooth');
                 const res = await fetch('/api/emergency-sell', { method: 'POST' });
                 const data = await res.json();
                 alert(data.message || "Pozícia zatvorená!");
@@ -573,7 +655,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             }
         }
 
-        // 📈 RENDER MINI-GRAFU PRE AKTÍVNY OBCHOD
+        // 📈 MINI GRAF
         const rawHistory = {{ price_history | tojson }};
         if (rawHistory && rawHistory.length > 0 && document.getElementById('livePriceChart')) {
             const ctxChart = document.getElementById('livePriceChart').getContext('2d');
@@ -582,7 +664,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 data: {
                     labels: rawHistory.map((_, i) => i + 1),
                     datasets: [{
-                        label: 'Cena v čase (USDC)',
+                        label: 'Cena (USDC)',
                         data: rawHistory,
                         borderColor: '#00f0ff',
                         backgroundColor: 'rgba(0, 240, 255, 0.1)',
@@ -628,12 +710,23 @@ async def dashboard():
     except Exception:
         pass
 
+    # Výpočet štatistík a Win Rate
+    total_trades = len(CLOSED_TRADES_HISTORY)
+    winning_trades = sum(1 for t in CLOSED_TRADES_HISTORY if t["pnl_pct"] > 0)
+    win_rate = round((winning_trades / total_trades * 100) if total_trades > 0 else 0.0, 1)
+    total_pnl_usdc = sum(t["pnl_usdc"] for t in CLOSED_TRADES_HISTORY)
+
     template = Template(HTML_TEMPLATE_CONTENT)
     return template.render(
         balances=account_balances,
         trades=ACTIVE_TRADES,
         radar=MARKET_RADAR,
         calendar=DAILY_PNL_CALENDAR,
+        history=CLOSED_TRADES_HISTORY,
+        total_trades=total_trades,
+        win_rate=win_rate,
+        total_pnl_usdc=total_pnl_usdc,
+        current_mode=CURRENT_MODE,
         current_stage=CURRENT_STAGE,
         price_history=PRICE_HISTORY,
         current_time=get_sk_time_str()
@@ -643,12 +736,12 @@ async def dashboard():
 async def api_status():
     return {
         "status": "online",
-        "bot_type": "Apex Flexible Scalper 2.0",
+        "bot_type": "Apex Flexible Scalper 3.0",
+        "mode": CURRENT_MODE,
         "current_stage": CURRENT_STAGE,
         "active_trades": ACTIVE_TRADES,
         "market_radar": MARKET_RADAR,
-        "calendar": DAILY_PNL_CALENDAR,
-        "price_history": PRICE_HISTORY,
+        "history": CLOSED_TRADES_HISTORY,
         "sk_time": get_sk_time_str()
     }
 
