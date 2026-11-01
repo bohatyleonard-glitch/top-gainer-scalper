@@ -357,7 +357,6 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
             position: relative;
         }
 
-        /* Živé animované pozadie (Cyberpunk Grid & Light Rays) */
         #canvas-bg {
             position: fixed;
             top: 0;
@@ -431,31 +430,3 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
         }
 
         .card:hover { border-color: var(--neon-blue); }
-
-        h2 { 
-            margin-top: 0; 
-            color: var(--neon-blue); 
-            font-size: 1.1rem; 
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1); 
-            padding-bottom: 12px; 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center;
-            letter-spacing: 0.5px;
-        }
-
-        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-        th, td { text-align: left; padding: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); font-size: 0.9rem; }
-        th { color: var(--text-dim); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 1px; }
-
-        .tag-green { color: var(--neon-green); font-weight: bold; text-shadow: 0 0 8px rgba(0, 255, 102, 0.4); }
-        
-        .badge-prob { 
-            background: rgba(255, 0, 127, 0.15); 
-            color: var(--neon-pink); 
-            padding: 4px 10px; 
-            border-radius: 8px; 
-            font-weight: 700; 
-            font-size: 0.8rem; 
-            border: 1px solid rgba(255, 0, 127, 0.4);
-            box-shadow: 0 0 10px rgba(255, 0,
