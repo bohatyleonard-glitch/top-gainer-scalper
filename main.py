@@ -30,7 +30,8 @@ def send_telegram_msg(message: str):
             "text": message,
             "parse_mode": "HTML"
         }
-        requests.post(url, json=payload, timeout=5)
+        res = requests.post(url, json=payload, timeout=5)
+        print(f"📱 Telegram odpoveď: {res.status_code}", flush=True)
     except Exception as err:
         print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
@@ -88,9 +89,11 @@ def okx_request(method: str, path: str, body: str = ''):
 # --- 🔍 AUTONÓMNY SKENER TOP GAINEROV ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR
-    await asyncio.sleep(10)
-    print(f"[{get_sk_time_str()}] 🚀 Autonómny Top Gainer Skener úspešne spustený...", flush=True)
-    send_telegram_msg("🤖 <b>Top Gainer Scalping Bot spustený!</b> Skenujem trh a hľadám príležitosti.")
+    await asyncio.sleep(5)
+    
+    # Okamžitý testovací vzruch pri štarte skenera
+    print(f"[{get_sk_time_str()}] 🚀 Testovací vzruch: Autonómny Top Gainer Skener spustený!", flush=True)
+    send_telegram_msg("🚀 <b>[TESTOVACÍ VZRUCH] Apex Scalper Pro úspešne naštartoval!</b> OKX Demo pripojenie aktívne, skenujem trh.")
 
     while True:
         try:
@@ -329,7 +332,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ HTML ŠABLÓNA S BIELYM PÍSMOM ---
+# --- 🖼️ HTML ŠABLÓNA S BIELYM PÍSMOM A NEÓNOVÝM MESTOM ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -344,7 +347,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             padding: 25px;
             background: url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=1920&auto=format&fit=crop') no-repeat center center fixed;
             background-size: cover;
-            color: #ffffff; /* Všetky texty predvolene biele */
+            color: #ffffff;
             min-height: 100vh;
         }
         .container { 
