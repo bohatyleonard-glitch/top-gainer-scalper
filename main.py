@@ -25,7 +25,7 @@ TELEGRAM_CHAT_ID = os.getenv("9130979784", "")
 # Globálny stav bota pre Dashboard
 bot_state = {
     "status": "online",
-    "bot_type": "Top Gainer Scalper (Full API & Telegram Edition)",
+    "bot_type": "Top Gainer Scalper (Full Complete Edition)",
     "last_scan": "Zatiaľ neskenované",
     "account_balances": {},
     "active_trades": {},
@@ -43,13 +43,18 @@ def log_message(msg):
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        log_message("Telegram nie je nastavený (chybá token alebo chat ID).")
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-        requests.post(url, json=payload, timeout=5)
+        response = requests.post(url, json=payload, timeout=5)
+        if response.status_code == 200:
+            log_message("Telegram správa úspešne odoslaná.")
+        else:
+            log_message(f"Telegram vrátil chybu: {response.text}")
     except Exception as e:
-        print(f"Chyba pri posielaní Telegram správy: {e}")
+        log_message(f"Chyba pri posielaní Telegram správy: {e}")
 
 # --- OKX PODPIS A API VOLANIA ---
 def get_okx_signature(timestamp, method, request_path, body=""):
@@ -73,7 +78,7 @@ def get_okx_headers(method, request_path, body=""):
 
 def fetch_account_balance():
     if not API_KEY or not API_SECRET_KEY or not API_PASSPHRASE:
-        return {"USDC": {"available_balance": "0.00 (Chýbajú API kľúče)"}}
+        return {"USDC": {"available_balance": "0.00 (Chýbajú OKX API kľúče)"}}
     try:
         path = "/api/v5/account/balance"
         headers = get_okx_headers("GET", path)
