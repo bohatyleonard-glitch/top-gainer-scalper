@@ -415,4 +415,122 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 
         <!-- 2. Pod ním zoznam zostatkov -->
         <div class="section-block">
-            <div class="section-
+            <div class="section-title">💰 Zoznam zostatkov (OKX Demo)</div>
+            <table>
+                <tr><th>Mena</th><th>Dostupné</th></tr>
+                {% for coin, data in balances.items() %}
+                <tr>
+                    <td><strong>{{ coin }}</strong></td>
+                    <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+
+        <!-- 3. Pod ním Živý Radar Trhu -->
+        <div class="section-block">
+            <div class="section-title">⚡ Živý Radar Trhu (Top Gainers 2% - 25% | Objem >50k)</div>
+            {% if radar %}
+                <table>
+                    <tr><th>Symbol</th><th>Cena</th><th>Rast</th><th>Objem</th><th>Šanca</th></tr>
+                    {% for item in radar %}
+                    <tr>
+                        <td><strong>{{ item.instId }}</strong></td>
+                        <td>{{ "%.4f" | format(item.price) }}</td>
+                        <td>+{{ "%.2f" | format(item.change) }}%</td>
+                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
+                        <td><strong>{{ item.probability }}%</strong></td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style="font-size: 0.8rem; color: #333333;">Skenujem trh, čakám na mince spĺňajúce kritériá...</div>
+            {% endif %}
+        </div>
+
+        <!-- 4. Pod ním Kalendár Denných Výsledkov -->
+        <div class="section-block">
+            <div class="section-title">📅 Kalendár Denných Výsledkov (PnL Tracker)</div>
+            {% if calendar %}
+                <div class="calendar-grid">
+                    {% for day, data in calendar.items() %}
+                    <div class="calendar-day">
+                        <div>{{ day }}</div>
+                        <div style="font-weight: bold;">{{ "%+.2f" | format(data.pnl) }} $</div>
+                        <div style="font-size: 0.65rem;">{{ data.trades }} obch.</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div style="font-size: 0.8rem; color: #333333;">Zatiaľ žiadne uzavreté obchody.</div>
+            {% endif %}
+        </div>
+
+        <!-- 5. Pod ním Aktívne Obchody -->
+        <div class="section-block">
+            <div class="section-title">📈 Aktívne Obchody</div>
+            {% if trades %}
+                <table>
+                    <tr><th>Pár</th><th>Vstup</th><th>Stop-Loss</th></tr>
+                    {% for t, details in trades.items() %}
+                    <tr>
+                        <td><strong>{{ details.market_pair }}</strong></td>
+                        <td>{{ "%.4f" | format(details.entry_price) }}</td>
+                        <td>{{ "%.4f" | format(details.current_sl_price) }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style="font-size: 0.8rem; color: #333333;">Žiadny aktívny obchod. Čakám na signál...</div>
+            {% endif %}
+        </div>
+
+        <div class="refresh-info">
+            Obnovenie každých 10s | Čas: {{ current_time }}
+        </div>
+    </div>
+</body>
+</html>"""
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    account_balances = {"USDC": {"available_balance": 0.0}}
+    try:
+        balance_res = okx_request('GET', '/api/v5/account/balance')
+        if balance_res.get('code') == '0':
+            found = {}
+            for acc in balance_res.get('data', []):
+                for detail in acc.get('details', []):
+                    ccy = detail.get('ccy')
+                    avail = float(detail.get('availBal', 0))
+                    if avail > 0:
+                        found[ccy] = {"available_balance": avail}
+            if found:
+                account_balances = found
+    except Exception:
+        pass
+
+    template = Template(DASHBOARD_TEMPLATE)
+    rendered_html = template.render(
+        balances=account_balances,
+        trades=ACTIVE_TRADES,
+        radar=MARKET_RADAR,
+        calendar=DAILY_PNL_CALENDAR,
+        current_time=get_sk_time_str()
+    )
+    return rendered_html
+
+@app.get("/api/status")
+async def api_status():
+    return {
+        "status": "online",
+        "bot_type": "Apex Gainer Scalper Pro",
+        "active_trades": ACTIVE_TRADES,
+        "market_radar": MARKET_RADAR,
+        "calendar": DAILY_PNL_CALENDAR,
+        "sk_time": get_sk_time_str()
+    }
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
