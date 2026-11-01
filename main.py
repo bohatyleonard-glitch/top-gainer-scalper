@@ -45,7 +45,7 @@ trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
 CURRENT_STRATEGY_MODE = "Agresívny Momentum (Breakout)"
-CURRENT_TIMEFRAME = "15m"  # Predvolené na 15m
+CURRENT_TIMEFRAME = "15m"
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 EXCLUDED_COINS = ["ZAMA"]
 
@@ -228,22 +228,22 @@ async def top_gainer_scanner_loop():
       CURRENT_STAGE = f"STAV: 🟢 SKENER TOP 20 USDC [TF: {CURRENT_TIMEFRAME} | Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
       if tickers_res.get("code") != "0" or not tickers_res.get("data"):
-        await asyncio.sleep(4)
+        await asyncio.sleep(5)
         continue
 
-      min_vol = 10000.0  #[cite: 4]
-      min_change = 0.1  #[cite: 4]
-      max_change = 100.0  #[cite: 4]
+      min_vol = 10000.0
+      min_change = 0.1
+      max_change = 100.0
 
       candidates = []
       count = 0
       for item in tickers_res["data"]:
         inst_id = item.get("instId", "").upper()
-        if not inst_id.endswith("-USDC"):  #[cite: 4]
+        if not inst_id.endswith("-USDC"):
           continue
-        if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC"]:  #[cite: 4]
+        if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC"]:
           continue
-        if inst_id.split("-")[0] in EXCLUDED_COINS:  #[cite: 4]
+        if inst_id.split("-")[0] in EXCLUDED_COINS:
           continue
 
         try:
@@ -270,7 +270,7 @@ async def top_gainer_scanner_loop():
                   "probability": chk["probability"],
               })
               count += 1
-              if count >= 20:  # ⚡ Obmedzenie presne na Top 20 pre maximálnu rýchlosť
+              if count >= 15:  # Znížené na 15 pre maximálnu plynulosť bez zákysov
                 break
         except Exception:
           continue
@@ -282,7 +282,6 @@ async def top_gainer_scanner_loop():
       if candidates:
         MARKET_RADAR = candidates[:20]
       else:
-        # Fallback zoznam ak filtre zatiaľ nič nezachytili
         fallback_list = []
         for item in tickers_res["data"][:10]:
           iid = item.get("instId", "")
@@ -318,7 +317,7 @@ async def top_gainer_scanner_loop():
         if (
             coin_name in LAST_TRADE_TIME
             and now_ts - LAST_TRADE_TIME[coin_name] < 300
-        ):  #[cite: 4]
+        ):
           continue
 
         async with trade_lock:
@@ -326,7 +325,7 @@ async def top_gainer_scanner_loop():
             break
 
           IS_ORDER_PROCESSING = True
-          safe_budget = min(free_capital * 0.95, 500.0)  #[cite: 4]
+          safe_budget = min(free_capital * 0.95, 500.0)
           current_price = cand["price"]
 
           coin_amount = safe_budget / current_price
@@ -351,7 +350,7 @@ async def top_gainer_scanner_loop():
 
           LAST_TRADE_TIME[coin_name] = datetime.now().timestamp()
           tp_price = current_price * 1.012
-          sl_price = current_price * 0.99  #[cite: 4]
+          sl_price = current_price * 0.99
           PRICE_HISTORY = [current_price]
 
           ACTIVE_TRADES[coin_name] = {
@@ -389,7 +388,7 @@ async def top_gainer_scanner_loop():
       IS_ORDER_PROCESSING = False
       print(f"❌ Chyba v skeneri: {scan_err}", flush=True)
 
-    await asyncio.sleep(5)
+    await asyncio.sleep(10)
 
 
 async def advanced_risk_monitor_loop():
@@ -430,17 +429,17 @@ async def advanced_risk_monitor_loop():
 
           if current_price > trade["highest_price"]:
             trade["highest_price"] = current_price
-            if pnl_pct >= 0.8:  #[cite: 4]
-              new_trailing_sl = trade["highest_price"] * 0.995  #[cite: 4]
+            if pnl_pct >= 0.8:
+              new_trailing_sl = trade["highest_price"] * 0.995
               if new_trailing_sl > trade["current_sl_price"]:
                 trade["current_sl_price"] = new_trailing_sl
 
-          if not trade["break_even_activated"] and pnl_pct >= 0.4:  #[cite: 4]
+          if not trade["break_even_activated"] and pnl_pct >= 0.4:
             trade["break_even_activated"] = True
             if trade["entry_price"] > trade["current_sl_price"]:
               trade["current_sl_price"] = trade["entry_price"]
 
-          if not trade["trailing_tp_activated"] and pnl_pct >= 0.8:  #[cite: 4]
+          if not trade["trailing_tp_activated"] and pnl_pct >= 0.8:
             trade["trailing_tp_activated"] = True
 
           if trade["trailing_tp_activated"]:
@@ -448,7 +447,7 @@ async def advanced_risk_monitor_loop():
                 (trade["highest_price"] - current_price)
                 / trade["highest_price"]
             ) * 100
-            if drop_from_peak >= 0.3:  #[cite: 4]
+            if drop_from_peak >= 0.3:
               try:
                 order_body = json.dumps({
                     "instId": symbol,
@@ -638,13 +637,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .pnl-red { color: #ff4444; font-weight: bold; }
         .chart-container { background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(0, 255, 255, 0.2); border-radius: 10px; padding: 10px; margin-top: 10px; height: 150px; }
         .refresh-info { color: rgba(255, 255, 255, 0.6); font-size: 0.7rem; margin-top: 20px; font-weight: 600; text-align: left; }
+        .manual-refresh { background: rgba(0,255,255,0.1); border: 1px solid #00f0ff; color: #00f0ff; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.7rem; font-weight: bold; text-decoration: none; display: inline-block; }
     </style>
-    <meta http-equiv="refresh" content="2">
 </head>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 4.1 (Top 20 USDC Radar)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 4.1 (Top 20 USDC)</div>
+            <a href="/" class="manual-refresh">🔄 Obnoviť stránku</a>
         </div>
 
         <div class="controls-row">
