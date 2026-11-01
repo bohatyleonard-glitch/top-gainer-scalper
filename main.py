@@ -43,11 +43,11 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []       
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem trh..."
 LAST_TRADE_TIME = {}  
-MAX_PARALLEL_TRADES = 1  # 🛡️ Anti-Fragmentation: Výhradne 1 obchod naraz
+MAX_PARALLEL_TRADES = 1  # 🛡️ Výhradne 1 obchod naraz
 trade_lock = asyncio.Lock()  
-IS_ORDER_PROCESSING = False  # 🛡️ Ochrana proti duplicitnému odoslaniu príkazu
+IS_ORDER_PROCESSING = False  
 
-CURRENT_MODE = "AGGRESSIVE" # AGGRESSIVE / CONSERVATIVE
+CURRENT_MODE = "AGGRESSIVE" 
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 
 def get_sk_time_str() -> str:
@@ -102,14 +102,14 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 AUTOMATICKÝ SKENER TRHU (POST-ONLY MAKER REŽIM) ---
+# --- 🔍 AUTOMATICKÝ SKENER TRHU (BEZ DROBENIA) ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE, IS_ORDER_PROCESSING
     await asyncio.sleep(5)
     
-    start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER PRO SPUSTENÝ [Post-Only Maker Režim]"
+    start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER PRO SPUSTENÝ [Anti-Fragmentation Režim]"
     print(start_msg, flush=True)
-    send_telegram_msg(f"🤖 <b>Apex Scalper Pro spustený!</b> Používam čisté Post-Only príkazy proti drobeniu.")
+    send_telegram_msg(f"🤖 <b>Apex Scalper Pro spustený!</b> Optimalizované proti drobeniu objednávok.")
 
     while True:
         try:
@@ -143,12 +143,13 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(5)
                 continue
 
+            # 🛡️ Sprísnené podmienky objemu, aby sa ignorovali nelikvidné mince robící drobenie
             if CURRENT_MODE == "CONSERVATIVE":
-                min_vol = 50000.0
+                min_vol = 100000.0
                 min_change = 2.0
                 max_change = 15.0
             else:
-                min_vol = 20000.0  
+                min_vol = 50000.0  # Zvýšené z 20k na 50k USDC objem
                 min_change = 1.5   
                 max_change = 25.0  
 
@@ -192,7 +193,7 @@ async def top_gainer_scanner_loop():
 
             now_ts = datetime.now().timestamp()
             if coin_name in LAST_TRADE_TIME:
-                if now_ts - LAST_TRADE_TIME[coin_name] < 3600:
+                if now_ts - LAST_TRADE_TIME[coin_name] < 3600: # 1h cooldown
                     await asyncio.sleep(5)
                     continue
 
@@ -202,48 +203,44 @@ async def top_gainer_scanner_loop():
 
                 IS_ORDER_PROCESSING = True  
                 LAST_TRADE_TIME[coin_name] = now_ts
-                CURRENT_STAGE = f"STAV: Vystavujem Post-Only nákup pre {best_target['instId']}..."
+                CURRENT_STAGE = f"STAV: Vystavujem čistú objednávku pre {best_target['instId']}..."
                 
                 safe_budget = min(free_capital * 0.95, 500.0)
                 current_price = best_target['price']
                 
-                # 💡 POST-ONLY MAKER: Nastavíme nákupnú cenu presne na aktuálnu alebo mierne pod (alebo použijeme post_only ordType)
-                # V OKX v5 môžeme použiť ordType: "post_only" s reálnou aktuálnou cenou
-                buy_price = current_price
-                coin_amount = safe_budget / buy_price
-
+                coin_amount = safe_budget / current_price
                 formatted_sz = round(coin_amount, 2)
                 if formatted_sz <= 0:
                     formatted_sz = round(coin_amount, 4)
 
-                # 🛡️ Použitie post_only príkazu, aby burza nikdy nerobila Taker drobenie
+                # 🛡️ Použitie štandardného limitného príkazu s presným množstvom (zamedzenie fragmentácie)
                 order_body = json.dumps({
                     "instId": best_target['instId'],
                     "tdMode": "cash",
                     "side": "buy",
-                    "ordType": "post_only",
-                    "px": str(round(buy_price, 4)),
+                    "ordType": "limit",
+                    "px": str(round(current_price, 4)),
                     "sz": str(formatted_sz),
                     "tgtCcy": "base_ccy"
                 })
 
                 order_res = okx_request('POST', '/api/v5/trade/order', order_body)
                 if order_res.get('code') != '0':
-                    print(f"❌ Post-Only nákup zlyhal na burze: {order_res}", flush=True)
-                    send_telegram_msg(f"❌ <b>Chyba Post-Only nákupu USDC:</b> {order_res.get('msg', 'Neznáma chyba')}")
+                    print(f"❌ Nákup zlyhal na burze: {order_res}", flush=True)
+                    send_telegram_msg(f"❌ <b>Chyba nákupu USDC:</b> {order_res.get('msg', 'Neznáma chyba')}")
                     IS_ORDER_PROCESSING = False
                     await asyncio.sleep(5)
                     continue
 
-                tp_price = buy_price * 1.025
-                sl_price = buy_price * 0.98
-                PRICE_HISTORY = [buy_price]
+                tp_price = current_price * 1.025
+                sl_price = current_price * 0.98
+                PRICE_HISTORY = [current_price]
 
                 ACTIVE_TRADES[coin_name] = {
                     "market_pair": best_target['instId'],
-                    "entry_price": buy_price,
-                    "current_price": buy_price,
-                    "highest_price": buy_price,
+                    "entry_price": current_price,
+                    "current_price": current_price,
+                    "highest_price": current_price,
                     "target_tp_price": tp_price,
                     "current_sl_price": sl_price,
                     "break_even_activated": False,
@@ -259,9 +256,9 @@ async def top_gainer_scanner_loop():
                 CURRENT_STAGE = f"STAV: 🔴 V OBCHODE ({best_target['instId']}) - Čakám na vývoj..."
 
                 send_telegram_msg(
-                    f"🟢 <b>[POST-ONLY MAKER NÁKUP USDC]</b>\n"
+                    f"🟢 <b>[ČISTÝ NÁKUP USDC]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
-                    f"<b>Cena:</b> {buy_price:.4f} USDC\n"
+                    f"<b>Cena:</b> {current_price:.4f} USDC\n"
                     f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
                     f"<b>Stop-Loss:</b> {sl_price:.4f} USDC (-2%)"
                 )
@@ -481,7 +478,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 3.0 (Post-Only)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 3.0 (Anti-Frag)</div>
         </div>
 
         <div class="controls-row">
@@ -698,7 +695,7 @@ async def dashboard():
 async def api_status():
     return {
         "status": "online",
-        "bot_type": "Apex Scalper Pro 3.0 (Post-Only USDC)",
+        "bot_type": "Apex Scalper Pro 3.0 (Anti-Fragmentation)",
         "mode": CURRENT_MODE,
         "current_stage": CURRENT_STAGE,
         "active_trades": ACTIVE_TRADES,
