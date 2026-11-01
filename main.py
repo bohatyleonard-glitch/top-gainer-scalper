@@ -84,11 +84,11 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 SKENER: NAKUPUJE IBA JEDENKRÁT S OCHRANOU PROTI SPAMU ---
+# --- 🔍 SKENER: NAKUPUJE IBA JEDENKRÁT ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, MARKET_RADAR, CURRENT_STAGE
     await asyncio.sleep(5)
-    print(f"[{get_sk_time_str()}] ⚡ ČISTÝ 1000$ SCALPER SPUSTENÝ", flush=True)
+    print(f"[{get_sk_time_str()}] ⚡ BEZSPAMOVÝ 1000$ SCALPER SPUSTENÝ", flush=True)
 
     while True:
         try:
@@ -141,7 +141,6 @@ async def top_gainer_scanner_loop():
             best_target = candidates[0]
             coin_name = best_target['instId'].split('-')[0]
 
-            # ŽELEZNÝ ZÁMOK - NAKÚPI LEN RAZ
             async with trade_lock:
                 if len(ACTIVE_TRADES) > 0:
                     continue
@@ -168,8 +167,8 @@ async def top_gainer_scanner_loop():
                 coin_amount = TRADE_BUDGET_USDC / current_price
                 formatted_sz = str(round(coin_amount, 2)) if coin_amount > 1 else str(round(coin_amount, 4))
 
-                # OKAMŽITÝ ZÁPIS DO PAMÄTI, ABY SA ĎALŠIE KOLO SPUSTENIA IGNOROVALO
-                trade_key = f"{coin_name}_{datetime.now().timestamp()}"
+                # JEDINÝ KĽÚČ PRE AKTÍVNY OBCHOD
+                trade_key = coin_name
                 ACTIVE_TRADES[trade_key] = {
                     "market_pair": best_target['instId'],
                     "entry_price": current_price,
@@ -180,8 +179,7 @@ async def top_gainer_scanner_loop():
                     "bought_at": get_sk_time_str(),
                     "invested_usdc": TRADE_BUDGET_USDC,
                     "live_pnl_pct": 0.0,
-                    "live_pnl_usdc": 0.0,
-                    "notified_buy": False
+                    "live_pnl_usdc": 0.0
                 }
 
                 order_body = json.dumps({
@@ -201,7 +199,7 @@ async def top_gainer_scanner_loop():
 
                 CURRENT_STAGE = f"STAV: 🔴 V OBCHODE ({best_target['instId']}) - Sledujem živý PnL..."
 
-                # POŠLE TELEGRAM SPRÁVU O NÁKUPE IBA JEDENKRÁT
+                # Odošle sa presne 1 správa o nákupe
                 send_telegram_msg(
                     f"🟢 <b>[⚡ NÁKUP 1000 USDC]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
@@ -215,7 +213,7 @@ async def top_gainer_scanner_loop():
 
         await asyncio.sleep(5)
 
-# --- 🛡️ MONITOR OBCHODU: JEDINÉ VYHODNOTENIE A JEDNA SPRÁVA ---
+# --- 🛡️ MONITOR OBCHODU: BEZSPAMOVÁ OCHRANA ---
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
     await asyncio.sleep(3)
@@ -229,6 +227,8 @@ async def advanced_risk_monitor_loop():
             now_time = datetime.now(timezone.utc) + timedelta(hours=1)
             
             for trade_key in list(ACTIVE_TRADES.keys()):
+                if trade_key not in ACTIVE_TRADES:
+                    continue
                 trade = ACTIVE_TRADES[trade_key]
                 symbol = trade["market_pair"]
                 
@@ -249,10 +249,12 @@ async def advanced_risk_monitor_loop():
                             f"<b>Pár:</b> {symbol}\n"
                             f"<b>Výsledok:</b> {trade['live_pnl_pct']:+.2f}% ({pnl_usdc:+.2f} USDC)"
                         )
-                        del ACTIVE_TRADES[trade_key]
-                        CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Hľadám novú príležitosť..."
                     except Exception:
                         pass
+                    
+                    if trade_key in ACTIVE_TRADES:
+                        del ACTIVE_TRADES[trade_key]
+                    CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Hľadám novú príležitosť..."
                     continue
                 
                 ticker_res = okx_request('GET', f'/api/v5/market/ticker?instId={symbol}')
@@ -279,10 +281,12 @@ async def advanced_risk_monitor_loop():
                                 f"<b>Pár:</b> {symbol}\n"
                                 f"<b>Zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:.2f} USDC)"
                             )
-                            del ACTIVE_TRADES[trade_key]
-                            CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Obchod uzavretý v zisku!"
                         except Exception as err:
                             print(f"❌ Chyba TP: {err}", flush=True)
+
+                        if trade_key in ACTIVE_TRADES:
+                            del ACTIVE_TRADES[trade_key]
+                        CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Obchod uzavretý v zisku!"
                         continue
 
                     # 3. STOP LOSS (-2%)
@@ -299,16 +303,18 @@ async def advanced_risk_monitor_loop():
                                 f"<b>Pár:</b> {symbol}\n"
                                 f"<b>Strata:</b> {pnl_pct:.2f}% ({pnl_usdc:.2f} USDC)"
                             )
-                            del ACTIVE_TRADES[trade_key]
-                            CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Obchod ukončený v strate."
                         except Exception as err:
                             print(f"❌ Chyba SL: {err}", flush=True)
+
+                        if trade_key in ACTIVE_TRADES:
+                            del ACTIVE_TRADES[trade_key]
+                        CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Obchod ukončený v strate."
                         continue
 
         except Exception as main_err:
             print(f"❌ Chyba v monitorovaní: {main_err}", flush=True)
             
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
