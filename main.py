@@ -40,7 +40,7 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živý trh podľa checklistu..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz
+MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz[cite: 1]
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
@@ -185,15 +185,15 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
   return result
 
 
-# --- 🔍 AUTOMATICKÝ TOP GAINER SKENER S REAL-TIME VALIDÁCIOU ---
+# --- 🔍 AUTOMATICKÝ TOP GAINER USDC SKENER S REAL-TIME VALIDÁCIOU ---
 async def top_gainer_scanner_loop():
   global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING
   await asyncio.sleep(5)
 
-  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.6 SPUSTENÝ [Dynamic Top Gainers Checklist]"
+  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.6 SPUSTENÝ [USDC Top Gainers Checklist]"
   print(start_msg, flush=True)
   send_telegram_msg(
-      "🤖 <b>Apex Scalper 3.6 spustený!</b> Hľadám Top Gainers s priamou"
+      "🤖 <b>Apex Scalper 3.6 spustený!</b> Skenujem USDC Top Gainers s"
       " validáciou Demo účtu."
   )
 
@@ -211,7 +211,6 @@ async def top_gainer_scanner_loop():
         continue
 
       free_capital = 0.0
-      currency_to_use = "USDC"
       for acc in balance_res.get("data", []):
         for detail in acc.get("details", []):
           ccy = detail.get("ccy")
@@ -219,20 +218,16 @@ async def top_gainer_scanner_loop():
           val = float(avail_raw) if avail_raw else 0.0
           if ccy == "USDC" and val > free_capital:
             free_capital = val
-            currency_to_use = "USDC"
-          elif ccy == "USDT" and val > free_capital and free_capital < 10:
-            free_capital = val
-            currency_to_use = "USDT"
 
       if free_capital < 10.0:
         CURRENT_STAGE = (
-            f"STAV: 🛑 Nedostatok prostriedkov ({free_capital:.2f}$). Skontrolujte"
+            f"STAV: 🛑 Nedostatok USDC ({free_capital:.2f}$). Skontrolujte"
             " zostatok!"
         )
         await asyncio.sleep(10)
         continue
 
-      CURRENT_STAGE = f"STAV: 🟢 SKENER Top Gainers [Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
+      CURRENT_STAGE = f"STAV: 🟢 SKENER USDC Top Gainers [Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
       if tickers_res.get("code") != "0" or not tickers_res.get("data"):
         await asyncio.sleep(5)
@@ -245,16 +240,10 @@ async def top_gainer_scanner_loop():
       candidates = []
       for item in tickers_res["data"]:
         inst_id = item.get("instId", "").upper()
-        if not inst_id.endswith("-USDC") and not inst_id.endswith("-USDT"):
+        # 🎯 ZAMERANIE VÝHRADNE NA USDC PÁRY PODĽA ZOTATKU NA DEMO ÚČTE
+        if not inst_id.endswith("-USDC"):
           continue
-        if inst_id in [
-            "USDC-USDC",
-            "USDT-USDC",
-            "BTC-USDC",
-            "ETH-USDC",
-            "BTC-USDT",
-            "ETH-USDT",
-        ]:
+        if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC"]:
           continue
 
         coin_base = inst_id.split("-")[0]
@@ -385,7 +374,7 @@ async def top_gainer_scanner_loop():
               f"<b>24h Rast:</b> +{cand['change']:.2f}%\n"
               f"<b>Pravdepodobnosť:</b> {cand['probability']}%\n"
               f"<b>Cena:</b> {current_price:.4f}\n"
-              f"<b>Investícia:</b> ~{safe_budget:.2f} {currency_to_use}\n"
+              f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
               f"<b>Stop-Loss:</b> {sl_price:.4f} (-1%)"
           )
           break
@@ -643,7 +632,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 3.6 (Check-list & Režimy)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 3.6 (USDC Top Gainers)</div>
         </div>
 
         <div class="controls-row">
@@ -661,7 +650,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <div class="stat-value">{{ total_trades }}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Úspešnosť (Win Rate)</div>
+                <div class="stat-label">Úspešność (Win Rate)</div>
                 <div class="stat-value" style="color: #00ff88;">{{ win_rate }}%</div>
             </div>
             <div class="stat-card">
@@ -681,7 +670,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <tr>
                         <td><strong>{{ details.market_pair }}</strong></td>
                         <td>{{ "%.4f" | format(details.entry_price) }}</td>
-                        <td>{{ "%.2f" | format(details.invested_usdc) }} $</td>
+                        <td>{{ "%.2f" | format(details.invested_usdc) }} USDC</td>
                         <td>{{ "%.4f" | format(details.current_price) }}</td>
                         <td class="{{ 'pnl-green' if details.live_pnl_pct >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(details.live_pnl_pct) }}%</td>
                         <td class="{{ 'pnl-green' if details.live_pnl_usdc >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(details.live_pnl_usdc) }} $</td>
@@ -693,7 +682,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
-                    ✅ Žiadny aktívny obchod. Skenujem trh podľa checklistu...
+                    ✅ Žiadny aktívny obchod. Skenujem USDC Top Gainers podľa checklistu...
                 </div>
             {% endif %}
         </div>
@@ -714,7 +703,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem trh...</div>
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem USDC trh...</div>
             {% endif %}
         </div>
 
@@ -853,7 +842,7 @@ async def dashboard():
 async def api_status():
   return {
       "status": "online",
-      "bot_type": "Apex Scalper Pro 3.6 (Checklist Mode)",
+      "bot_type": "Apex Scalper Pro 3.6 (USDC Checklist Mode)",
       "mode": CURRENT_STRATEGY_MODE,
       "current_stage": CURRENT_STAGE,
       "active_trades": ACTIVE_TRADES,
