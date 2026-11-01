@@ -1,102 +1,306 @@
 import os
-import time
 import hmac
-import hashlib
 import base64
-import requests
-import threading
-from datetime import datetime
+import json
+import asyncio
+from datetime import datetime, timedelta, timezone
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 import uvicorn
+import requests
 from jinja2 import Template
 
-app = FastAPI()
+# --- 🔑 OKX DEMO KĽÚČE ---
+OKX_API_KEY = "638848ca-e65c-4074-bcfd-20cf4d292f2c"
+OKX_SECRET = "885934366C54F33B276E9E49E8EF87CF"
+OKX_PASSPHRASE = "Australia111/"
 
-# --- NASTAVENIA OKX API & TELEGRAMU ---
-API_KEY = os.getenv("638848ca-e65c-4074-bcfd-20cf4d292f2c", "")
-API_SECRET_KEY = os.getenv("885934366C54F33B276E9E49E8EF87CF", "")
-API_PASSPHRASE = os.getenv("Australia111/", "")
-USE_DEMO = os.getenv("OKX_USE_DEMO", "true").lower() == "true"
+# --- 📱 TELEGRAM NOTIFIKÁCIE ---
+TELEGRAM_BOT_TOKEN = "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8"
+TELEGRAM_CHAT_ID = "9130979784"
 
-TELEGRAM_TOKEN = os.getenv("9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8", "")
-TELEGRAM_CHAT_ID = os.getenv("9130979784", "")
-
-# Globálny stav bota pre Dashboard
-bot_state = {
-    "status": "online",
-    "bot_type": "Top Gainer Scalper (Full Complete Edition)",
-    "last_scan": "Zatiaľ neskenované",
-    "account_balances": {},
-    "active_trades": {},
-    "market_radar": [],
-    "logs": []
-}
-
-def log_message(msg):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    formatted = f"[{timestamp}] {msg}"
-    print(formatted)
-    bot_state["logs"].insert(0, formatted)
-    if len(bot_state["logs"]) > 50:
-        bot_state["logs"].pop()
-
-def send_telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        log_message("Telegram nie je nastavený (chybá token alebo chat ID).")
+def send_telegram_msg(message: str):
+    """Pomocná funkcia pre odosielanie správ na Telegram"""
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("DOPLŇ"):
         return
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-        response = requests.post(url, json=payload, timeout=5)
-        if response.status_code == 200:
-            log_message("Telegram správa úspešne odoslaná.")
-        else:
-            log_message(f"Telegram vrátil chybu: {response.text}")
-    except Exception as e:
-        log_message(f"Chyba pri posielaní Telegram správy: {e}")
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        requests.post(url, json=payload, timeout=5)
+    except Exception as err:
+        print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
-# --- OKX PODPIS A API VOLANIA ---
-def get_okx_signature(timestamp, method, request_path, body=""):
-    message = timestamp + method + request_path + body
-    mac = hmac.new(bytes(API_SECRET_KEY, encoding='utf-8'), bytes(message, encoding='utf-8'), digestmod=hashlib.sha256)
-    return base64.b64encode(mac.digest()).decode('utf-8')
+ACTIVE_TRADES = {}
+MARKET_RADAR = []  # Tu ukladáme mince, ktoré momentálne spĺňajú kritériá pre rast
+LAST_TRADE_TIME = {}  
+MAX_PARALLEL_TRADES = 1  
+trade_lock = asyncio.Lock()
 
-def get_okx_headers(method, request_path, body=""):
-    timestamp = datetime.utcnow().isoformat()[:-3] + 'Z'
-    signature = get_okx_signature(timestamp, method, request_path, body)
+def get_sk_time_str() -> str:
+    sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
+    return sk_time.strftime("%Y-%m-%d %H:%M:%S")
+
+# --- OKX EEA DEMO PROSTREDIE & AUTENTIFIKÁCIA ---
+def okx_request(method: str, path: str, body: str = ''):
+    timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+    message = timestamp + method.upper() + path + body
+    mac = hmac.new(OKX_SECRET.encode('utf-8'), message.encode('utf-8'), digestmod='sha256')
+    signature = base64.b64encode(mac.digest()).decode('utf-8')
+    
     headers = {
-        "OK-ACCESS-KEY": API_KEY,
-        "OK-ACCESS-SIGN": signature,
-        "OK-ACCESS-TIMESTAMP": timestamp,
-        "OK-ACCESS-PASSPHRASE": API_PASSPHRASE,
-        "Content-Type": "application/json"
+        'OK-ACCESS-KEY': OKX_API_KEY,
+        'OK-ACCESS-SIGN': signature,
+        'OK-ACCESS-TIMESTAMP': timestamp,
+        'OK-ACCESS-PASSPHRASE': OKX_PASSPHRASE,
+        'x-simulated-trading': '1',
+        'Content-Type': 'application/json'
     }
-    if USE_DEMO:
-        headers["x-simulated-trading"] = "1"
-    return headers
-
-def fetch_account_balance():
-    if not API_KEY or not API_SECRET_KEY or not API_PASSPHRASE:
-        return {"USDC": {"available_balance": "0.00 (Chýbajú OKX API kľúče)"}}
+    
+    url = 'https://eea.okx.com' + path
     try:
-        path = "/api/v5/account/balance"
-        headers = get_okx_headers("GET", path)
-        url = f"https://www.okx.com{path}"
-        response = requests.get(url, headers=headers, timeout=10)
-        data = response.json()
-        
-        balances = {}
-        if data.get("code") == "0" and "data" in data:
-            for detail in data["data"][0].get("details", []):
-                ccy = detail.get("ccy")
-                avail = detail.get("availBal", "0")
-                if float(avail) > 0:
-                    balances[ccy] = {"available_balance": avail}
-        return balances if balances else {"USDC": {"available_balance": "0.00"}}
-    except Exception as e:
-        log_message(f"Chyba pri načítavaní zostatkov z OKX: {str(e)}")
-        return {}
+        if method.upper() == 'GET':
+            response = requests.get(url, headers=headers, timeout=10)
+        else:
+            response = requests.post(url, headers=headers, data=body, timeout=10)
+        return response.json()
+    except Exception as err:
+        return {"code": "-1", "msg": str(err)}
+
+# --- 🔍 AUTONÓMNY SKENER TOP GAINEROV ---
+async def top_gainer_scanner_loop():
+    global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR
+    await asyncio.sleep(10)
+    print(f"[{get_sk_time_str()}] 🚀 Autonómny Top Gainer Skener úspešne spustený...", flush=True)
+    send_telegram_msg("🤖 <b>Top Gainer Scalping Bot spustený!</b> Skenujem trh a hľadám príležitosti.")
+
+    while True:
+        try:
+            tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
+            if tickers_res.get('code') != '0' or not tickers_res.get('data'):
+                await asyncio.sleep(15)
+                continue
+
+            candidates = []
+            for item in tickers_res['data']:
+                inst_id = item.get('instId', '')
+                if not inst_id.endswith('-USDC'):
+                    continue
+                if inst_id in ['USDC-USDC', 'USDT-USDC', 'BTC-USDC', 'ETH-USDC']:
+                    continue
+
+                try:
+                    open24h = float(item.get('open24h', 0))
+                    last_p = float(item.get('last', 0))
+                    vol24h = float(item.get('volCcy24h', 0))
+
+                    if open24h > 0 and last_p > 0 and vol24h > 50000:
+                        change_pct = ((last_p - open24h) / open24h) * 100
+                        if 2.0 <= change_pct <= 25.0:
+                            candidates.append({
+                                "instId": inst_id,
+                                "price": last_p,
+                                "change": change_pct,
+                                "volume": vol24h
+                            })
+                except Exception:
+                    continue
+
+            candidates.sort(key=lambda x: x['change'], reverse=True)
+            # Uložíme top kandidátov na rast pre webový radar
+            MARKET_RADAR = candidates[:10]
+
+            if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
+                await asyncio.sleep(10)
+                continue
+
+            if not candidates:
+                await asyncio.sleep(20)
+                continue
+
+            best_target = candidates[0]
+            coin_name = best_target['instId'].split('-')[0]
+
+            now_ts = datetime.now().timestamp()
+            if coin_name in LAST_TRADE_TIME:
+                if now_ts - LAST_TRADE_TIME[coin_name] < 120:
+                    await asyncio.sleep(10)
+                    continue
+
+            async with trade_lock:
+                if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
+                    continue
+
+                LAST_TRADE_TIME[coin_name] = now_ts
+                print(f"🎯 Nájdený Top Gainer: {best_target['instId']} s rastom +{best_target['change']:.2f}%", flush=True)
+
+                balance_res = okx_request('GET', '/api/v5/account/balance')
+                if balance_res.get('code') != '0':
+                    await asyncio.sleep(10)
+                    continue
+
+                free_capital = 0.0
+                for acc in balance_res.get('data', []):
+                    for detail in acc.get('details', []):
+                        if detail.get('ccy') == 'USDC':
+                            free_capital = float(detail.get('availBal', 0))
+
+                if free_capital < 10:
+                    print(f"❌ Nedostatok voľného kapitálu: {free_capital} USDC", flush=True)
+                    await asyncio.sleep(30)
+                    continue
+
+                safe_budget = free_capital * 0.98
+                current_price = best_target['price']
+                coin_amount = safe_budget / current_price
+
+                formatted_sz = round(coin_amount, 2)
+                if formatted_sz <= 0:
+                    formatted_sz = round(coin_amount, 4)
+
+                order_body = json.dumps({
+                    "instId": best_target['instId'],
+                    "tdMode": "cash",
+                    "side": "buy",
+                    "ordType": "market",
+                    "sz": str(formatted_sz)
+                })
+
+                order_res = okx_request('POST', '/api/v5/trade/order', order_body)
+                if order_res.get('code') != '0':
+                    print(f"❌ Chyba nákupu pre {best_target['instId']}: {order_res}", flush=True)
+                    await asyncio.sleep(10)
+                    continue
+
+                sl_price = current_price * 0.97
+                ACTIVE_TRADES[coin_name] = {
+                    "entry_price": current_price,
+                    "current_sl_price": sl_price,
+                    "amount": formatted_sz,
+                    "bought_at": get_sk_time_str(),
+                    "market_pair": best_target['instId'],
+                    "highest_price": current_price,
+                    "partial_tp_activated": False
+                }
+
+                send_telegram_msg(
+                    f"🟢 <b>[AUTO-SCALP NÁKUP]</b>\n"
+                    f"<b>Pár:</b> {best_target['instId']}\n"
+                    f"<b>24h Rast pri nákupe:</b> +{best_target['change']:.2f}%\n"
+                    f"<b>Vstupná cena:</b> {current_price:.4f} USDC\n"
+                    f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
+                    f"<b>Stop-Loss:</b> {sl_price:.4f} USDC (-3%)"
+                )
+
+        except Exception as scan_err:
+            print(f"❌ Chyba v skeneri: {scan_err}", flush=True)
+
+        await asyncio.sleep(15)
+
+# --- 🛡️ MONITOROVACÍ CYKLUS PRE VLNY ---
+async def advanced_risk_monitor_loop():
+    global ACTIVE_TRADES
+    await asyncio.sleep(5)
+    print(f"[{get_sk_time_str()}] 🛡️ Risk Management Monitor pre vlny spustený...", flush=True)
+    
+    while True:
+        if not ACTIVE_TRADES:
+            await asyncio.sleep(2)
+            continue
+            
+        try:
+            now_time = datetime.now(timezone.utc) + timedelta(hours=1)
+            
+            for coin in list(ACTIVE_TRADES.keys()):
+                trade = ACTIVE_TRADES[coin]
+                symbol = trade["market_pair"]
+                
+                if trade.get("amount") is None or trade["amount"] <= 0:
+                    continue
+                
+                bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
+                if now_time - bought_time > timedelta(hours=48):
+                    try:
+                        order_body = json.dumps({
+                            "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
+                        })
+                        okx_request('POST', '/api/v5/trade/order', order_body)
+                        send_telegram_msg(f"⏳ <b>[GTC EXSPIRÁCIA 48h]</b> Uzatvorený pár {symbol}")
+                        del ACTIVE_TRADES[coin]
+                    except Exception:
+                        pass
+                    continue
+                
+                ticker_res = okx_request('GET', f'/api/v5/market/ticker?instId={symbol}')
+                if ticker_res.get('code') == '0' and ticker_res.get('data'):
+                    current_price = float(ticker_res['data'][0]['last'])
+                    pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
+                    
+                    if current_price > trade["highest_price"]:
+                        trade["highest_price"] = current_price
+
+                    if current_price <= trade["current_sl_price"]:
+                        reason = "[STOP-LOSS -3%]" if trade["current_sl_price"] < trade["entry_price"] else "[BREAK-EVEN OCHRANA]"
+                        try:
+                            order_body = json.dumps({
+                                "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
+                            })
+                            okx_request('POST', '/api/v5/trade/order', order_body)
+                            
+                            send_telegram_msg(
+                                f"🚨 <b>UZAVRETÝ OBCHOD {reason}</b>\n"
+                                f"<b>Pár:</b> {symbol}\n"
+                                f"<b>Výsledné PnL:</b> {pnl_pct:+.2f}%"
+                            )
+                            del ACTIVE_TRADES[coin]
+                        except Exception as err:
+                            print(f"❌ Chyba SL: {err}", flush=True)
+                        continue
+
+                    if pnl_pct >= 1.5 and not trade.get("be_activated", False):
+                        trade["current_sl_price"] = trade["entry_price"] * 1.002
+                        trade["be_activated"] = True
+                        send_telegram_msg(f"🛡️ <b>[BREAK-EVEN AKTÍVNY]</b> Pár {symbol} dosiahol +1.5%, ochrana posunutá na vstup.")
+
+                    max_pnl_pct = ((trade["highest_price"] - trade["entry_price"]) / trade["entry_price"]) * 100
+                    if max_pnl_pct >= 3.0:
+                        drop_from_high = ((trade["highest_price"] - current_price) / trade["highest_price"]) * 100
+                        if drop_from_high >= 1.5:
+                            try:
+                                order_body = json.dumps({
+                                    "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
+                                })
+                                okx_request('POST', '/api/v5/trade/order', order_body)
+                                
+                                send_telegram_msg(
+                                    f"💰 <b>[ÚSPEŠNÝ TRAILING EXIT VLNY]</b>\n"
+                                    f"<b>Pár:</b> {symbol}\n"
+                                    f"<b>Max dosiahnutý zisk:</b> +{max_pnl_pct:.2f}%\n"
+                                    f"<b>Výsledný zisk PnL:</b> {pnl_pct:+.2f}%"
+                                )
+                                del ACTIVE_TRADES[coin]
+                            except Exception as err:
+                                print(f"❌ Chyba Trailing Exit: {err}", flush=True)
+                            continue
+
+        except Exception as main_err:
+            print(f"❌ Chyba v monitorovacom cykle: {main_err}", flush=True)
+            
+        await asyncio.sleep(2)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scanner_task = asyncio.create_task(top_gainer_scanner_loop())
+    monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
+    yield
+    scanner_task.cancel()
+    monitor_task.cancel()
+
+app = FastAPI(lifespan=lifespan)
 
 # --- HTML DASHBOARD ŠABLÓNA ---
 DASHBOARD_TEMPLATE = """
@@ -117,7 +321,6 @@ DASHBOARD_TEMPLATE = """
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { text-align: left; padding: 8px; border-bottom: 1px solid #334155; font-size: 0.9em; }
         th { color: #94a3b8; }
-        .logs-box { background: #090d16; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 0.85em; height: 160px; overflow-y: auto; color: #34d399; margin-top: 10px; }
         .refresh-info { text-align: center; color: #64748b; font-size: 0.8em; margin-top: 15px; }
         .tag-green { color: #22c55e; font-weight: bold; }
     </style>
@@ -128,7 +331,7 @@ DASHBOARD_TEMPLATE = """
         <div class="header">
             <div>
                 <h1>🤖 Top Gainer Scalper</h1>
-                <p style="margin: 0; color: #94a3b8;">OKX Demo Účet & Živý Radar</p>
+                <p style="margin: 0; color: #94a3b8;">Full-Auto Bot & Živý Radar Trhu</p>
             </div>
             <div>
                 <span class="status-badge">ONLINE</span>
@@ -143,7 +346,7 @@ DASHBOARD_TEMPLATE = """
                     {% for coin, data in balances.items() %}
                     <tr>
                         <td><strong>{{ coin }}</strong></td>
-                        <td>{{ data.available_balance }}</td>
+                        <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
                     </tr>
                     {% endfor %}
                 </table>
@@ -153,12 +356,12 @@ DASHBOARD_TEMPLATE = """
                 <h2>📈 Aktívne Obchody</h2>
                 {% if trades %}
                     <table>
-                        <tr><th>Pár</th><th>Vstup</th><th>Zisk/Strata</th></tr>
+                        <tr><th>Pár</th><th>Vstup</th><th>Stop-Loss</th></tr>
                         {% for t, details in trades.items() %}
                         <tr>
-                            <td>{{ t }}</td>
-                            <td>{{ details.entry_price }}</td>
-                            <td>{{ details.pnl }}</td>
+                            <td>{{ details.market_pair }}</td>
+                            <td>{{ "%.4f" | format(details.entry_price) }}</td>
+                            <td>{{ "%.4f" | format(details.current_sl_price) }}</td>
                         </tr>
                         {% endfor %}
                     </table>
@@ -168,32 +371,24 @@ DASHBOARD_TEMPLATE = """
             </div>
         </div>
 
+        <!-- Živý Radar Trhu s mincami, ktoré pravdepodobne vystrelia -->
         <div class="card" style="margin-top: 20px;">
-            <h2>⚡ Živý Radar Trhu (Rast 2% - 25% | Objem >50k)</h2>
+            <h2>⚡ Živý Radar Trhu (Mince rastúce 2% - 25% s objemom >50k)</h2>
             {% if radar %}
                 <table>
                     <tr><th>Symbol</th><th>Cena</th><th>Rast za 24h</th><th>Objem (USDC)</th></tr>
                     {% for item in radar %}
                     <tr>
-                        <td><strong>{{ item.symbol }}</strong></td>
-                        <td>{{ item.price }}</td>
-                        <td class="tag-green">+{{ item.change }}%</td>
-                        <td>{{ item.volume }}</td>
+                        <td><strong>{{ item.instId }}</strong></td>
+                        <td>{{ "%.4f" | format(item.price) }}</td>
+                        <td class="tag-green">+{{ "%.2f" | format(item.change) }}%</td>
+                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
                     </tr>
                     {% endfor %}
                 </table>
             {% else %}
-                <p style="color: #94a3b8; text-align: center; margin-top: 15px;">Skenujem trh, čakám na mince spĺňajúce podmienky...</p>
+                <p style="color: #94a3b8; text-align: center; margin-top: 15px;">Skenujem trh, čakám na mince spĺňajúce kritériá...</p>
             {% endif %}
-        </div>
-
-        <div class="card" style="margin-top: 20px;">
-            <h2>📋 Živé Logy Bota (Posledný sken: {{ last_scan }})</h2>
-            <div class="logs-box">
-                {% for log in logs %}
-                <div>{{ log }}</div>
-                {% endfor %}
-            </div>
         </div>
 
         <div class="refresh-info">
@@ -204,74 +399,43 @@ DASHBOARD_TEMPLATE = """
 </html>
 """
 
-# --- WEBOVÉ CESTY ---
 @app.get("/", response_class=HTMLResponse)
-def dashboard():
-    balances = bot_state["account_balances"]
-    if not balances:
-        balances = {"USDC": {"available_balance": "Načítavam..."}}
-    
+async def dashboard():
+    account_balances = {"USDC": {"available_balance": 0.0}}
+    try:
+        balance_res = okx_request('GET', '/api/v5/account/balance')
+        if balance_res.get('code') == '0':
+            found = {}
+            for acc in balance_res.get('data', []):
+                for detail in acc.get('details', []):
+                    ccy = detail.get('ccy')
+                    avail = float(detail.get('availBal', 0))
+                    if avail > 0:
+                        found[ccy] = {"available_balance": avail}
+            if found:
+                account_balances = found
+    except Exception:
+        pass
+
     template = Template(DASHBOARD_TEMPLATE)
     rendered_html = template.render(
-        balances=balances,
-        trades=bot_state["active_trades"],
-        radar=bot_state["market_radar"],
-        logs=bot_state["logs"],
-        last_scan=bot_state["last_scan"],
-        current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        balances=account_balances,
+        trades=ACTIVE_TRADES,
+        radar=MARKET_RADAR,
+        current_time=get_sk_time_str()
     )
     return rendered_html
 
-# --- HLAVNÁ SKENOVACIA SLUČKA ---
-def background_scanner():
-    log_message("Background skener s OKX API prepojením naštartovaný.")
-    send_telegram("🚀 *Top Gainer Scalper bot* bol úspešne spustený a pripojený k OKX Demo!")
-    
-    while True:
-        try:
-            bot_state["last_scan"] = datetime.now().strftime("%H:%M:%S")
-            
-            # 1. Aktualizujeme zostatky z OKX Demo účtu
-            bot_state["account_balances"] = fetch_account_balance()
-            
-            # 2. Skenujeme trh pre Radar
-            url = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
-            response = requests.get(url, timeout=10)
-            data = response.json()
-            
-            potential_coins = []
-            if data.get("code") == "0" and "data" in data:
-                for ticker in data["data"]:
-                    inst_id = ticker.get("instId", "")
-                    if inst_id.endswith("-USDC"):
-                        try:
-                            last_price = float(ticker.get("last", 0))
-                            sod_price = float(ticker.get("sodUtc0", 0))
-                            vol_24h = float(ticker.get("volCcy24h", 0))
-                            
-                            if sod_price > 0:
-                                change_pct = ((last_price - sod_price) / sod_price) * 100
-                                if vol_24h >= 50000 and 2.0 <= change_pct <= 25.0:
-                                    potential_coins.append({
-                                        "symbol": inst_id,
-                                        "price": f"{last_price:.4f}",
-                                        "change": f"{change_pct:.2f}",
-                                        "volume": f"{vol_24h:,.0f}"
-                                    })
-                        except Exception:
-                            continue
-            
-            potential_coins = sorted(potential_coins, key=lambda x: float(x["change"]), reverse=True)
-            bot_state["market_radar"] = potential_coins[:10]
-            
-        except Exception as e:
-            log_message(f"Chyba v skeneri: {str(e)}")
-            
-        time.sleep(20)
+@app.get("/api/status")
+async def api_status():
+    return {
+        "status": "online",
+        "bot_type": "Full-Auto Top Gainer Scalper (1.5% - 20% waves)",
+        "active_trades": ACTIVE_TRADES,
+        "market_radar": MARKET_RADAR,
+        "sk_time": get_sk_time_str()
+    }
 
 if __name__ == "__main__":
-    t = threading.Thread(target=background_scanner, daemon=True)
-    t.start()
-    
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
