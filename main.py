@@ -38,16 +38,17 @@ MARKET_RADAR = []
 DAILY_PNL_CALENDAR = {}
 CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
-CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živé Top Gainery na Demo..."
+CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živý trh podľa checklistu..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz
+MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz[cite: 1, 3]
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
-CURRENT_MODE = "AGGRESSIVE"
+# Režimy zodpovedajúce tvojmu Pine Script indikátoru v5.4.4
+CURRENT_STRATEGY_MODE = (
+    "Agresívny Momentum (Breakout)"  # alebo "Korekcia (Fibonacci Touch)"
+)
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
-
-# 🛡️ BLACKLIST: Mince, ktoré na demo účte robia drobenie a trieštenie objednávok[cite: 1]
 EXCLUDED_COINS = ["ZAMA"]
 
 
@@ -114,43 +115,105 @@ def okx_request(method: str, path: str, body: str = ""):
     return {"code": "-1", "msg": str(err)}
 
 
-# --- 📈 INDIKÁTOROVÁ LOGIKA PRE TOP GAINERS ---
-def evaluate_indicator_signal(inst_id: str) -> bool:
+# --- 📈 5M INDIKÁTOROVÁ LOGIKA PODĽA PINE SCRIPT v5.4.4 ---
+def evaluate_strategy_checklist(inst_id: str) -> dict:
+  """Vyhodnotí kompletný check-list pre daný token na základe zvoleného režimu
+
+  (Breakout vs Fibonacci 0.786).
+  """
+  result = {
+      "volume_status": False,
+      "impulse_status": False,
+      "fib_status": False,
+      "buy_ready": False,
+      "probability": 0,
+  }
   try:
-    url = f"/api/v5/market/candles?instId={inst_id}&bar=5m&limit=30"
+    url = f"/api/v5/market/candles?instId={inst_id}&bar=5m&limit=40"
     res = okx_request("GET", url)
     if res.get("code") != "0" or not res.get("data"):
-      return False
+      return result
 
     raw_candles = res["data"]
-    raw_candles.reverse()
+    raw_candles.reverse()  # Od najstaršej po najnovšiu
 
-    if len(raw_candles) < 10:
-      return False
+    if len(raw_candles) < 25:
+      return result
 
     closes = [float(c[4]) for c in raw_candles]
-    # Overenie rastového trendu na 5m sviečkach
-    return closes[-1] > closes[-3]
+    highs = [float(c[2]) for c in raw_candles]
+    lows = [float(c[3]) for c in raw_candles]
+    volumes = [float(c[5]) for c in raw_candles]
+    opens = [float(c[1]) for c in raw_candles]
+
+    # Objemový oscilátor (EMA 5 vs EMA 20 z objemu so znamením smeru sviečky)
+    vol_directions = [
+        v if closes[i] > opens[i] else -v for i, v in enumerate(volumes)
+    ]
+
+    # Jednoduchá simulácia EMA pre Python
+    def calc_ema(data, length):
+      alpha = 2 / (length + 1)
+      ema_val = data[0]
+      for val in data[1:]:
+        ema_val = (val * alpha) + (ema_val * (1 - alpha))
+      return ema_val
+
+    fast_ma = calc_ema(vol_directions, 5)
+    slow_ma = calc_ema(vol_directions, 20)
+    oscillator_val = fast_ma - slow_ma
+
+    # 1. Objemový Momentum (zodpovedá checklistu v indikátore)
+    volume_bullish = oscillator_val > 0
+    result["volume_status"] = volume_bullish
+
+    # 2. Fibonacci 0.786 výpočet (pre korekčný režim)
+    recent_high = max(highs[-25:])
+    recent_low = min(lows[-25:])
+    range_size = recent_high - recent_low
+    fib_target = recent_high - (range_size * 0.786)
+    fib_touch = lows[-1] <= fib_target
+    result["fib_status"] = fib_touch
+
+    # 3. Nákupný impulz podľa zvoleného režimu
+  global CURRENT_STRATEGY_MODE
+  if CURRENT_STRATEGY_MODE == "Agresívny Momentum (Breakout)":
+    # Breakout podmienka: Rastúci objemový oscilátor + rast ceny
+    price_breakout = closes[-1] > closes[-3]
+    buy_trigger = volume_bullish and price_breakout
+    result["impulse_status"] = price_breakout
+    result["buy_ready"] = buy_trigger
+    result["probability"] = (
+        85 if buy_trigger else (55 if volume_bullish else 30)
+    )
+  else:
+    # Korekcia (Fibonacci Touch) podmienka
+    fib_buy = volume_bullish and fib_touch
+    result["impulse_status"] = fib_touch
+    result["buy_ready"] = fib_buy
+    result["probability"] = 90 if fib_buy else (50 if volume_bullish else 20)
+
   except Exception as e:
-    print(f"❌ Chyba indikátora pre {inst_id}: {e}", flush=True)
-    return True
+    print(f"❌ Chyba vyhodnocovania checklistu pre {inst_id}: {e}", flush=True)
+
+  return result
 
 
-# --- 🔍 DYNAMICKÝ TOP GAINER SKENER PRE DEMO ---
+# --- 🔍 AUTOMATICKÝ SKENER S CHECKLISTOM ---
 async def top_gainer_scanner_loop():
-  global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE, IS_ORDER_PROCESSING
+  global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING
   await asyncio.sleep(5)
 
-  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.5 SPUSTENÝ [Live Top Gainer Demo]"
+  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.6 SPUSTENÝ [Checklist Mode]"
   print(start_msg, flush=True)
   send_telegram_msg(
-      "🤖 <b>Apex Scalper 3.5 spustený!</b> Dynamické skenowanie Top Gainerov pre"
-      " demo je aktívne."
+      "🤖 <b>Apex Scalper 3.6 spustený!</b> Režim s kompletným checklistom je"
+      " aktívny."
   )
 
   while True:
     try:
-      # 🛡️ Ochrana proti triešteniu: Maximálne 1 obchod naraz[cite: 1]
+      # 🛡️ Ochrana proti triešteniu: Maximálne 1 obchod naraz[cite: 1, 3]
       if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
         CURRENT_STAGE = "STAV: 🔴 V OBCHODE / SPRACOVÁVAM PRÍKAZ! Čakám..."
         await asyncio.sleep(5)
@@ -184,23 +247,29 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(10)
         continue
 
-      CURRENT_STAGE = f"STAV: 🟢 TOP GAINER SKENER. {currency_to_use} OK ({free_capital:.2f}$). Skenujem trh..."
+      CURRENT_STAGE = f"STAV: 🟢 SKENER [Režim: {CURRENT_STRATEGY_MODE}]. Skenujem trh..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
       if tickers_res.get("code") != "0" or not tickers_res.get("data"):
         await asyncio.sleep(5)
         continue
 
-      min_vol = 10000.0  # Minimálny objem likvidity
-      min_change = 0.5   # Minimálny 24h rast od +0.5%[cite: 1]
-      max_change = 40.0  # Maximálny 24h rast do +40%
+      min_vol = 15000.0  # Minimálny objem likvidity[cite: 1, 3]
+      min_change = 0.5  # Minimálny 24h rast od +0.5%[cite: 1, 3]
+      max_change = 40.0
 
       candidates = []
       for item in tickers_res["data"]:
         inst_id = item.get("instId", "").upper()
-        # Skenujeme USDC aj USDT páry, aby sme zachytili širšie spektrum Top Gainerov
         if not inst_id.endswith("-USDC") and not inst_id.endswith("-USDT"):
           continue
-        if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC", "BTC-USDT", "ETH-USDT"]:
+        if inst_id in [
+            "USDC-USDC",
+            "USDT-USDC",
+            "BTC-USDC",
+            "ETH-USDC",
+            "BTC-USDT",
+            "ETH-USDT",
+        ]:
           continue
 
         coin_base = inst_id.split("-")[0]
@@ -217,36 +286,42 @@ async def top_gainer_scanner_loop():
           if open24h > 0 and last_p > 0 and vol24h >= min_vol:
             change_pct = ((last_p - open24h) / open24h) * 100
             if min_change <= change_pct <= max_change:
-              if evaluate_indicator_signal(inst_id):
-                probability = int(min(max((change_pct / max_change) * 100, 60), 98))
-                candidates.append({
-                    "instId": inst_id,
-                    "price": last_p,
-                    "change": change_pct,
-                    "volume": vol24h,
-                    "probability": probability,
-                })
+              # Vyhodnotenie checklistu pre danú mincu
+              chk = evaluate_strategy_checklist(inst_id)
+
+              candidates.append({
+                  "instId": inst_id,
+                  "price": last_p,
+                  "change": change_pct,
+                  "volume": vol24h,
+                  "volume_status": chk["volume_status"],
+                  "impulse_status": chk["impulse_status"],
+                  "fib_status": chk["fib_status"],
+                  "buy_ready": chk["buy_ready"],
+                  "probability": chk["probability"],
+              })
         except Exception:
           continue
 
-      candidates.sort(key=lambda x: x["change"], reverse=True)
+      # Zoradíme kandidátov podľa pripravenosti a rastu
+      candidates.sort(
+          key=lambda x: (x["buy_ready"], x["probability"], x["change"]),
+          reverse=True,
+      )
       if candidates:
         MARKET_RADAR = candidates[:10]
 
-      if not candidates:
-        await asyncio.sleep(5)
-        continue
-
-      # Vyberieme najlepší gainer, príp. prejdeme kandidátov, ak by demo niektorého nepodporovalo
+      # Hľadáme mincu, ktorá spĺňa podmienky na nákup (buy_ready == True)
       best_target = None
       for cand in candidates:
-        coin_name = cand["instId"].split("-")[0]
-        now_ts = datetime.now().timestamp()
-        if coin_name in LAST_TRADE_TIME:
-          if now_ts - LAST_TRADE_TIME[coin_name] < 600:  # 10 min cooldown
-            continue
-        best_target = cand
-        break
+        if cand["buy_ready"]:
+          coin_name = cand["instId"].split("-")[0]
+          now_ts = datetime.now().timestamp()
+          if coin_name in LAST_TRADE_TIME:
+            if now_ts - LAST_TRADE_TIME[coin_name] < 600:  # 10 min cooldown
+              continue
+          best_target = cand
+          break
 
       if not best_target:
         await asyncio.sleep(5)
@@ -254,18 +329,16 @@ async def top_gainer_scanner_loop():
 
       coin_name = best_target["instId"].split("-")[0]
 
-      # 🛡️ Zámok proti triešteniu a paralelnému odosielaniu[cite: 1]
+      # 🛡️ Zámok proti triešteniu a paralelnému odosielaniu[cite: 1, 3]
       async with trade_lock:
         if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
           continue
 
         IS_ORDER_PROCESSING = True
         LAST_TRADE_TIME[coin_name] = datetime.now().timestamp()
-        CURRENT_STAGE = (
-            f"STAV: ⚡ Top Gainer nájdený: {best_target['instId']} (+{best_target['change']:.2f}%). Vystavujem nákup..."
-        )
+        CURRENT_STAGE = f"STAV: ⚡ Checklist splnený pre {best_target['instId']}! Vystavujem nákup..."
 
-        safe_budget = min(free_capital * 0.95, 500.0)  # Investícia do 500$[cite: 1]
+        safe_budget = min(free_capital * 0.95, 500.0)  # Investícia do 500$[cite: 1, 3]
         current_price = best_target["price"]
 
         coin_amount = safe_budget / current_price
@@ -285,13 +358,17 @@ async def top_gainer_scanner_loop():
 
         order_res = okx_request("POST", "/api/v5/trade/order", order_body)
         if order_res.get("code") != "0":
-          print(f"❌ Nákup zlyhal na demo burze pre {best_target['instId']}: {order_res}", flush=True)
+          print(
+              f"❌ Nákup zlyhal na demo burze pre {best_target['instId']}:"
+              f" {order_res}",
+              flush=True,
+          )
           IS_ORDER_PROCESSING = False
           await asyncio.sleep(3)
           continue
 
-        tp_price = current_price * 1.012  # +1.2% Take Profit[cite: 1]
-        sl_price = current_price * 0.99   # -1.0% Stop-Loss[cite: 1]
+        tp_price = current_price * 1.012  # +1.2% Take Profit[cite: 1, 3]
+        sl_price = current_price * 0.99  # -1.0% Stop-Loss[cite: 1, 3]
         PRICE_HISTORY = [current_price]
 
         ACTIVE_TRADES[coin_name] = {
@@ -312,14 +389,15 @@ async def top_gainer_scanner_loop():
 
         IS_ORDER_PROCESSING = False
         CURRENT_STAGE = (
-            f"STAV: 🔴 V OBCHODE [{best_target['instId']}] (+{best_target['change']:.2f}%)..."
+            f"STAV: 🔴 V OBCHODE [{best_target['instId']}] (Režim:"
+            f" {CURRENT_STRATEGY_MODE})..."
         )
 
         send_telegram_msg(
-            f"🟢 <b>[TOP GAINER DEMO NÁKUP]</b>\n"
+            f"🟢 <b>[CHECKLIST NÁKUP - {CURRENT_STRATEGY_MODE}]</b>\n"
             f"<b>Pár:</b> {best_target['instId']}\n"
             f"<b>24h Rast:</b> +{best_target['change']:.2f}%\n"
-            f"<b>Odhadovaná šanca:</b> {best_target['probability']}%\n"
+            f"<b>Pravdepodobnosť:</b> {best_target['probability']}%\n"
             f"<b>Cena:</b> {current_price:.4f}\n"
             f"<b>Investícia:</b> ~{safe_budget:.2f} {currency_to_use}\n"
             f"<b>Stop-Loss:</b> {sl_price:.4f} (-1%)"
@@ -327,7 +405,7 @@ async def top_gainer_scanner_loop():
 
     except Exception as scan_err:
       IS_ORDER_PROCESSING = False
-      print(f"❌ Chyba v top gainer skeneri: {scan_err}", flush=True)
+      print(f"❌ Chyba v skeneri: {scan_err}", flush=True)
 
     await asyncio.sleep(10)
 
@@ -372,13 +450,13 @@ async def advanced_risk_monitor_loop():
               if new_trailing_sl > trade["current_sl_price"]:
                 trade["current_sl_price"] = new_trailing_sl
 
-          # Break-Even aktivácia pri +0.4%[cite: 1]
+          # Break-Even aktivácia pri +0.4%[cite: 1, 3]
           if not trade["break_even_activated"] and pnl_pct >= 0.4:
             trade["break_even_activated"] = True
             if trade["entry_price"] > trade["current_sl_price"]:
               trade["current_sl_price"] = trade["entry_price"]
 
-          # Trailing Take Profit aktivácia pri +0.8% s callbackom 0.3%[cite: 1]
+          # Trailing Take Profit aktivácia pri +0.8% s callbackom 0.3%[cite: 1, 3]
           if not trade["trailing_tp_activated"] and pnl_pct >= 0.8:
             trade["trailing_tp_activated"] = True
 
@@ -400,7 +478,7 @@ async def advanced_risk_monitor_loop():
                 record_closed_trade(symbol, pnl_pct, pnl_usdc, "Take Profit")
 
                 send_telegram_msg(
-                    f"🎯 <b>[DEMO TAKE PROFIT - VÝSLEDOK]</b>\n"
+                    f"🎯 <b>[TAKE PROFIT - VÝSLEDOK]</b>\n"
                     f"<b>Pár:</b> {symbol}\n"
                     f"<b>Zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:+.2f})"
                 )
@@ -427,7 +505,7 @@ async def advanced_risk_monitor_loop():
               )
 
               send_telegram_msg(
-                  f"🚨 <b>[DEMO STOP-LOSS / OCHRANA]</b>\n"
+                  f"🚨 <b>[STOP-LOSS / OCHRANA]</b>\n"
                   f"<b>Pár:</b> {symbol}\n"
                   f"<b>Výsledok:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f})"
               )
@@ -458,13 +536,16 @@ app = FastAPI(lifespan=lifespan)
 
 
 # --- API ENDPOINTS ---
-@app.get("/api/set-mode/{mode}")
-async def set_mode(mode: str):
-  global CURRENT_MODE
-  if mode in ["AGGRESSIVE", "CONSERVATIVE"]:
-    CURRENT_MODE = mode
-    return JSONResponse({"status": "success", "mode": CURRENT_MODE})
-  return JSONResponse({"status": "error", "message": "Neplatný režim."})
+@app.get("/api/set-strategy/{mode}")
+async def set_strategy(mode: str):
+  global CURRENT_STRATEGY_MODE
+  decoded_mode = (
+      "Agresívny Momentum (Breakout)"
+      if "Breakout" in mode
+      else "Korekcia (Fibonacci Touch)"
+  )
+  CURRENT_STRATEGY_MODE = decoded_mode
+  return JSONResponse({"status": "success", "mode": CURRENT_STRATEGY_MODE})
 
 
 @app.post("/api/emergency-sell")
@@ -517,13 +598,13 @@ async def emergency_sell():
     })
 
 
-# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE ---
+# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE S CHECKLISTOM ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - CyberHUD 3.5 (Top Gainer Demo)</title>
+    <title>Apex Scalper Pro - CyberHUD 3.6 (Checklist & Strategy Mode)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -535,7 +616,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             color: #ffffff; min-height: 100vh;
         }
         .container { 
-            max-width: 680px; margin: 0; background: rgba(0, 0, 0, 0.75);
+            max-width: 720px; margin: 0; background: rgba(0, 0, 0, 0.78);
             backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 18px; padding: 22px;
             box-shadow: 0 0 35px rgba(0, 255, 255, 0.25);
@@ -543,14 +624,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
         .brand-title { font-size: 1rem; font-weight: 800; color: #00f0ff; letter-spacing: 2px; text-transform: uppercase; }
         
-        .controls-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,255,255,0.08); border: 1px solid rgba(0,255,255,0.2); padding: 10px 14px; border-radius: 10px; margin-bottom: 15px; }
-        .mode-buttons a { text-decoration: none; background: rgba(0,0,0,0.5); border: 1px solid #00f0ff; color: #fff; padding: 6px 12px; font-size: 0.75rem; font-weight: bold; border-radius: 6px; display: inline-block; transition: all 0.2s; }
+        .controls-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,255,255,0.08); border: 1px solid rgba(0,255,255,0.2); padding: 10px 14px; border-radius: 10px; margin-bottom: 15px; flex-wrap: wrap; gap: 8px; }
+        .mode-buttons a { text-decoration: none; background: rgba(0,0,0,0.5); border: 1px solid #00f0ff; color: #fff; padding: 6px 12px; font-size: 0.7rem; font-weight: bold; border-radius: 6px; display: inline-block; transition: all 0.2s; }
         .mode-buttons a.active { background: #00f0ff; color: #000; box-shadow: 0 0 10px #00f0ff; }
         
         .kill-switch-btn {
             background: linear-gradient(135deg, #ff0055, #990033);
             color: #fff; border: 1px solid #ff0055; padding: 6px 12px;
-            border-radius: 6px; font-weight: 800; font-size: 0.75rem;
+            border-radius: 6px; font-weight: 800; font-size: 0.7rem;
             cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
             box-shadow: 0 0 10px rgba(255, 0, 85, 0.4);
         }
@@ -565,8 +646,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .section-block { margin-bottom: 22px; }
         .section-title { font-size: 0.85rem; font-weight: 700; color: #00f0ff; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
         table { width: 100%; border-collapse: collapse; margin-top: 4px; }
-        th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(0, 255, 255, 0.20); font-size: 0.8rem; color: #ffffff; }
-        th { font-weight: 700; color: #00f0ff; text-transform: uppercase; font-size: 0.72rem; }
+        th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid rgba(0, 255, 255, 0.20); font-size: 0.75rem; color: #ffffff; }
+        th { font-weight: 700; color: #00f0ff; text-transform: uppercase; font-size: 0.68rem; }
         .pnl-green { color: #00ff88; font-weight: bold; }
         .pnl-red { color: #ff4444; font-weight: bold; }
         .chart-container { background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(0, 255, 255, 0.2); border-radius: 10px; padding: 10px; margin-top: 10px; height: 150px; }
@@ -579,14 +660,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 3.5 (Top Gainer Demo)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 3.6 (Check-list & Režimy)</div>
         </div>
 
         <div class="controls-row">
             <div class="mode-buttons">
-                <span style="font-size: 0.75rem; color: #00f0ff; font-weight: bold; margin-right: 6px;">REŽIM:</span>
-                <a href="/api/set-mode/AGGRESSIVE" class="{{ 'active' if current_mode == 'AGGRESSIVE' else '' }}">Agresívny</a>
-                <a href="/api/set-mode/CONSERVATIVE" class="{{ 'active' if current_mode == 'CONSERVATIVE' else '' }}">Konzervatívny</a>
+                <span style="font-size: 0.7rem; color: #00f0ff; font-weight: bold; margin-right: 4px;">STRATÉGIA:</span>
+                <a href="/api/set-strategy/Breakout" class="{{ 'active' if 'Breakout' in current_mode else '' }}">⚡ Breakout</a>
+                <a href="/api/set-strategy/Fibonacci" class="{{ 'active' if 'Fibonacci' in current_mode else '' }}">🎯 Fib 0.786</a>
             </div>
             <button class="kill-switch-btn" onclick="triggerKillSwitch()">🚨 KILL SWITCH</button>
         </div>
@@ -597,7 +678,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <div class="stat-value">{{ total_trades }}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Úspešność (Win Rate)</div>
+                <div class="stat-label">Úspešnosť (Win Rate)</div>
                 <div class="stat-value" style="color: #00ff88;">{{ win_rate }}%</div>
             </div>
             <div class="stat-card">
@@ -612,7 +693,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="section-title">🔴 Aktívny Obchod & Živý PnL</div>
             {% if trades %}
                 <table>
-                    <tr><th>Pár</th><th>Vstup</th><th>Investícia</th><th>Aktuálna Cena</th><th>PnL (%)</th><th>PnL ($)</th></tr>
+                    <tr><th>Pár</th><th>Vstup</th><th>Investícia</th><th>Cena</th><th>PnL (%)</th><th>PnL ($)</th></tr>
                     {% for t, details in trades.items() %}
                     <tr>
                         <td><strong>{{ details.market_pair }}</strong></td>
@@ -629,8 +710,28 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
-                    ✅ Žiadny aktívny obchod. Skenujem živé Top Gainery...
+                    ✅ Žiadny aktívny obchod. Skenujem trh podľa checklistu...
                 </div>
+            {% endif %}
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">📊 Živý Radar Trhu & Check-list (5m TF)</div>
+            {% if radar %}
+                <table>
+                    <tr><th>Symbol</th><th>24h Rast</th><th>Objemový Mom.</th><th>Impulz / Fib</th><th>Pripravenosť</th></tr>
+                    {% for item in radar %}
+                    <tr>
+                        <td><strong>{{ item.instId }}</strong></td>
+                        <td>+{{ "%.2f" | format(item.change) }}%</td>
+                        <td><span style="color: {{ '#00ff88' if item.volume_status else '#ff4444' }};">{{ '🟢 Silný' if item.volume_status else '🔴 Slabý' }}</span></td>
+                        <td><span style="color: {{ '#00ff88' if item.impulse_status else '#ff4444' }};">{{ '🟢 OK' if item.impulse_status else '⚪ Čaká' }}</span></td>
+                        <td><strong style="color: {{ '#00ff88' if item.buy_ready else '#00f0ff' }};">{{ '🚀 NAKUPOVAT' if item.buy_ready else item.probability|string + '%' }}</strong></td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem trh...</div>
             {% endif %}
         </div>
 
@@ -655,26 +756,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div class="section-block">
-            <div class="section-title">📊 Živý Radar Trhu (Top Gainers Demo)</div>
-            {% if radar %}
-                <table>
-                    <tr><th>Symbol</th><th>Cena</th><th>24h Rast</th><th>Objem</th><th>Šanca (%)</th></tr>
-                    {% for item in radar %}
-                    <tr>
-                        <td><strong>{{ item.instId }}</strong></td>
-                        <td>{{ "%.4f" | format(item.price) }}</td>
-                        <td>+{{ "%.2f" | format(item.change) }}%</td>
-                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
-                        <td><strong style="color: #00ff88;">{{ item.probability }}%</strong></td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            {% else %}
-                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem trh s Top Gainerami...</div>
-            {% endif %}
-        </div>
-
-        <div class="section-block">
             <div class="section-title">💰 Zostatky (OKX Demo - USDC, USDT, EUR)</div>
             <table>
                 <tr><th>Mena</th><th>Dostupné (availBal)</th></tr>
@@ -684,24 +765,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </table>
         </div>
 
-        <div class="section-block">
-            <div class="section-title">📅 Kalendár Výsledkov (Denný PnL)</div>
-            {% if calendar %}
-                <div class="calendar-grid">
-                    {% for day, data in calendar.items() %}
-                    <div class="calendar-day">
-                        <div>{{ day }}</div>
-                        <div style="font-weight: bold; color: #00ff88; margin-top: 4px;">{{ "%+.2f" | format(data.pnl) }} $</div>
-                        <div style="font-size: 0.65rem; color: rgba(255,255,255,0.7); margin-top: 2px;">{{ data.trades }} obch.</div>
-                    </div>
-                    {% endfor %}
-                </div>
-            {% else %}
-                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Zatiaľ žiadne uzavreté obchody.</div>
-            {% endif %}
-        </div>
-
-        <div class="refresh-info">APEX HUD 3.5 | Obnovenie 2s | SK Čas: {{ current_time }}</div>
+        <div class="refresh-info">APEX HUD 3.6 | Režim: {{ current_mode }} | SK Čas: {{ current_time }}</div>
     </div>
 
     <script>
@@ -795,7 +859,7 @@ async def dashboard():
       total_trades=total_trades,
       win_rate=win_rate,
       total_pnl_usdc=total_pnl_usdc,
-      current_mode=CURRENT_MODE,
+      current_mode=CURRENT_STRATEGY_MODE,
       current_stage=CURRENT_STAGE,
       price_history=PRICE_HISTORY,
       current_time=get_sk_time_str(),
@@ -806,8 +870,8 @@ async def dashboard():
 async def api_status():
   return {
       "status": "online",
-      "bot_type": "Apex Scalper Pro 3.5 (Top Gainer Demo Live)",
-      "mode": CURRENT_MODE,
+      "bot_type": "Apex Scalper Pro 3.6 (Checklist Mode)",
+      "mode": CURRENT_STRATEGY_MODE,
       "current_stage": CURRENT_STAGE,
       "active_trades": ACTIVE_TRADES,
       "market_radar": MARKET_RADAR,
