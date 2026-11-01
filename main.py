@@ -325,162 +325,160 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🌆 ŽIVÝ KYBERPUNKOVÝ HTML DASHBOARD ---
+# --- 🌆 KOMPAKTNÝ CYBERPUNK TERMINÁL S VIDITEĽNÝM MESTOM A NEÓNOM BAR ---
 DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro | Cyberpunk OKX Terminal</title>
+    <title>Apex Scalper Pro | Cyberpunk City Terminal</title>
     <style>
         :root {
             --neon-blue: #00f0ff;
             --neon-pink: #ff007f;
-            --neon-purple: #7000ff;
             --neon-green: #00ff66;
-            --bg-dark: #05070f;
-            --card-bg: rgba(12, 16, 32, 0.75);
-            --border-glow: rgba(0, 240, 255, 0.3);
-            --text-main: #e2e8f0;
+            --bg-glass: rgba(8, 12, 24, 0.65);
+            --border-glow: rgba(0, 240, 255, 0.25);
+            --text-main: #f1f5f9;
             --text-dim: #94a3b8;
         }
 
         * { box-sizing: border-box; }
         body { 
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background-color: var(--bg-dark); 
+            background-color: #02040a; 
             color: var(--text-main); 
             margin: 0; 
-            padding: 20px;
+            padding: 15px;
             overflow-x: hidden;
             position: relative;
         }
 
-        #canvas-bg {
+        /* Živé mesto pozadie s paralaxou/animáciou */
+        #city-canvas {
             position: fixed;
             top: 0;
             left: 0;
             width: 100vw;
             height: 100vh;
             z-index: -1;
-            background: radial-gradient(circle at 50% 20%, #101428 0%, #03050a 100%);
+            background: linear-gradient(135deg, #050b18 0%, #020408 100%);
         }
 
-        .container { max-width: 1300px; margin: 0 auto; position: relative; z-index: 1; }
+        .container { max-width: 1250px; margin: 0 auto; position: relative; z-index: 1; }
 
         .header { 
             display: flex; 
             justify-content: space-between; 
             align-items: center; 
-            background: var(--card-bg); 
-            padding: 22px 30px; 
-            border-radius: 16px; 
+            background: var(--bg-glass); 
+            padding: 15px 25px; 
+            border-radius: 12px; 
             border: 1px solid var(--border-glow); 
-            box-shadow: 0 0 25px rgba(0, 240, 255, 0.15);
-            backdrop-filter: blur(12px);
+            box-shadow: 0 0 20px rgba(0, 240, 255, 0.1);
+            backdrop-filter: blur(8px);
         }
 
         .logo-area h1 { 
             margin: 0; 
-            font-size: 1.8rem; 
+            font-size: 1.5rem; 
             color: var(--neon-blue); 
-            letter-spacing: 2px;
-            text-shadow: 0 0 10px rgba(0, 240, 255, 0.6), 0 0 20px rgba(0, 240, 255, 0.2);
+            letter-spacing: 1.5px;
+            text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
             text-transform: uppercase;
         }
 
-        .logo-area p { margin: 4px 0 0 0; color: var(--text-dim); font-size: 0.85rem; letter-spacing: 1px; }
+        .logo-area p { margin: 2px 0 0 0; color: var(--text-dim); font-size: 0.75rem; }
 
         .status-badge { 
             display: flex; 
             align-items: center; 
-            gap: 10px; 
+            gap: 8px; 
             background: rgba(0, 255, 102, 0.1); 
             color: var(--neon-green); 
-            padding: 8px 18px; 
-            border-radius: 30px; 
+            padding: 6px 14px; 
+            border-radius: 20px; 
             font-weight: 700; 
-            font-size: 0.85rem; 
-            border: 1px solid rgba(0, 255, 102, 0.4);
-            box-shadow: 0 0 15px rgba(0, 255, 102, 0.2);
+            font-size: 0.8rem; 
+            border: 1px solid rgba(0, 255, 102, 0.3);
+            box-shadow: 0 0 10px rgba(0, 255, 102, 0.15);
         }
 
         .pulse-dot { 
-            width: 10px; 
-            height: 10px; 
+            width: 8px; 
+            height: 8px; 
             background: var(--neon-green); 
             border-radius: 50%; 
-            box-shadow: 0 0 12px var(--neon-green); 
+            box-shadow: 0 0 8px var(--neon-green); 
             animation: pulse 1.5s infinite alternate; 
         }
 
         @keyframes pulse { 0% { opacity: 0.4; transform: scale(0.9); } 100% { opacity: 1; transform: scale(1.2); } }
 
-        .grid-top { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; margin-top: 25px; }
+        .grid-top { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 15px; }
 
+        /* Kompaktnejšie a priehľadnejšie karty, aby bolo vidno pozadie mesta */
         .card { 
-            background: var(--card-bg); 
-            padding: 24px; 
-            border-radius: 16px; 
-            border: 1px solid rgba(112, 0, 255, 0.3); 
-            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-            backdrop-filter: blur(10px);
-            transition: border-color 0.3s ease;
+            background: rgba(10, 14, 28, 0.7); 
+            padding: 16px 20px; 
+            border-radius: 12px; 
+            border: 1px solid rgba(0, 240, 255, 0.15); 
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(6px);
         }
-
-        .card:hover { border-color: var(--neon-blue); }
 
         h2 { 
             margin-top: 0; 
             color: var(--neon-blue); 
-            font-size: 1.1rem; 
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1); 
-            padding-bottom: 12px; 
+            font-size: 0.95rem; 
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08); 
+            padding-bottom: 8px; 
             display: flex; 
             justify-content: space-between; 
             align-items: center;
-            letter-spacing: 0.5px;
         }
 
-        table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-        th, td { text-align: left; padding: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); font-size: 0.9rem; }
-        th { color: var(--text-dim); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 1px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.04); font-size: 0.85rem; }
+        th { color: var(--text-dim); text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.5px; }
 
-        .tag-green { color: var(--neon-green); font-weight: bold; text-shadow: 0 0 8px rgba(0, 255, 102, 0.4); }
+        .tag-green { color: var(--neon-green); font-weight: bold; text-shadow: 0 0 6px rgba(0, 255, 102, 0.3); }
         
         .badge-prob { 
             background: rgba(255, 0, 127, 0.15); 
             color: var(--neon-pink); 
-            padding: 4px 10px; 
-            border-radius: 8px; 
+            padding: 3px 8px; 
+            border-radius: 6px; 
             font-weight: 700; 
-            font-size: 0.8rem; 
-            border: 1px solid rgba(255, 0, 127, 0.4);
-            box-shadow: 0 0 10px rgba(255, 0, 127, 0.2);
+            font-size: 0.75rem; 
+            border: 1px solid rgba(255, 0, 127, 0.3);
         }
 
-        .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; margin-top: 15px; }
+        .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-top: 10px; }
         .calendar-day { 
-            background: rgba(5, 7, 15, 0.6); 
-            border: 1px solid rgba(0, 240, 255, 0.2); 
-            border-radius: 12px; 
-            padding: 12px; 
+            background: rgba(4, 6, 12, 0.6); 
+            border: 1px solid rgba(0, 240, 255, 0.15); 
+            border-radius: 8px; 
+            padding: 8px; 
             text-align: center; 
         }
 
-        .calendar-date { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 6px; }
-        .calendar-pnl { font-size: 1rem; font-weight: bold; }
-        .pnl-plus { color: var(--neon-green); text-shadow: 0 0 8px rgba(0, 255, 102, 0.3); }
+        .calendar-date { font-size: 0.7rem; color: var(--text-dim); margin-bottom: 4px; }
+        .calendar-pnl { font-size: 0.9rem; font-weight: bold; }
+        .pnl-plus { color: var(--neon-green); text-shadow: 0 0 6px rgba(0, 255, 102, 0.2); }
         .pnl-minus { color: #ff3366; }
+        .calendar-trades { font-size: 0.65rem; color: var(--text-dim); margin-top: 2px; }
 
-        .refresh-info { text-align: center; color: var(--text-dim); font-size: 0.8rem; margin-top: 25px; }
+        .refresh-info { text-align: center; color: var(--text-dim); font-size: 0.75rem; margin-top: 15px; }
     </style>
     <meta http-equiv="refresh" content="10">
 </head>
 <body>
-    <canvas id="canvas-bg"></canvas>
+    <!-- Živé plátno s kyberpunkovým mestom a blikajúcim neónom BAR -->
+    <canvas id="city-canvas"></canvas>
 
     <div class="container">
+        <!-- Hlavička -->
         <div class="header">
             <div class="logo-area">
                 <h1>⚡ APEX SCALPER PRO</h1>
@@ -493,6 +491,7 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
             </div>
         </div>
 
+        <!-- Zostatky & Obchody -->
         <div class="grid-top">
             <div class="card">
                 <h2>💰 Reálne Zostatky (OKX Demo)</h2>
@@ -521,15 +520,16 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
                         {% endfor %}
                     </table>
                 {% else %}
-                    <p style="color: var(--text-dim); text-align: center; margin-top: 35px; font-size: 0.9rem;">Žiadny aktívny obchod. Čakám na signál...</p>
+                    <p style="color: var(--text-dim); text-align: center; margin-top: 20px; font-size: 0.85rem;">Žiadny aktívny obchod. Čakám na signál...</p>
                 {% endif %}
             </div>
         </div>
 
-        <div class="card" style="margin-top: 25px;">
+        <!-- Radar -->
+        <div class="card" style="margin-top: 20px;">
             <h2>
                 <span>⚡ Živý Radar Trhu (Top Gainers 2% - 25% | Objem >50k)</span>
-                <span style="font-size: 0.8rem; color: var(--neon-pink);">AI Volatility Radar</span>
+                <span style="font-size: 0.75rem; color: var(--neon-pink);">AI Volatility Radar</span>
             </h2>
             {% if radar %}
                 <table>
@@ -545,11 +545,12 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <p style="color: var(--text-dim); text-align: center; margin-top: 20px;">Skenujem trh, čakám na mince spĺňajúce kritériá...</p>
+                <p style="color: var(--text-dim); text-align: center; margin-top: 15px; font-size: 0.85rem;">Skenujem trh, čakám na mince spĺňajúce kritériá...</p>
             {% endif %}
         </div>
 
-        <div class="card" style="margin-top: 25px;">
+        <!-- Kalendár PnL -->
+        <div class="card" style="margin-top: 20px;">
             <h2>📅 Kalendár Denných Výsledkov (PnL Tracker)</h2>
             {% if calendar %}
                 <div class="calendar-grid">
@@ -564,7 +565,7 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
                     {% endfor %}
                 </div>
             {% else %}
-                <p style="color: var(--text-dim); text-align: center; margin-top: 15px; font-size: 0.9rem;">Zatiaľ žiadne uzavreté obchody v tomto období.</p>
+                <p style="color: var(--text-dim); text-align: center; margin-top: 10px; font-size: 0.85rem;">Zatiaľ žiadne uzavreté obchody v tomto období.</p>
             {% endif %}
         </div>
 
@@ -574,7 +575,7 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
     </div>
 
     <script>
-        const canvas = document.getElementById('canvas-bg');
+        const canvas = document.getElementById('city-canvas');
         const ctx = canvas.getContext('2d');
         let width = canvas.width = window.innerWidth;
         let height = canvas.height = window.innerHeight;
@@ -584,43 +585,78 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
             height = canvas.height = window.innerHeight;
         });
 
-        const particles = [];
-        for(let i = 0; i < 45; i++) {
-            particles.push({
-                x: Math.random() * width,
-                y: Math.random() * height,
-                radius: Math.random() * 2 + 1,
-                color: i % 2 === 0 ? '#00f0ff' : '#ff007f',
-                vx: (Math.random() - 0.5) * 0.5,
-                vy: (Math.random() - 0.5) * 0.5,
-                alpha: Math.random() * 0.5 + 0.2
+        // Generovanie budov v pozadí (mesto)
+        const buildings = [];
+        for(let i = 0; i < 22; i++) {
+            buildings.push({
+                x: i * (width / 20),
+                w: width / 22,
+                h: Math.random() * (height * 0.6) + (height * 0.2),
+                color: i % 2 === 0 ? '#070d1d' : '#040710'
             });
         }
 
-        function draw() {
-            ctx.clearRect(0, 0, width, height);
-            
-            particles.forEach(p => {
-                p.x += p.vx;
-                p.y += p.vy;
+        // Svetelné lúče / lietajúce objekty
+        const lights = [];
+        for(let i = 0; i < 15; i++) {
+            lights.push({
+                x: Math.random() * width,
+                y: Math.random() * height,
+                speed: Math.random() * 2 + 1,
+                size: Math.random() * 2 + 1,
+                color: i % 3 === 0 ? '#00f0ff' : (i % 3 === 1 ? '#ff007f' : '#00ff66')
+            });
+        }
 
-                if(p.x < 0) p.x = width;
-                if(p.x > width) p.x = 0;
-                if(p.y < 0) p.y = height;
-                if(p.y > height) p.y = 0;
+        let barGlow = 0;
+
+        function drawCity() {
+            ctx.clearRect(0, 0, width, height);
+
+            // Vykreslenie siluety budov mesta
+            buildings.forEach(b => {
+                ctx.fillStyle = b.color;
+                ctx.fillRect(b.x, height - b.h, b.w, b.h);
+
+                // Okná na budovách (niektoré svietia)
+                ctx.fillStyle = 'rgba(0, 240, 255, 0.15)';
+                for(let wy = height - b.h + 20; wy < height - 20; wy += 30) {
+                    for(let wx = b.x + 10; wx < b.x + b.w - 10; wx += 20) {
+                        if((wx + wy) % 5 === 0) {
+                            ctx.fillRect(wx, wy, 8, 12);
+                        }
+                    }
+                }
+            });
+
+            // Blikajúci neónový nápis "BAR" v pozadí mesta
+            barGlow += 0.05;
+            let alphaBar = Math.abs(Math.sin(barGlow)) * 0.7 + 0.3;
+            ctx.save();
+            ctx.font = 'bold 36px monospace';
+            ctx.fillStyle = `rgba(255, 0, 127, ${alphaBar})`;
+            ctx.shadowColor = '#ff007f';
+            ctx.shadowBlur = 20;
+            ctx.fillText("B A R 24H", width * 0.75, height * 0.35);
+            ctx.restore();
+
+            // Pohybujúce sa svetlá / dážď / lúče v meste
+            lights.forEach(l => {
+                l.x -= l.speed;
+                if(l.x < 0) l.x = width;
 
                 ctx.beginPath();
-                ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
-                ctx.fillStyle = p.color;
-                ctx.globalAlpha = p.alpha;
+                ctx.arc(l.x, l.y, l.size, 0, Math.PI * 2);
+                ctx.fillStyle = l.color;
                 ctx.shadowBlur = 10;
-                ctx.shadowColor = p.color;
+                ctx.shadowColor = l.color;
+                ctx.globalAlpha = 0.8;
                 ctx.fill();
             });
 
-            requestAnimationFrame(draw);
+            requestAnimationFrame(drawCity);
         }
-        draw();
+        drawCity();
     </script>
 </body>
 </html>"""
@@ -657,7 +693,7 @@ async def dashboard():
 async def api_status():
     return {
         "status": "online",
-        "bot_type": "Apex Gainer Scalper Pro (Cyberpunk Edition)",
+        "bot_type": "Apex Gainer Scalper Pro (Cyberpunk City Edition)",
         "active_trades": ACTIVE_TRADES,
         "market_radar": MARKET_RADAR,
         "calendar": DAILY_PNL_CALENDAR,
