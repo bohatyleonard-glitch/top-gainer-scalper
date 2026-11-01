@@ -90,10 +90,8 @@ def okx_request(method: str, path: str, body: str = ''):
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR
     await asyncio.sleep(5)
-    
-    # Okamžitý testovací vzruch pri štarte skenera
-    print(f"[{get_sk_time_str()}] 🚀 Testovací vzruch: Autonómny Top Gainer Skener spustený!", flush=True)
-    send_telegram_msg("🚀 <b>[TESTOVACÍ VZRUCH] Apex Scalper Pro úspešne naštartoval!</b> OKX Demo pripojenie aktívne, skenujem trh.")
+    print(f"[{get_sk_time_str()}] 🚀 Autonómny Top Gainer Skener spustený!", flush=True)
+    send_telegram_msg("🚀 <b>[CYBERPUNK HUD] Apex Scalper Pro aktívny!</b> Skenujem trh.")
 
     while True:
         try:
@@ -332,7 +330,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ HTML ŠABLÓNA S BIELYM PÍSMOM A NEÓNOVÝM MESTOM ---
+# --- 🖼️ CYBERPUNK NEON FUTURE CITY HUD ŠABLÓNA ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -345,55 +343,97 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
             margin: 0; 
             padding: 25px;
-            background: url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=1920&auto=format&fit=crop') no-repeat center center fixed;
+            background: linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0.55)), url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=1920&auto=format&fit=crop');
             background-size: cover;
+            background-position: center center;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
             color: #ffffff;
             min-height: 100vh;
+            overflow-x: hidden;
+            position: relative;
         }
+
+        body::before {
+            content: "";
+            position: fixed;
+            top: -10%;
+            left: -10%;
+            width: 120%;
+            height: 120%;
+            background: radial-gradient(circle at 20% 30%, rgba(0,255,255,0.12), transparent 40%),
+                        radial-gradient(circle at 80% 50%, rgba(180,0,255,0.12), transparent 40%),
+                        radial-gradient(circle at 50% 80%, rgba(0,128,255,0.10), transparent 45%);
+            animation: fogMove 28s ease-in-out infinite;
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        @keyframes fogMove {
+            0% { transform: translate(0px, 0px); }
+            25% { transform: translate(25px, -10px); }
+            50% { transform: translate(45px, 15px); }
+            75% { transform: translate(15px, 25px); }
+            100% { transform: translate(0px, 0px); }
+        }
+
         .container { 
             max-width: 580px; 
             margin: 0; 
-            background: transparent; 
-            padding: 0;
-            box-shadow: none;
+            background: rgba(0, 0, 0, 0.30);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(0, 255, 255, 0.18);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.15), 0 0 40px rgba(0, 255, 255, 0.10), 0 0 70px rgba(180, 0, 255, 0.10);
         }
+
         .brand-title {
-            font-size: 0.8rem;
+            font-size: 0.85rem;
             font-weight: 800;
-            color: #ffffff;
-            letter-spacing: 1.5px;
+            color: #00f0ff;
+            letter-spacing: 2px;
             text-transform: uppercase;
             margin-bottom: 20px;
+            text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
         }
+
         .section-block {
             margin-bottom: 22px;
         }
+
         .section-title {
             font-size: 0.85rem;
             font-weight: 700;
             color: #ffffff;
             margin-bottom: 6px;
+            text-shadow: 0 0 5px rgba(255, 255, 255, 0.4);
         }
+
         table { width: 100%; border-collapse: collapse; margin-top: 4px; }
-        th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.25); font-size: 0.78rem; color: #ffffff; }
-        th { font-weight: 700; color: #ffffff; text-transform: uppercase; font-size: 0.68rem; }
+        th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid rgba(0, 255, 255, 0.15); font-size: 0.78rem; color: #ffffff; }
+        th { font-weight: 700; color: #00f0ff; text-transform: uppercase; font-size: 0.68rem; letter-spacing: 1px; }
+
         .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(85px, 1fr)); gap: 6px; margin-top: 4px; }
         .calendar-day { 
-            background: rgba(0, 0, 0, 0.45); 
-            border: 1px solid rgba(255,255,255,0.3); 
-            border-radius: 4px; 
-            padding: 5px; 
+            background: rgba(0, 0, 0, 0.50); 
+            border: 1px solid rgba(0, 255, 255, 0.25); 
+            border-radius: 6px; 
+            padding: 6px; 
             text-align: center; 
             font-size: 0.72rem;
             color: #ffffff;
+            box-shadow: inset 0 0 10px rgba(0, 255, 255, 0.05);
         }
-        .refresh-info { color: #dddddd; font-size: 0.68rem; margin-top: 20px; font-weight: 600; }
+
+        .refresh-info { color: rgba(255, 255, 255, 0.6); font-size: 0.68rem; margin-top: 20px; font-weight: 600; }
     </style>
     <meta http-equiv="refresh" content="10">
 </head>
 <body>
     <div class="container">
-        <div class="brand-title">Apex Scalper Pro</div>
+        <div class="brand-title">⚡ Apex Scalper Pro HUD</div>
 
         <div class="section-block">
             <div class="section-title">💰 Zoznam zostatkov (OKX Demo)</div>
@@ -419,12 +459,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         <td>{{ "%.4f" | format(item.price) }}</td>
                         <td>+{{ "%.2f" | format(item.change) }}%</td>
                         <td>{{ "{:,.0f}".format(item.volume) }}</td>
-                        <td><strong>{{ item.probability }}%</strong></td>
+                        <td><strong style="color: #00f0ff;">{{ item.probability }}%</strong></td>
                     </tr>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.78rem; color: #dddddd;">Skenujem trh, čakám na mince spĺňajúce kritériá...</div>
+                <div style="font-size: 0.78rem; color: rgba(255, 255, 255, 0.7);">Skenujem trh, čakám na mince spĺňajúce kritériá...</div>
             {% endif %}
         </div>
 
@@ -435,13 +475,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% for day, data in calendar.items() %}
                     <div class="calendar-day">
                         <div>{{ day }}</div>
-                        <div style="font-weight: bold;">{{ "%+.2f" | format(data.pnl) }} $</div>
-                        <div style="font-size: 0.6rem;">{{ data.trades }} obch.</div>
+                        <div style="font-weight: bold; color: #00ff88;">{{ "%+.2f" | format(data.pnl) }} $</div>
+                        <div style="font-size: 0.6rem; color: rgba(255,255,255,0.7);">{{ data.trades }} obch.</div>
                     </div>
                     {% endfor %}
                 </div>
             {% else %}
-                <div style="font-size: 0.78rem; color: #dddddd;">Zatiaľ žiadne uzavreté obchody.</div>
+                <div style="font-size: 0.78rem; color: rgba(255, 255, 255, 0.7);">Zatiaľ žiadne uzavreté obchody.</div>
             {% endif %}
         </div>
 
@@ -459,12 +499,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.78rem; color: #dddddd;">Žiadny aktívny obchod. Čakám na signál...</div>
+                <div style="font-size: 0.78rem; color: rgba(255, 255, 255, 0.7);">Žiadny aktívny obchod. Čakám na signál...</div>
             {% endif %}
         </div>
 
         <div class="refresh-info">
-            Obnovenie každých 10s | Aktuálny čas: {{ current_time }}
+            SYSTEM ONLINE | Obnovenie 10s | SK Čas: {{ current_time }}
         </div>
     </div>
 </body>
@@ -508,7 +548,7 @@ async def dashboard():
 async def api_status():
     return {
         "status": "online",
-        "bot_type": "Apex Gainer Scalper Pro",
+        "bot_type": "Apex Gainer Scalper Pro Cyberpunk Edition",
         "active_trades": ACTIVE_TRADES,
         "market_radar": MARKET_RADAR,
         "calendar": DAILY_PNL_CALENDAR,
