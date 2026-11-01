@@ -84,11 +84,12 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 AGRESÍVNY SKENER (ZMERNENÉ PODMIENKY PRE ČASTEJŠIE OBCHODY) ---
+# --- 🔍 AGRESÍVNY SKENER ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, MARKET_RADAR, CURRENT_STAGE
     await asyncio.sleep(5)
     
+    # ⚠️ TOTO SA ODOŠLE IBA RAZ PRI ŠTARTE BOTA (MIMO WHILE CYCLU)
     start_msg = f"[{get_sk_time_str()}] ⚡ AGRESÍVNY SCALPER SPUSTENÝ (Zmiernené filtre pre časté obchody)"
     print(start_msg, flush=True)
     send_telegram_msg(start_msg)
@@ -119,11 +120,9 @@ async def top_gainer_scanner_loop():
                     last_p = float(item.get('last', 0))
                     vol24h = float(item.get('volCcy24h', 0))
 
-                    # ZNIŽENÝ OBJEM NA 10,000 USDC PRE RÝCHLEJŠIE NÁJDENIE PRÍLEŽITOSTI[cite: 2]
                     if open24h > 0 and last_p > 0 and vol24h > 10000:
                         change_pct = ((last_p - open24h) / open24h) * 100
                         
-                        # ŠIRŠÍ ROZSAH RASTU (1% až 30%)
                         if 1.0 <= change_pct <= 30.0:
                             probability = int(min(max((change_pct / 30.0) * 100, 50), 99))
                             candidates.append({
@@ -217,7 +216,7 @@ async def top_gainer_scanner_loop():
         except Exception as scan_err:
             print(f"❌ Chyba v skeneri: {scan_err}", flush=True)
 
-        await asyncio.sleep(3) # Skrátený interval skenovania na 3 sekundy
+        await asyncio.sleep(3)
 
 # --- 🛡️ MONITOR OBCHODU ---
 async def advanced_risk_monitor_loop():
@@ -311,7 +310,7 @@ async def advanced_risk_monitor_loop():
                                 send_telegram_msg(
                                     f"🎯 <b>[TRAILING TAKE PROFIT 🎉]</b>\n"
                                     f"<b>Pár:</b> {symbol}\n"
-                                    f"<b>Konečný zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:+.2f} USDC)"
+                                    f"<b>Konečný zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:.2f} USDC)"
                                 )
                             except Exception as err:
                                 print(f"❌ Chyba Trailing TP: {err}", flush=True)
