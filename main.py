@@ -40,14 +40,16 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živý trh podľa checklistu..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz
+MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz[cite: 1, 3]
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
 # Režimy zodpovedajúce tvojmu Pine Script indikátoru v5.4.4
 CURRENT_STRATEGY_MODE = "Agresívny Momentum (Breakout)"
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
-EXCLUDED_COINS = ["ZAMA"]
+
+# 🛡️ BLACKLIST: Automaticky sa sem pridajú mince s reštrikciami z demo účtu
+EXCLUDED_COINS = ["ZAMA", "OKB"]
 
 
 def get_sk_time_str() -> str:
@@ -187,7 +189,7 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
 
 # --- 🔍 AUTOMATICKÝ SKENER S CHECKLISTOM ---
 async def top_gainer_scanner_loop():
-  global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING
+  global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING, EXCLUDED_COINS
   await asyncio.sleep(5)
 
   start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.6 SPUSTENÝ [Checklist Mode]"
@@ -338,7 +340,17 @@ async def top_gainer_scanner_loop():
         })
 
         order_res = okx_request("POST", "/api/v5/trade/order", order_body)
+        
+        # 🛡️ Ochrana proti compliance reštrikciám (kód 51155)
         if order_res.get("code") != "0":
+          err_data = order_res.get("data", [{}])
+          s_code = err_data[0].get("sCode") if isinstance(err_data, list) and len(err_data) > 0 else ""
+          
+          if s_code == "51155" or "compliance" in str(order_res).lower():
+            print(f"⚠️ Pár {best_target['instId']} blokovaný demo účtom (Compliance). Pridávam na blacklist.", flush=True)
+            if coin_name not in EXCLUDED_COINS:
+              EXCLUDED_COINS.append(coin_name)
+          
           print(f"❌ Nákup zlyhal: {order_res}", flush=True)
           IS_ORDER_PROCESSING = False
           await asyncio.sleep(3)
