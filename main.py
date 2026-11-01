@@ -709,6 +709,8 @@ async def dashboard():
     total_trades = len(CLOSED_TRADES_HISTORY)
     winning_trades = sum(1 for t in CLOSED_TRADES_HISTORY if t["pnl_pct"] > 0)
     win_rate = round((winning_trades / total_trades * 100) if total_trades > 0 else 0.0, 1)
+    
+    # Opravené na správny názov premennej CLOSED_TRADES_HISTORY
     total_pnl_usdc = sum(t["pnl_usdc"] for t in CLOSED_TRADES_HISTORY) if 'CLOSED_TRADES_HISTORY' in globals() else 0.0
 
     template = Template(HTML_TEMPLATE_CONTENT)
