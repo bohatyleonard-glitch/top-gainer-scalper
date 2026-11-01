@@ -40,14 +40,14 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živý trh..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz
+MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz[cite: 1]
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
 CURRENT_MODE = "AGGRESSIVE"
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 
-# 🛡️ BLACKLIST: Mince, ktoré na demo účte robia drobenie a trieštenie objednávok
+# 🛡️ BLACKLIST: Mince, ktoré na demo účte robia drobenie a trieštenie objednávok[cite: 1]
 EXCLUDED_COINS = ["ZAMA"]
 
 
@@ -114,7 +114,7 @@ def okx_request(method: str, path: str, body: str = ""):
     return {"code": "-1", "msg": str(err)}
 
 
-# --- 📈 FLEXIBILNÁ 5M INDIKÁTOROVÁ LOGIKA PRE ŽIVÉ TOKENY ---
+# --- 📈 5M INDIKÁTOROVÁ LOGIKA PRE ŽIVÉ TOKENY ---
 def evaluate_indicator_signal(inst_id: str) -> bool:
   try:
     url = f"/api/v5/market/candles?instId={inst_id}&bar=5m&limit=50"
@@ -123,7 +123,7 @@ def evaluate_indicator_signal(inst_id: str) -> bool:
       return False
 
     raw_candles = res["data"]
-    raw_candles.reverse()  # Od najstaršej po najnovšiu
+    raw_candles.reverse()
 
     if len(raw_candles) < 20:
       return False
@@ -131,35 +131,34 @@ def evaluate_indicator_signal(inst_id: str) -> bool:
     closes = [float(c[4]) for c in raw_candles]
     volumes = [float(c[5]) for c in raw_candles]
 
-    # Rýchla kontrola, či token nie je mŕtvy (posledné sviečky majú nulový objem)
     recent_vol_avg = sum(volumes[-5:]) / 5.0
-    if recent_vol_avg < 10.0:  # Zamedzenie obchodovania mŕtvych mincí
+    if recent_vol_avg < 10.0:  # Ochrana pred mŕtvymi mincami
       return False
 
-    # Flexibilnejšia podmienka pre živé tokeny:
-    # Overujeme, či cena rastie na posledných sviečkach a objem podporuje pohyb
-    price_trend_up = closes[-1] > closes[-3]  # Rast oproti predchádzajúcim sviečkam
+    price_trend_up = closes[-1] > closes[-3]
     return price_trend_up
   except Exception as e:
     print(f"❌ Chyba indikátora pre {inst_id}: {e}", flush=True)
-    return True  # V prípade výpadku API neblokujeme inak sľubný gainer
+    return True
 
 
-# --- 🔍 AUTOMATICKÝ 5M SKENER S PODMIENKAMI ---
+# --- 🔍 AUTOMATICKÝ 5M SKENER S PREHĽADOM ŠANCÍ ---
 async def top_gainer_scanner_loop():
   global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE, IS_ORDER_PROCESSING
   await asyncio.sleep(5)
 
-  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.2 SPUSTENÝ [Flexi Top Gainer]"
+  start_msg = (
+      f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.3 SPUSTENÝ [Live Radar + Šanca]"
+  )
   print(start_msg, flush=True)
   send_telegram_msg(
-      "🤖 <b>Apex Scalper 3.2 spustený!</b> Optimalizovaný skener pre živé"
-      " tokeny je aktívny."
+      "🤖 <b>Apex Scalper 3.3 spustený!</b> Live radar s výpočtom šance je"
+      " aktívny."
   )
 
   while True:
     try:
-      # 🛡️ Ochrana proti triešteniu: Maximálne 1 obchod naraz
+      # 🛡️ Ochrana proti triešteniu: Maximálne 1 obchod naraz[cite: 1]
       if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
         CURRENT_STAGE = "STAV: 🔴 V OBCHODE / SPRACOVÁVAM PRÍKAZ! Čakám..."
         await asyncio.sleep(5)
@@ -193,9 +192,9 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(5)
         continue
 
-      min_vol = 15000.0  # Minimálny objem, aby sme vylúčili mŕtve tokeny
-      min_change = 0.5  # Minimálny 24h rast od +0.5%
-      max_change = 25.0  # Maximálny 24h rast do +25%
+      min_vol = 15000.0  # Minimálny objem[cite: 1]
+      min_change = 0.5  # Minimálny 24h rast od +0.5%[cite: 1]
+      max_change = 25.0  # Maximálny 24h rast do +25%[cite: 1]
 
       candidates = []
       for item in tickers_res["data"]:
@@ -205,7 +204,7 @@ async def top_gainer_scanner_loop():
         if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC"]:
           continue
 
-        # 🛡️ Kontrola Blacklistu (ZAMA atď.)
+        # 🛡️ Kontrola Blacklistu (ZAMA atď.)[cite: 1]
         coin_base = inst_id.split("-")[0]
         if coin_base in EXCLUDED_COINS:
           continue
@@ -220,8 +219,8 @@ async def top_gainer_scanner_loop():
           if open24h > 0 and last_p > 0 and vol24h >= min_vol:
             change_pct = ((last_p - open24h) / open24h) * 100
             if min_change <= change_pct <= max_change:
-              # Overenie cez flexibilný skener, či token žije a má rastový trend
               if evaluate_indicator_signal(inst_id):
+                # Výpočet šance pre daný token (0% - 100%)
                 probability = int(
                     min(max((change_pct / max_change) * 100, 60), 99)
                 )
@@ -252,7 +251,7 @@ async def top_gainer_scanner_loop():
           await asyncio.sleep(5)
           continue
 
-      # 🛡️ Zámok proti triešteniu a paralelnému odosielaniu
+      # 🛡️ Zámok proti triešteniu a paralelnému odosielaniu[cite: 1]
       async with trade_lock:
         if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
           continue
@@ -260,11 +259,12 @@ async def top_gainer_scanner_loop():
         IS_ORDER_PROCESSING = True
         LAST_TRADE_TIME[coin_name] = now_ts
         CURRENT_STAGE = (
-            f"STAV: ⚡ Našiel som živý token! Vystavujem objednávku pre"
+            f"STAV: ⚡ Vybral som token so šancou"
+            f" {best_target['probability']}%! Vystavujem objednávku pre"
             f" {best_target['instId']}..."
         )
 
-        safe_budget = min(free_capital * 0.95, 500.0)
+        safe_budget = min(free_capital * 0.95, 500.0)  # Investícia do 500$[cite: 1]
         current_price = best_target["price"]
 
         coin_amount = safe_budget / current_price
@@ -293,8 +293,8 @@ async def top_gainer_scanner_loop():
           await asyncio.sleep(5)
           continue
 
-        tp_price = current_price * 1.012  # +1.2% Take Profit
-        sl_price = current_price * 0.99  # -1.0% Stop-Loss
+        tp_price = current_price * 1.012  # +1.2% Take Profit[cite: 1]
+        sl_price = current_price * 0.99  # -1.0% Stop-Loss[cite: 1]
         PRICE_HISTORY = [current_price]
 
         ACTIVE_TRADES[coin_name] = {
@@ -315,13 +315,14 @@ async def top_gainer_scanner_loop():
 
         IS_ORDER_PROCESSING = False
         CURRENT_STAGE = (
-            f"STAV: 🔴 V OBCHODE [{best_target['instId']}] (Živý Gainer"
-            " aktívny)..."
+            f"STAV: 🔴 V OBCHODE [{best_target['instId']}] (Šanca:"
+            f" {best_target['probability']}%)..."
         )
 
         send_telegram_msg(
-            f"🟢 <b>[ŽIVÝ GAINER NÁKUP]</b>\n"
+            f"🟢 <b>[NÁKUP - ŽIVÝ TOKEN]</b>\n"
             f"<b>Pár:</b> {best_target['instId']}\n"
+            f"<b>Odhadovaná šanca:</b> {best_target['probability']}%\n"
             f"<b>Cena:</b> {current_price:.4f} USDC\n"
             f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
             f"<b>Stop-Loss:</b> {sl_price:.4f} USDC (-1%)"
@@ -374,13 +375,13 @@ async def advanced_risk_monitor_loop():
               if new_trailing_sl > trade["current_sl_price"]:
                 trade["current_sl_price"] = new_trailing_sl
 
-          # Break-Even aktivácia pri +0.4%
+          # Break-Even aktivácia pri +0.4%[cite: 1]
           if not trade["break_even_activated"] and pnl_pct >= 0.4:
             trade["break_even_activated"] = True
             if trade["entry_price"] > trade["current_sl_price"]:
               trade["current_sl_price"] = trade["entry_price"]
 
-          # Trailing Take Profit aktivácia pri +0.8% s callbackom 0.3%
+          # Trailing Take Profit aktivácia pri +0.8% s callbackom 0.3%[cite: 1]
           if not trade["trailing_tp_activated"] and pnl_pct >= 0.8:
             trade["trailing_tp_activated"] = True
 
@@ -526,7 +527,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - CyberHUD 3.2 (Živé Tokeny)</title>
+    <title>Apex Scalper Pro - CyberHUD 3.3 (Live Radar so Šancou)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -582,7 +583,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 3.2 (Živé Tokeny)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 3.3 (Live Radar so Šancou)</div>
         </div>
 
         <div class="controls-row">
@@ -658,22 +659,22 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div class="section-block">
-            <div class="section-title">📊 Živý Radar Trhu (USDC - Top Gainers)</div>
+            <div class="section-title">📊 Živý Radar Trhu (Top Gainers & Odhad Šance)</div>
             {% if radar %}
                 <table>
-                    <tr><th>Symbol</th><th>Cena</th><th>24h Rast</th><th>Objem</th><th>Šanca</th></tr>
+                    <tr><th>Symbol</th><th>Cena</th><th>24h Rast</th><th>Objem</th><th>Šanca (%)</th></tr>
                     {% for item in radar %}
                     <tr>
                         <td><strong>{{ item.instId }}</strong></td>
                         <td>{{ "%.4f" | format(item.price) }}</td>
                         <td>+{{ "%.2f" | format(item.change) }}%</td>
                         <td>{{ "{:,.0f}".format(item.volume) }}</td>
-                        <td><strong style="color: #00f0ff;">{{ item.probability }}%</strong></td>
+                        <td><strong style="color: #00ff88;">{{ item.probability }}%</strong></td>
                     </tr>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem trh...</div>
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem živé tokeny...</div>
             {% endif %}
         </div>
 
@@ -704,7 +705,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% endif %}
         </div>
 
-        <div class="refresh-info">APEX HUD 3.2 | Obnovenie 2s | SK Čas: {{ current_time }}</div>
+        <div class="refresh-info">APEX HUD 3.3 | Obnovenie 2s | SK Čas: {{ current_time }}</div>
     </div>
 
     <script>
@@ -809,7 +810,7 @@ async def dashboard():
 async def api_status():
   return {
       "status": "online",
-      "bot_type": "Apex Scalper Pro 3.2 (Live Top Gainer + Anti-Frag)",
+      "bot_type": "Apex Scalper Pro 3.3 (Live Radar + Probability)",
       "mode": CURRENT_MODE,
       "current_stage": CURRENT_STAGE,
       "active_trades": ACTIVE_TRADES,
