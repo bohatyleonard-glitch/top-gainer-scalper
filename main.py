@@ -39,7 +39,7 @@ def send_telegram_msg(message: str):
 ACTIVE_TRADES = {}       
 MARKET_RADAR = []        
 DAILY_PNL_CALENDAR = {}  
-CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem trh pre 1000 USDC scalp..."
+CURRENT_STAGE = "STAV: Mimo obchodu. Agresívne skenujem trh pre 1000 USDC scalp..."
 TRADE_BUDGET_USDC = 1000.0  
 trade_lock = asyncio.Lock()  
 
@@ -84,12 +84,12 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 SKENER S OCHRANOU PROTI DROBENIU ---
+# --- 🔍 AGRESÍVNY SKENER (ZMERNENÉ PODMIENKY PRE ČASTEJŠIE OBCHODY) ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, MARKET_RADAR, CURRENT_STAGE
     await asyncio.sleep(5)
     
-    start_msg = f"[{get_sk_time_str()}] ⚡ SCALPER SPUSTENÝ (Trailing TP & Anti-Fragmentation aktívne)"
+    start_msg = f"[{get_sk_time_str()}] ⚡ AGRESÍVNY SCALPER SPUSTENÝ (Zmiernené filtre pre časté obchody)"
     print(start_msg, flush=True)
     send_telegram_msg(start_msg)
 
@@ -100,7 +100,7 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(5)
                 continue
 
-            CURRENT_STAGE = "STAV: 🟢 MIMO OBCHODU. Skenujem trh pre jeden čistý 1000 USDC nákup..."
+            CURRENT_STAGE = "STAV: 🟢 MIMO OBCHODU. Agresívne skenujem trh pre 1000 USDC nákup..."
             tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
             if tickers_res.get('code') != '0' or not tickers_res.get('data'):
                 await asyncio.sleep(5)
@@ -119,10 +119,13 @@ async def top_gainer_scanner_loop():
                     last_p = float(item.get('last', 0))
                     vol24h = float(item.get('volCcy24h', 0))
 
-                    if open24h > 0 and last_p > 0 and vol24h > 50000:
+                    # ZNIŽENÝ OBJEM NA 10,000 USDC PRE RÝCHLEJŠIE NÁJDENIE PRÍLEŽITOSTI[cite: 2]
+                    if open24h > 0 and last_p > 0 and vol24h > 10000:
                         change_pct = ((last_p - open24h) / open24h) * 100
-                        if 2.0 <= change_pct <= 20.0:
-                            probability = int(min(max((change_pct / 20.0) * 100, 65), 98))
+                        
+                        # ŠIRŠÍ ROZSAH RASTU (1% až 30%)
+                        if 1.0 <= change_pct <= 30.0:
+                            probability = int(min(max((change_pct / 30.0) * 100, 50), 99))
                             candidates.append({
                                 "instId": inst_id,
                                 "price": last_p,
@@ -204,19 +207,19 @@ async def top_gainer_scanner_loop():
                 CURRENT_STAGE = f"STAV: 🔴 V OBCHODE ({best_target['instId']}) - Sledujem vlnu..."
 
                 send_telegram_msg(
-                    f"🟢 <b>[⚡ JEDINÝ NÁKUP 1000 USDC]</b>\n"
+                    f"🟢 <b>[⚡ AGRESÍVNY NÁKUP 1000 USDC]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
                     f"<b>Vstupná cena:</b> {current_price:.4f} USDC\n"
                     f"<b>Počiatočný SL (-1%):</b> {current_price * 0.990:.4f} USDC\n"
-                    f"<b>Režim:</b> Trailing TP (Vedenie vlny aktívne)"
+                    f"<b>Režim:</b> Trailing TP (Rýchla vlna)"
                 )
 
         except Exception as scan_err:
             print(f"❌ Chyba v skeneri: {scan_err}", flush=True)
 
-        await asyncio.sleep(5)
+        await asyncio.sleep(3) # Skrátený interval skenovania na 3 sekundy
 
-# --- 🛡️ MONITOR OBCHODU S TRAILING TP A OCHRANOU ---
+# --- 🛡️ MONITOR OBCHODU ---
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
     await asyncio.sleep(3)
@@ -290,9 +293,9 @@ async def advanced_risk_monitor_loop():
                     if not trade["trailing_tp_activated"] and pnl_pct >= 1.2:
                         trade["trailing_tp_activated"] = True
                         send_telegram_msg(
-                            f"🌊 <b>[TRAILING TP AKTIVOVANÝ - VETVIEM VLNU]</b>\n"
+                            f"🌊 <b>[TRAILING TP AKTIVOVANÝ]</b>\n"
                             f"<b>Pár:</b> {symbol}\n"
-                            f"<b>Aktuálny zisk:</b> +{pnl_pct:.2f}%. Sledujem maximum a vezmem zisk pri poklese o 0.4% z vrcholu."
+                            f"<b>Aktuálny zisk:</b> +{pnl_pct:.2f}%. Sledujem maximum."
                         )
 
                     if trade["trailing_tp_activated"]:
@@ -306,10 +309,9 @@ async def advanced_risk_monitor_loop():
                                 record_daily_pnl(pnl_usdc)
 
                                 send_telegram_msg(
-                                    f"🎯 <b>[TRAILING TAKE PROFIT ÚSPEŠNÝ 🎉]</b>\n"
+                                    f"🎯 <b>[TRAILING TAKE PROFIT 🎉]</b>\n"
                                     f"<b>Pár:</b> {symbol}\n"
-                                    f"<b>Uzavreté na vrchole vlny!</b>\n"
-                                    f"<b>Konečný zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:.2f} USDC)"
+                                    f"<b>Konečný zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:+.2f} USDC)"
                                 )
                             except Exception as err:
                                 print(f"❌ Chyba Trailing TP: {err}", flush=True)
@@ -344,7 +346,7 @@ async def advanced_risk_monitor_loop():
         except Exception as main_err:
             print(f"❌ Chyba v monitorovaní: {main_err}", flush=True)
             
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -362,7 +364,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - Trailing Wave HUD</title>
+    <title>Apex Scalper Pro - Aggressive Wave HUD</title>
     <style>
         * { box-sizing: border-box; }
         body { 
@@ -407,7 +409,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <div class="brand-title">⚡ Apex Scalper Pro (Trailing Wave & Anti-Split)</div>
+        <div class="brand-title">⚡ Apex Scalper Pro (Aggressive Wave)</div>
         
         <div class="status-banner">
             {{ current_stage }}
@@ -442,7 +444,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </table>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
-                    ✅ Žiadny aktívny obchod. Bot prísne čaká na jediný čistý vstup.
+                    ✅ Žiadny aktívny obchod. Bot agresívne čaká na príležitosť.
                 </div>
             {% endif %}
         </div>
@@ -498,7 +500,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div class="refresh-info">
-            WAVE SCALPER | Obnovenie 2s | SK Čas: {{ current_time }}
+            AGGRESSIVE WAVE SCALPER | Obnovenie 2s | SK Čas: {{ current_time }}
         </div>
     </div>
 </body>
@@ -537,7 +539,7 @@ async def dashboard():
 async def api_status():
     return {
         "status": "online",
-        "bot_type": "Apex Trailing Wave Scalper",
+        "bot_type": "Apex Aggressive Scalper",
         "current_stage": CURRENT_STAGE,
         "active_trades": ACTIVE_TRADES,
         "market_radar": MARKET_RADAR,
