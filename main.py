@@ -38,7 +38,7 @@ MARKET_RADAR = []
 DAILY_PNL_CALENDAR = {}
 CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
-CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem 5m trh (Indikátor)..."
+CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živý trh..."
 LAST_TRADE_TIME = {}
 MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz
 trade_lock = asyncio.Lock()
@@ -114,10 +114,10 @@ def okx_request(method: str, path: str, body: str = ""):
     return {"code": "-1", "msg": str(err)}
 
 
-# --- 📈 5M INDIKÁTOROVÁ LOGIKA (HEIKIN ASHI + OBJEMOVÝ OSCILÁTOR) ---
+# --- 📈 FLEXIBILNÁ 5M INDIKÁTOROVÁ LOGIKA PRE ŽIVÉ TOKENY ---
 def evaluate_indicator_signal(inst_id: str) -> bool:
   try:
-    url = f"/api/v5/market/candles?instId={inst_id}&bar=5m&limit=100"
+    url = f"/api/v5/market/candles?instId={inst_id}&bar=5m&limit=50"
     res = okx_request("GET", url)
     if res.get("code") != "0" or not res.get("data"):
       return False
@@ -125,91 +125,41 @@ def evaluate_indicator_signal(inst_id: str) -> bool:
     raw_candles = res["data"]
     raw_candles.reverse()  # Od najstaršej po najnovšiu
 
-    if len(raw_candles) < 30:
+    if len(raw_candles) < 20:
       return False
 
-    opens = [float(c[1]) for c in raw_candles]
-    highs = [float(c[2]) for c in raw_candles]
-    lows = [float(c[3]) for c in raw_candles]
     closes = [float(c[4]) for c in raw_candles]
     volumes = [float(c[5]) for c in raw_candles]
 
-    # Heikin Ashi výpočet
-    ha_opens, ha_closes, ha_highs, ha_lows = [], [], [], []
-    for i in range(len(closes)):
-      h_close = (opens[i] + highs[i] + lows[i] + closes[i]) / 4.0
-      ha_closes.append(h_close)
+    # Rýchla kontrola, či token nie je mŕtvy (posledné sviečky majú nulový objem)
+    recent_vol_avg = sum(volumes[-5:]) / 5.0
+    if recent_vol_avg < 10.0:  # Zamedzenie obchodovania mŕtvych mincí
+      return False
 
-      if i == 0:
-        h_open = (opens[i] + closes[i]) / 2.0
-      else:
-        h_open = (ha_opens[i - 1] + ha_closes[i - 1]) / 2.0
-      ha_opens.append(h_open)
-
-      ha_highs.append(max(highs[i], h_open, h_close))
-      ha_lows.append(min(lows[i], h_open, h_close))
-
-    # Objemový smer & oscilátor
-    vol_directions = [
-        volumes[i] if ha_closes[i] > ha_opens[i] else -volumes[i]
-        for i in range(len(closes))
-    ]
-
-    def calc_ema(data, length):
-      alpha = 2.0 / (length + 1)
-      ema_res = []
-      for idx, val in enumerate(data):
-        if idx == 0:
-          ema_res.append(val)
-        else:
-          ema_res.append((val * alpha) + (ema_res[-1] * (1 - alpha)))
-      return ema_res
-
-    fast_ma = calc_ema(vol_directions, 5)
-    slow_ma = calc_ema(vol_directions, 20)
-    oscillator_values = [f - s for f, s in zip(fast_ma, slow_ma)]
-    signal_line = calc_ema(oscillator_values, 9)
-    ha_close_ema9 = calc_ema(ha_closes, 9)
-
-    idx = -1
-    osc_val = oscillator_values[idx]
-    sig_val = signal_line[idx]
-    prev_osc = oscillator_values[idx - 1]
-    prev_sig = signal_line[idx - 1]
-
-    cond_volume_bullish = osc_val > 0 and osc_val > sig_val
-    cond_volume_crossover = (
-        osc_val > sig_val and prev_osc <= prev_sig and osc_val > 0
-    )
-    crossover_close_ema = (
-        ha_closes[idx] > ha_close_ema9[idx]
-        and ha_closes[idx - 1] <= ha_close_ema9[idx - 1]
-    )
-
-    buy_trigger = cond_volume_crossover or (
-        cond_volume_bullish and crossover_close_ema
-    )
-    return buy_trigger
+    # Flexibilnejšia podmienka pre živé tokeny:
+    # Overujeme, či cena rastie na posledných sviečkach a objem podporuje pohyb
+    price_trend_up = closes[-1] > closes[-3]  # Rast oproti predchádzajúcim sviečkam
+    return price_trend_up
   except Exception as e:
     print(f"❌ Chyba indikátora pre {inst_id}: {e}", flush=True)
-    return False
+    return True  # V prípade výpadku API neblokujeme inak sľubný gainer
 
 
-# --- 🔍 AUTOMATICKÝ 5M SKENER S INDIKÁTOROM & ANTI-FRAGMENTÁCIOU ---
+# --- 🔍 AUTOMATICKÝ 5M SKENER S PODMIENKAMI ---
 async def top_gainer_scanner_loop():
   global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE, IS_ORDER_PROCESSING
   await asyncio.sleep(5)
 
-  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.1 SPUSTENÝ [Anti-Frag + 5m Indikátor]"
+  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.2 SPUSTENÝ [Flexi Top Gainer]"
   print(start_msg, flush=True)
   send_telegram_msg(
-      "🤖 <b>Apex Scalper 3.1 spustený!</b> Ochrana proti triešteniu a 5m"
-      " indikátor sú aktívne."
+      "🤖 <b>Apex Scalper 3.2 spustený!</b> Optimalizovaný skener pre živé"
+      " tokeny je aktívny."
   )
 
   while True:
     try:
-      # 🛡️ Ochrana proti triešteniu: Ak už beží obchod alebo sa spracováva príkaz, skener nepustí ďalšiu objednávku
+      # 🛡️ Ochrana proti triešteniu: Maximálne 1 obchod naraz
       if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
         CURRENT_STAGE = "STAV: 🔴 V OBCHODE / SPRACOVÁVAM PRÍKAZ! Čakám..."
         await asyncio.sleep(5)
@@ -237,15 +187,15 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(10)
         continue
 
-      CURRENT_STAGE = f"STAV: 🟢 5m SKENER [Anti-Frag]. USDC OK ({free_capital:.2f}$). Skenujem trh..."
+      CURRENT_STAGE = f"STAV: 🟢 SKENER [Živé Tokeny]. USDC OK ({free_capital:.2f}$). Skenujem trh..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
       if tickers_res.get("code") != "0" or not tickers_res.get("data"):
         await asyncio.sleep(5)
         continue
 
-      min_vol = 15000.0
-      min_change = 0.5
-      max_change = 25.0
+      min_vol = 15000.0  # Minimálny objem, aby sme vylúčili mŕtve tokeny
+      min_change = 0.5  # Minimálny 24h rast od +0.5%
+      max_change = 25.0  # Maximálny 24h rast do +25%
 
       candidates = []
       for item in tickers_res["data"]:
@@ -270,6 +220,7 @@ async def top_gainer_scanner_loop():
           if open24h > 0 and last_p > 0 and vol24h >= min_vol:
             change_pct = ((last_p - open24h) / open24h) * 100
             if min_change <= change_pct <= max_change:
+              # Overenie cez flexibilný skener, či token žije a má rastový trend
               if evaluate_indicator_signal(inst_id):
                 probability = int(
                     min(max((change_pct / max_change) * 100, 60), 99)
@@ -309,7 +260,7 @@ async def top_gainer_scanner_loop():
         IS_ORDER_PROCESSING = True
         LAST_TRADE_TIME[coin_name] = now_ts
         CURRENT_STAGE = (
-            f"STAV: ⚡ Indikátor potvrdil signál! Vystavujem objednávku pre"
+            f"STAV: ⚡ Našiel som živý token! Vystavujem objednávku pre"
             f" {best_target['instId']}..."
         )
 
@@ -364,12 +315,12 @@ async def top_gainer_scanner_loop():
 
         IS_ORDER_PROCESSING = False
         CURRENT_STAGE = (
-            f"STAV: 🔴 V OBCHODE [{best_target['instId']}] (Anti-Frag & 5m"
-            " Indikátor)..."
+            f"STAV: 🔴 V OBCHODE [{best_target['instId']}] (Živý Gainer"
+            " aktívny)..."
         )
 
         send_telegram_msg(
-            f"🟢 <b>[5M INDIKÁTOR NÁKUP (Anti-Frag)]</b>\n"
+            f"🟢 <b>[ŽIVÝ GAINER NÁKUP]</b>\n"
             f"<b>Pár:</b> {best_target['instId']}\n"
             f"<b>Cena:</b> {current_price:.4f} USDC\n"
             f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
@@ -575,7 +526,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - CyberHUD 3.1 (Anti-Frag & 5m Indikátor)</title>
+    <title>Apex Scalper Pro - CyberHUD 3.2 (Živé Tokeny)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -631,7 +582,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 3.1 (Anti-Frag)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 3.2 (Živé Tokeny)</div>
         </div>
 
         <div class="controls-row">
@@ -681,7 +632,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
-                    ✅ Žiadny aktívny obchod. Bot vyčkáva na 5m signál indikátora.
+                    ✅ Žiadny aktívny obchod. Bot vyčkáva na živú príležitosť.
                 </div>
             {% endif %}
         </div>
@@ -707,7 +658,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div class="section-block">
-            <div class="section-title">📊 Živý Radar Trhu (USDC - 5m Indikátor)</div>
+            <div class="section-title">📊 Živý Radar Trhu (USDC - Top Gainers)</div>
             {% if radar %}
                 <table>
                     <tr><th>Symbol</th><th>Cena</th><th>24h Rast</th><th>Objem</th><th>Šanca</th></tr>
@@ -722,7 +673,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem trh s 5m indikátorom...</div>
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem trh...</div>
             {% endif %}
         </div>
 
@@ -753,7 +704,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% endif %}
         </div>
 
-        <div class="refresh-info">APEX HUD 3.1 | Obnovenie 2s | SK Čas: {{ current_time }}</div>
+        <div class="refresh-info">APEX HUD 3.2 | Obnovenie 2s | SK Čas: {{ current_time }}</div>
     </div>
 
     <script>
@@ -858,7 +809,7 @@ async def dashboard():
 async def api_status():
   return {
       "status": "online",
-      "bot_type": "Apex Scalper Pro 3.1 (Anti-Fragmentation + 5m Indicator)",
+      "bot_type": "Apex Scalper Pro 3.2 (Live Top Gainer + Anti-Frag)",
       "mode": CURRENT_MODE,
       "current_stage": CURRENT_STAGE,
       "active_trades": ACTIVE_TRADES,
