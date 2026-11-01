@@ -325,7 +325,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ HTML ŠABLÓNA (BEZ RIZIKA SYNTAKTICKÝCH CHÝB) ---
+# --- 🖼️ PRESNÝ CYBERPUNK WALLPAPER MESTA Z BUDÚCNOSTI + ČIERNE PÍSMO ---
 DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -338,7 +338,8 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
             margin: 0; 
             padding: 25px;
-            background: url('https://images.unsplash.com/photo-1578632767115-351597cf2477?q=80&w=1920&auto=format&fit=crop') no-repeat center center fixed;
+            /* Presný cyberpunkový wallpaper veľkolepého neónového mesta z budúcnosti */
+            background: url('https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?q=80&w=2074&auto=format&fit=crop') no-repeat center center fixed;
             background-size: cover;
             color: #000000;
             min-height: 100vh;
