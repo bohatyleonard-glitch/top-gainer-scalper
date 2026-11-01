@@ -40,7 +40,7 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živý trh podľa checklistu..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Maximálne 1 obchod naraz[cite: 1]
+MAX_PARALLEL_TRADES = 1  # 🛡️ Maximálne 1 obchod naraz
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
@@ -186,13 +186,13 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
   return result
 
 
-# --- 🔍 AUTOMATICKÝ USDC SKENER S VALIDÁCIOU ---
+# --- 🔍 AUTOMATICKÝ USDC SKENER (ŠIRŠÍ RADAR) ---
 async def top_gainer_scanner_loop():
   global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING
   await asyncio.sleep(5)
 
   start_msg = (
-      f"[{get_sk_time_str()}] ⚡ APEX SCALPER SPUSTENÝ [USDC Top Gainers | TF:"
+      f"[{get_sk_time_str()}] ⚡ APEX SCALPER SPUSTENÝ [USDC Široký Radar | TF:"
       f" {CURRENT_TIMEFRAME}]"
   )
   print(start_msg, flush=True)
@@ -233,9 +233,9 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(4)
         continue
 
-      min_vol = 15000.0
-      min_change = 0.5
-      max_change = 50.0
+      min_vol = 5000.0   # Znížený limit objemu na skúšku, aby zobralo viac mincí
+      min_change = 0.2   # Znížená počiatočná zmena už od +0.2%
+      max_change = 100.0
 
       candidates = []
       for item in tickers_res["data"]:
@@ -282,7 +282,7 @@ async def top_gainer_scanner_loop():
           reverse=True,
       )
       if candidates:
-        MARKET_RADAR = candidates[:12]
+        MARKET_RADAR = candidates[:25]  # Zobrazenie až 25 USDC mincí naraz
 
       for cand in candidates:
         if not cand["buy_ready"]:
@@ -582,13 +582,13 @@ async def emergency_sell():
     })
 
 
-# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE S FAREBNÝMI BODKAMI V RADARI ---
+# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE S ŠIROKÝM RADAROM ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - CyberHUD 3.9 (USDC Strict)</title>
+    <title>Apex Scalper Pro - CyberHUD 4.0 (Wide Radar)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -600,7 +600,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             color: #ffffff; min-height: 100vh;
         }
         .container { 
-            max-width: 760px; margin: 0; background: rgba(0, 0, 0, 0.78);
+            max-width: 780px; margin: 0; background: rgba(0, 0, 0, 0.78);
             backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 18px; padding: 22px;
             box-shadow: 0 0 35px rgba(0, 255, 255, 0.25);
@@ -646,7 +646,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 3.9 (USDC Radar)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 4.0 (Wide USDC Radar)</div>
         </div>
 
         <div class="controls-row">
@@ -703,20 +703,20 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
-                    ✅ Žiadny aktívny obchod. Skenujem USDC trh na <strong>{{ current_tf }}</strong> TF...
+                    ✅ Žiadny aktívny obchod. Skenujem široký USDC trh na <strong>{{ current_tf }}</strong> TF...
                 </div>
             {% endif %}
         </div>
 
         <div class="section-block">
-            <div class="section-title">📊 Živý Radar USDC Trhu & Farebné Bodky (TF: {{ current_tf }})</div>
+            <div class="section-title">📊 Široký Radar USDC Trhu & Checklist (TF: {{ current_tf }})</div>
             {% if radar %}
                 <table>
-                    <tr><th>Symbol</th><th>24h Rast</th><th>Objemový Mom.</th><th>Impulz / Fib</th><th>Pripravenosť</th></tr>
+                    <tr><th>Symbol</th><th>24h Zmena</th><th>Objemový Mom.</th><th>Impulz / Fib</th><th>Pripravenosť</th></tr>
                     {% for item in radar %}
                     <tr>
                         <td><strong>{{ item.instId }}</strong></td>
-                        <td>+{{ "%.2f" | format(item.change) }}%</td>
+                        <td class="{{ 'pnl-green' if item.change >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(item.change) }}%</td>
                         <td><span style="color: {{ '#00ff88' if item.volume_status else '#ff4444' }}; font-size: 0.9rem;">{{ '🟢' if item.volume_status else '🔴' }}</span></td>
                         <td><span style="color: {{ '#00ff88' if item.impulse_status else '#ff4444' }}; font-size: 0.9rem;">{{ '🟢' if item.impulse_status else '⚪' }}</span></td>
                         <td><strong style="color: {{ '#00ff88' if item.buy_ready else '#00f0ff' }};">{{ '🚀 NAKUPOVAT' if item.buy_ready else item.probability|string + '%' }}</strong></td>
@@ -724,7 +724,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Načítavam USDC dáta do radaru...</div>
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Načítavam dáta USDC do radaru...</div>
             {% endif %}
         </div>
 
@@ -758,7 +758,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </table>
         </div>
 
-        <div class="refresh-info">APEX HUD 3.9 | Režim: {{ current_mode }} | TF: {{ current_tf }} | SK Čas: {{ current_time }}</div>
+        <div class="refresh-info">APEX HUD 4.0 | Režim: {{ current_mode }} | TF: {{ current_tf }} | SK Čas: {{ current_time }}</div>
     </div>
 
     <script>
@@ -864,7 +864,7 @@ async def dashboard():
 async def api_status():
   return {
       "status": "online",
-      "bot_type": "Apex Scalper Pro 3.9 (USDC Radar Mode)",
+      "bot_type": "Apex Scalper Pro 4.0 (Wide USDC Radar)",
       "mode": CURRENT_STRATEGY_MODE,
       "timeframe": CURRENT_TIMEFRAME,
       "current_stage": CURRENT_STAGE,
