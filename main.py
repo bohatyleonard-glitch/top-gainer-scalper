@@ -6,10 +6,8 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
 import uvicorn
 import requests
-from jinja2 import Template
 
 # --- 🔑 OKX DEMO KĽÚČE ---
 OKX_API_KEY = "638848ca-e65c-4074-bcfd-20cf4d292f2c"
@@ -21,6 +19,7 @@ TELEGRAM_BOT_TOKEN = "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8"
 TELEGRAM_CHAT_ID = "9130979784"
 
 def send_telegram_msg(message: str):
+    """Pomocná funkcia pre odosielanie správ na Telegram"""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("DOPLŇ"):
         return
     try:
@@ -30,32 +29,18 @@ def send_telegram_msg(message: str):
             "text": message,
             "parse_mode": "HTML"
         }
-        res = requests.post(url, json=payload, timeout=5)
-        print(f"📱 Telegram odpoveď: {res.status_code}", flush=True)
+        requests.post(url, json=payload, timeout=5)
     except Exception as err:
         print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
 ACTIVE_TRADES = {}
-MARKET_RADAR = []  
-DAILY_PNL_CALENDAR = {} 
-LAST_TRADE_TIME = {}  
-MAX_PARALLEL_TRADES = 1  
+LAST_TRADE_TIME = {}  # 🛡️ Ochrana proti zacykleniu (odstup medzi obchodmi)
+MAX_PARALLEL_TRADES = 1  # 🛡️ Výhradne 1 aktívna pozícia naraz
 trade_lock = asyncio.Lock()
 
 def get_sk_time_str() -> str:
     sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
     return sk_time.strftime("%Y-%m-%d %H:%M:%S")
-
-def get_sk_date_str() -> str:
-    sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
-    return sk_time.strftime("%Y-%m-%d")
-
-def record_daily_pnl(pnl_amount: float):
-    day_str = get_sk_date_str()
-    if day_str not in DAILY_PNL_CALENDAR:
-        DAILY_PNL_CALENDAR[day_str] = {"pnl": 0.0, "trades": 0}
-    DAILY_PNL_CALENDAR[day_str]["pnl"] += pnl_amount
-    DAILY_PNL_CALENDAR[day_str]["trades"] += 1
 
 # --- OKX EEA DEMO PROSTREDIE & AUTENTIFIKÁCIA ---
 def okx_request(method: str, path: str, body: str = ''):
@@ -74,27 +59,33 @@ def okx_request(method: str, path: str, body: str = ''):
     }
     
     url = 'https://eea.okx.com' + path
+    if method.upper() == 'GET':
+        response = requests.get(url, headers=headers, timeout=10)
+    else:
+        response = requests.post(url, headers=headers, data=body, timeout=10)
+    
     try:
-        if method.upper() == 'GET':
-            response = requests.get(url, headers=headers, timeout=10)
-        else:
-            response = requests.post(url, headers=headers, data=body, timeout=10)
-        return response.json()
+        res_json = response.json()
+        return res_json
     except Exception as err:
-        return {"code": "-1", "msg": str(err)}
+        return {"code": "-1", "msg": response.text}
 
-# --- 🔍 ULTRARÝCHLY SKENER TOP 1 GAINER ---
+# --- 🔍 AUTONÓMNY SKENER TOP GAINEROV ---
 async def top_gainer_scanner_loop():
-    global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR
-    await asyncio.sleep(5)
-    print(f"[{get_sk_time_str()}] ⚡ AGRESÍVNY SCALPER PRO SPUSŤENÝ!", flush=True)
-    send_telegram_msg("⚡ <b>[ULTRARÝCHLY SCALPER]</b> Bot spustený! Cielime +2% rýchle zisky z Top Gainerov.")
+    global ACTIVE_TRADES, LAST_TRADE_TIME
+    await asyncio.sleep(10)
+    print(f"[{get_sk_time_str()}] 🚀 Autonómny Top Gainer Skener úspešne spustený...", flush=True)
+    send_telegram_msg("🤖 <b>Top Gainer Scalping Bot spustený!</b> Skenujem trh a hľadám príležitosti.")
 
     while True:
         try:
+            if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
+                await asyncio.sleep(10)
+                continue
+
             tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
             if tickers_res.get('code') != '0' or not tickers_res.get('data'):
-                await asyncio.sleep(5)
+                await asyncio.sleep(15)
                 continue
 
             candidates = []
@@ -110,39 +101,30 @@ async def top_gainer_scanner_loop():
                     last_p = float(item.get('last', 0))
                     vol24h = float(item.get('volCcy24h', 0))
 
-                    if open24h > 0 and last_p > 0 and vol24h > 10000: # Menší objemový limit pre rýchlejší vstup
+                    if open24h > 0 and last_p > 0 and vol24h > 50000:
                         change_pct = ((last_p - open24h) / open24h) * 100
-                        if 1.5 <= change_pct <= 25.0:
-                            probability = int(min(max((change_pct / 25.0) * 100, 50), 99))
+                        if 2.0 <= change_pct <= 25.0:
                             candidates.append({
                                 "instId": inst_id,
                                 "price": last_p,
                                 "change": change_pct,
-                                "volume": vol24h,
-                                "probability": probability
+                                "volume": vol24h
                             })
                 except Exception:
                     continue
 
-            candidates.sort(key=lambda x: x['change'], reverse=True)
-            if candidates:
-                MARKET_RADAR = candidates[:10]
-
-            if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
-                await asyncio.sleep(5)
-                continue
-
             if not candidates:
-                await asyncio.sleep(5)
+                await asyncio.sleep(20)
                 continue
 
-            best_target = candidates[0] # BERE ABSOLÚTNE TOP 1 MINCU
+            candidates.sort(key=lambda x: x['change'], reverse=True)
+            best_target = candidates[0]
             coin_name = best_target['instId'].split('-')[0]
 
             now_ts = datetime.now().timestamp()
             if coin_name in LAST_TRADE_TIME:
-                if now_ts - LAST_TRADE_TIME[coin_name] < 60: # Skrátený odstup na 1 minútu
-                    await asyncio.sleep(5)
+                if now_ts - LAST_TRADE_TIME[coin_name] < 120:
+                    await asyncio.sleep(10)
                     continue
 
             async with trade_lock:
@@ -150,11 +132,11 @@ async def top_gainer_scanner_loop():
                     continue
 
                 LAST_TRADE_TIME[coin_name] = now_ts
-                print(f"🎯 AGRESÍVNY VSTUP: Top 1 Gainer {best_target['instId']} (+{best_target['change']:.2f}%)", flush=True)
+                print(f"🎯 Nájdený Top Gainer: {best_target['instId']} s rastom +{best_target['change']:.2f}%", flush=True)
 
                 balance_res = okx_request('GET', '/api/v5/account/balance')
                 if balance_res.get('code') != '0':
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(10)
                     continue
 
                 free_capital = 0.0
@@ -164,8 +146,8 @@ async def top_gainer_scanner_loop():
                             free_capital = float(detail.get('availBal', 0))
 
                 if free_capital < 10:
-                    print(f"❌ Nedostatok kapitálu: {free_capital} USDC", flush=True)
-                    await asyncio.sleep(15)
+                    print(f"❌ Nedostatok voľného kapitálu: {free_capital} USDC", flush=True)
+                    await asyncio.sleep(30)
                     continue
 
                 safe_budget = free_capital * 0.98
@@ -186,44 +168,44 @@ async def top_gainer_scanner_loop():
 
                 order_res = okx_request('POST', '/api/v5/trade/order', order_body)
                 if order_res.get('code') != '0':
-                    print(f"❌ Nákup zlyhal: {order_res}", flush=True)
-                    await asyncio.sleep(5)
+                    print(f"❌ Chyba nákupu pre {best_target['instId']}: {order_res}", flush=True)
+                    await asyncio.sleep(10)
                     continue
 
-                tp_price = current_price * 1.020 # Take Profit +2.0%
-                sl_price = current_price * 0.980 # Stop Loss -2.0%
-
+                sl_price = current_price * 0.97
                 ACTIVE_TRADES[coin_name] = {
                     "entry_price": current_price,
-                    "target_tp_price": tp_price,
                     "current_sl_price": sl_price,
                     "amount": formatted_sz,
                     "bought_at": get_sk_time_str(),
                     "market_pair": best_target['instId'],
-                    "invested_usdc": safe_budget
+                    "highest_price": current_price,
+                    "partial_tp_activated": False
                 }
 
                 send_telegram_msg(
-                    f"🟢 <b>[⚡ SCALP NÁKUP #1 GAINER]</b>\n"
+                    f"🟢 <b>[AUTO-SCALP NÁKUP]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
-                    f"<b>Cena:</b> {current_price:.4f} USDC\n"
-                    f"<b>Cieľ (TP +2%):</b> {tp_price:.4f} USDC\n"
-                    f"<b>Stop-Loss (-2%):</b> {sl_price:.4f} USDC"
+                    f"<b>24h Rast pri nákupe:</b> +{best_target['change']:.2f}%\n"
+                    f"<b>Vstupná cena:</b> {current_price:.4f} USDC\n"
+                    f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
+                    f"<b>Stop-Loss:</b> {sl_price:.4f} USDC (-3%)"
                 )
 
         except Exception as scan_err:
             print(f"❌ Chyba v skeneri: {scan_err}", flush=True)
 
-        await asyncio.sleep(5)
+        await asyncio.sleep(15)
 
-# --- 🛡️ AGRESÍVNY RISK & EXIT MONITOR ---
+# --- 🛡️ MONITOROVACÍ CYKLUS PRE VLNY ---
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES
-    await asyncio.sleep(3)
+    await asyncio.sleep(5)
+    print(f"[{get_sk_time_str()}] 🛡️ Risk Management Monitor pre vlny spustený...", flush=True)
     
     while True:
         if not ACTIVE_TRADES:
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
             continue
             
         try:
@@ -237,16 +219,13 @@ async def advanced_risk_monitor_loop():
                     continue
                 
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
-                
-                # 15 MINÚTOVÝ TIMEOUT PRE RYCHLY SCALPING
-                if now_time - bought_time > timedelta(minutes=15):
+                if now_time - bought_time > timedelta(hours=48):
                     try:
                         order_body = json.dumps({
                             "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                         })
                         okx_request('POST', '/api/v5/trade/order', order_body)
-                        send_telegram_msg(f"⏱️ <b>[TIMEOUT 15m]</b> Uzatvorený pár {symbol} na uvoľnenie kapitálu.")
-                        record_daily_pnl(0.0)
+                        send_telegram_msg(f"⏳ <b>[GTC EXSPIRÁCIA 48h]</b> Uzatvorený pár {symbol}")
                         del ACTIVE_TRADES[coin]
                     except Exception:
                         pass
@@ -256,53 +235,58 @@ async def advanced_risk_monitor_loop():
                 if ticker_res.get('code') == '0' and ticker_res.get('data'):
                     current_price = float(ticker_res['data'][0]['last'])
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
+                    
+                    if current_price > trade["highest_price"]:
+                        trade["highest_price"] = current_price
 
-                    # 1. DOSIAHNUTÝ PEVNÝ TAKE PROFIT (+2.0%)
-                    if current_price >= trade["target_tp_price"]:
-                        try:
-                            order_body = json.dumps({
-                                "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
-                            })
-                            okx_request('POST', '/api/v5/trade/order', order_body)
-                            
-                            est_pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
-                            record_daily_pnl(est_pnl_usdc)
-
-                            send_telegram_msg(
-                                f"🎯 <b>[TAKE PROFIT DOSIAHNUTÝ +2%]</b>\n"
-                                f"<b>Pár:</b> {symbol}\n"
-                                f"<b>Zisk:</b> +{pnl_pct:.2f}% (~{est_pnl_usdc:+.2f} USDC)"
-                            )
-                            del ACTIVE_TRADES[coin]
-                        except Exception as err:
-                            print(f"❌ Chyba TP: {err}", flush=True)
-                        continue
-
-                    # 2. DOSIAHNUTÝ STOP LOSS (-2.0%)
                     if current_price <= trade["current_sl_price"]:
+                        reason = "[STOP-LOSS -3%]" if trade["current_sl_price"] < trade["entry_price"] else "[BREAK-EVEN OCHRANA]"
                         try:
                             order_body = json.dumps({
                                 "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                             })
                             okx_request('POST', '/api/v5/trade/order', order_body)
                             
-                            est_pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
-                            record_daily_pnl(est_pnl_usdc)
-
                             send_telegram_msg(
-                                f"🚨 <b>[STOP-LOSS EXECUTED]</b>\n"
+                                f"🚨 <b>UZAVRETÝ OBCHOD {reason}</b>\n"
                                 f"<b>Pár:</b> {symbol}\n"
-                                f"<b>Strata:</b> {pnl_pct:.2f}% (~{est_pnl_usdc:+.2f} USDC)"
+                                f"<b>Výsledné PnL:</b> {pnl_pct:+.2f}%"
                             )
                             del ACTIVE_TRADES[coin]
                         except Exception as err:
                             print(f"❌ Chyba SL: {err}", flush=True)
                         continue
 
+                    if pnl_pct >= 1.5 and not trade.get("be_activated", False):
+                        trade["current_sl_price"] = trade["entry_price"] * 1.002
+                        trade["be_activated"] = True
+                        send_telegram_msg(f"🛡️ <b>[BREAK-EVEN AKTÍVNY]</b> Pár {symbol} dosiahol +1.5%, ochrana posunutá na vstup.")
+
+                    max_pnl_pct = ((trade["highest_price"] - trade["entry_price"]) / trade["entry_price"]) * 100
+                    if max_pnl_pct >= 3.0:
+                        drop_from_high = ((trade["highest_price"] - current_price) / trade["highest_price"]) * 100
+                        if drop_from_high >= 1.5:
+                            try:
+                                order_body = json.dumps({
+                                    "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
+                                })
+                                okx_request('POST', '/api/v5/trade/order', order_body)
+                                
+                                send_telegram_msg(
+                                    f"💰 <b>[ÚSPEŠNÝ TRAILING EXIT VLNY]</b>\n"
+                                    f"<b>Pár:</b> {symbol}\n"
+                                    f"<b>Max dosiahnutý zisk:</b> +{max_pnl_pct:.2f}%\n"
+                                    f"<b>Výsledný zisk PnL:</b> {pnl_pct:+.2f}%"
+                                )
+                                del ACTIVE_TRADES[coin]
+                            except Exception as err:
+                                print(f"❌ Chyba Trailing Exit: {err}", flush=True)
+                            continue
+
         except Exception as main_err:
             print(f"❌ Chyba v monitorovacom cykle: {main_err}", flush=True)
             
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -314,227 +298,26 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ CYBERPUNK HUD ŠABLÓNA ---
-HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
-<html lang="sk">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro</title>
-    <style>
-        * { box-sizing: border-box; }
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            margin: 0; 
-            padding: 25px;
-            background: linear-gradient(rgba(0,0,0,0.55), rgba(0,0,0,0.55)), url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=1920&auto=format&fit=crop');
-            background-size: cover;
-            background-position: center center;
-            background-repeat: no-repeat;
-            background-attachment: fixed;
-            color: #ffffff;
-            min-height: 100vh;
-            overflow-x: hidden;
-            position: relative;
-        }
-
-        body::before {
-            content: "";
-            position: fixed;
-            top: -10%;
-            left: -10%;
-            width: 120%;
-            height: 120%;
-            background: radial-gradient(circle at 20% 30%, rgba(0,255,255,0.12), transparent 40%),
-                        radial-gradient(circle at 80% 50%, rgba(180,0,255,0.12), transparent 40%),
-                        radial-gradient(circle at 50% 80%, rgba(0,128,255,0.10), transparent 45%);
-            animation: fogMove 28s ease-in-out infinite;
-            pointer-events: none;
-            z-index: -1;
-        }
-
-        @keyframes fogMove {
-            0% { transform: translate(0px, 0px); }
-            25% { transform: translate(25px, -10px); }
-            50% { transform: translate(45px, 15px); }
-            75% { transform: translate(15px, 25px); }
-            100% { transform: translate(0px, 0px); }
-        }
-
-        .container { 
-            max-width: 580px; 
-            margin: 0; 
-            background: rgba(0, 0, 0, 0.30);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(0, 255, 255, 0.18);
-            border-radius: 16px;
-            padding: 20px;
-            box-shadow: 0 0 20px rgba(0, 255, 255, 0.15), 0 0 40px rgba(0, 255, 255, 0.10), 0 0 70px rgba(180, 0, 255, 0.10);
-        }
-
-        .brand-title {
-            font-size: 0.85rem;
-            font-weight: 800;
-            color: #00f0ff;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-            margin-bottom: 20px;
-            text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
-        }
-
-        .section-block { margin-bottom: 22px; }
-
-        .section-title {
-            font-size: 0.85rem;
-            font-weight: 700;
-            color: #ffffff;
-            margin-bottom: 6px;
-            text-shadow: 0 0 5px rgba(255, 255, 255, 0.4);
-        }
-
-        table { width: 100%; border-collapse: collapse; margin-top: 4px; }
-        th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid rgba(0, 255, 255, 0.15); font-size: 0.78rem; color: #ffffff; }
-        th { font-weight: 700; color: #00f0ff; text-transform: uppercase; font-size: 0.68rem; letter-spacing: 1px; }
-
-        .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(85px, 1fr)); gap: 6px; margin-top: 4px; }
-        .calendar-day { 
-            background: rgba(0, 0, 0, 0.50); 
-            border: 1px solid rgba(0, 255, 255, 0.25); 
-            border-radius: 6px; 
-            padding: 6px; 
-            text-align: center; 
-            font-size: 0.72rem;
-            color: #ffffff;
-            box-shadow: inset 0 0 10px rgba(0, 255, 255, 0.05);
-        }
-
-        .refresh-info { color: rgba(255, 255, 255, 0.6); font-size: 0.68rem; margin-top: 20px; font-weight: 600; }
-    </style>
-    <meta http-equiv="refresh" content="5">
-</head>
-<body>
-    <div class="container">
-        <div class="brand-title">⚡ Apex Scalper Pro (+2% Rapid Scalp)</div>
-
-        <div class="section-block">
-            <div class="section-title">💰 Zoznam zostatkov (OKX Demo)</div>
-            <table>
-                <tr><th>Mena</th><th>Dostupné</th></tr>
-                {% for coin, data in balances.items() %}
-                <tr>
-                    <td><strong>{{ coin }}</strong></td>
-                    <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
-                </tr>
-                {% endfor %}
-            </table>
-        </div>
-
-        <div class="section-block">
-            <div class="section-title">⚡ Živý Radar (Top 1 Target Skenovanie)</div>
-            {% if radar %}
-                <table>
-                    <tr><th>Symbol</th><th>Cena</th><th>Rast</th><th>Objem</th><th>Šanca</th></tr>
-                    {% for item in radar %}
-                    <tr>
-                        <td><strong>{{ item.instId }}</strong></td>
-                        <td>{{ "%.4f" | format(item.price) }}</td>
-                        <td>+{{ "%.2f" | format(item.change) }}%</td>
-                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
-                        <td><strong style="color: #00f0ff;">{{ item.probability }}%</strong></td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            {% else %}
-                <div style="font-size: 0.78rem; color: rgba(255, 255, 255, 0.7);">Skenujem trh, okamžitý nákup pri nájdení Top 1...</div>
-            {% endif %}
-        </div>
-
-        <div class="section-block">
-            <div class="section-title">📅 Kalendár Výsledkov (+2% Scalp PnL)</div>
-            {% if calendar %}
-                <div class="calendar-grid">
-                    {% for day, data in calendar.items() %}
-                    <div class="calendar-day">
-                        <div>{{ day }}</div>
-                        <div style="font-weight: bold; color: #00ff88;">{{ "%+.2f" | format(data.pnl) }} $</div>
-                        <div style="font-size: 0.6rem; color: rgba(255,255,255,0.7);">{{ data.trades }} obch.</div>
-                    </div>
-                    {% endfor %}
-                </div>
-            {% else %}
-                <div style="font-size: 0.78rem; color: rgba(255, 255, 255, 0.7);">Zatiaľ žiadne uzavreté obchody.</div>
-            {% endif %}
-        </div>
-
-        <div class="section-block">
-            <div class="section-title">📈 Aktívny Scalp Obchod</div>
-            {% if trades %}
-                <table>
-                    <tr><th>Pár</th><th>Vstup</th><th>Cieľ (+2%)</th><th>Stop-Loss (-2%)</th></tr>
-                    {% for t, details in trades.items() %}
-                    <tr>
-                        <td><strong>{{ details.market_pair }}</strong></td>
-                        <td>{{ "%.4f" | format(details.entry_price) }}</td>
-                        <td style="color: #00ff88;"><strong>{{ "%.4f" | format(details.target_tp_price) }}</strong></td>
-                        <td style="color: #ff4444;">{{ "%.4f" | format(details.current_sl_price) }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            {% else %}
-                <div style="font-size: 0.78rem; color: rgba(255, 255, 255, 0.7);">Čakám na najbližšiu #1 mincu na trhu...</div>
-            {% endif %}
-        </div>
-
-        <div class="refresh-info">
-            HIGH-SPEED SCALPER | Obnovenie 5s | SK Čas: {{ current_time }}
-        </div>
-    </div>
-</body>
-</html>"""
-
-with open("index.html", "w", encoding="utf-8") as f:
-    f.write(HTML_TEMPLATE_CONTENT)
-
-@app.get("/", response_class=HTMLResponse)
+@app.get("/dashboard")
 async def dashboard():
-    account_balances = {"USDC": {"available_balance": 0.0}}
+    account_balances = {}
     try:
         balance_res = okx_request('GET', '/api/v5/account/balance')
         if balance_res.get('code') == '0':
-            found = {}
             for acc in balance_res.get('data', []):
                 for detail in acc.get('details', []):
                     ccy = detail.get('ccy')
                     avail = float(detail.get('availBal', 0))
                     if avail > 0:
-                        found[ccy] = {"available_balance": avail}
-            if found:
-                account_balances = found
+                        account_balances[ccy] = {"available_balance": avail}
     except Exception:
         pass
 
-    with open("index.html", "r", encoding="utf-8") as f:
-        template_content = f.read()
-
-    template = Template(template_content)
-    rendered_html = template.render(
-        balances=account_balances,
-        trades=ACTIVE_TRADES,
-        radar=MARKET_RADAR,
-        calendar=DAILY_PNL_CALENDAR,
-        current_time=get_sk_time_str()
-    )
-    return rendered_html
-
-@app.get("/api/status")
-async def api_status():
     return {
         "status": "online",
-        "bot_type": "Apex Rapid +2% Scalper",
+        "bot_type": "Full-Auto Top Gainer Scalper (1.5% - 20% waves)",
+        "account_balances": account_balances,
         "active_trades": ACTIVE_TRADES,
-        "market_radar": MARKET_RADAR,
-        "calendar": DAILY_PNL_CALENDAR,
         "sk_time": get_sk_time_str()
     }
 
