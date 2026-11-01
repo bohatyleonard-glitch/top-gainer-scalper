@@ -38,14 +38,14 @@ MARKET_RADAR = []
 DAILY_PNL_CALENDAR = {}
 CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
-CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem top 30 USDC trh..."
+CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem top 20 USDC trh..."
 LAST_TRADE_TIME = {}
 MAX_PARALLEL_TRADES = 1
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
 CURRENT_STRATEGY_MODE = "Agresívny Momentum (Breakout)"
-CURRENT_TIMEFRAME = "5m"
+CURRENT_TIMEFRAME = "15m"  # Predvolené na 15m
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 EXCLUDED_COINS = ["ZAMA"]
 
@@ -115,9 +115,9 @@ def okx_request(method: str, path: str, body: str = ""):
   url = "https://eea.okx.com" + path
   try:
     if method.upper() == "GET":
-      response = requests.get(url, headers=headers, timeout=6)
+      response = requests.get(url, headers=headers, timeout=5)
     else:
-      response = requests.post(url, headers=headers, data=body, timeout=6)
+      response = requests.post(url, headers=headers, data=body, timeout=5)
     return response.json()
   except Exception as err:
     return {"code": "-1", "msg": str(err)}
@@ -196,15 +196,15 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
 
 async def top_gainer_scanner_loop():
   global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING
-  await asyncio.sleep(3)
+  await asyncio.sleep(2)
 
   print(
-      f"[{get_sk_time_str()}] ⚡ APEX SCALPER SKENER SPUSTENÝ [TF:"
+      f"[{get_sk_time_str()}] ⚡ APEX SCALPER SKENER SPUSTENÝ [Top 20 USDC | TF:"
       f" {CURRENT_TIMEFRAME}]",
       flush=True,
   )
   send_telegram_msg(
-      f"🚀 <b>[CYBERPUNK HUD] Apex Scalper Pro 4.1 aktívny!</b> Skenujem trh na"
+      f"🚀 <b>[APEX SCALPER PRO]</b> Bot spustený! Skenujem Top 20 USDC na"
       f" {CURRENT_TIMEFRAME}."
   )
 
@@ -221,28 +221,29 @@ async def top_gainer_scanner_loop():
         for acc in balance_res.get("data", []):
           for detail in acc.get("details", []):
             if detail.get("ccy") == "USDC":
-              free_capital = max(free_capital, safe_float(detail.get("availBal", 0)))
+              free_capital = max(
+                  free_capital, safe_float(detail.get("availBal", 0))
+              )
 
-      CURRENT_STAGE = f"STAV: 🟢 SKENER TOP 30 USDC [TF: {CURRENT_TIMEFRAME} | Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
+      CURRENT_STAGE = f"STAV: 🟢 SKENER TOP 20 USDC [TF: {CURRENT_TIMEFRAME} | Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
       if tickers_res.get("code") != "0" or not tickers_res.get("data"):
-        await asyncio.sleep(5)
+        await asyncio.sleep(4)
         continue
 
-      min_vol = 10000.0
-      min_change = 0.1
-      max_change = 100.0
+      min_vol = 10000.0  #[cite: 4]
+      min_change = 0.1  #[cite: 4]
+      max_change = 100.0  #[cite: 4]
 
       candidates = []
-      # Pre rýchlosť spracujeme max prvých 30 platných USDC mincí, aby sa cyklus nezasekol
       count = 0
       for item in tickers_res["data"]:
         inst_id = item.get("instId", "").upper()
-        if not inst_id.endswith("-USDC"):
+        if not inst_id.endswith("-USDC"):  #[cite: 4]
           continue
-        if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC"]:
+        if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC"]:  #[cite: 4]
           continue
-        if inst_id.split("-")[0] in EXCLUDED_COINS:
+        if inst_id.split("-")[0] in EXCLUDED_COINS:  #[cite: 4]
           continue
 
         try:
@@ -269,7 +270,7 @@ async def top_gainer_scanner_loop():
                   "probability": chk["probability"],
               })
               count += 1
-              if count >= 25:  # Limitujeme pre okamžitú odozvu radaru
+              if count >= 20:  # ⚡ Obmedzenie presne na Top 20 pre maximálnu rýchlosť
                 break
         except Exception:
           continue
@@ -279,9 +280,9 @@ async def top_gainer_scanner_loop():
           reverse=True,
       )
       if candidates:
-        MARKET_RADAR = candidates[:30]
+        MARKET_RADAR = candidates[:20]
       else:
-        # Ak by filtre nenašli nič, naplníme aspoň niečo z tickers, aby radar nebol prázdny
+        # Fallback zoznam ak filtre zatiaľ nič nezachytili
         fallback_list = []
         for item in tickers_res["data"][:10]:
           iid = item.get("instId", "")
@@ -317,7 +318,7 @@ async def top_gainer_scanner_loop():
         if (
             coin_name in LAST_TRADE_TIME
             and now_ts - LAST_TRADE_TIME[coin_name] < 300
-        ):
+        ):  #[cite: 4]
           continue
 
         async with trade_lock:
@@ -325,7 +326,7 @@ async def top_gainer_scanner_loop():
             break
 
           IS_ORDER_PROCESSING = True
-          safe_budget = min(free_capital * 0.95, 500.0)
+          safe_budget = min(free_capital * 0.95, 500.0)  #[cite: 4]
           current_price = cand["price"]
 
           coin_amount = safe_budget / current_price
@@ -350,7 +351,7 @@ async def top_gainer_scanner_loop():
 
           LAST_TRADE_TIME[coin_name] = datetime.now().timestamp()
           tp_price = current_price * 1.012
-          sl_price = current_price * 0.99
+          sl_price = current_price * 0.99  #[cite: 4]
           PRICE_HISTORY = [current_price]
 
           ACTIVE_TRADES[coin_name] = {
@@ -388,7 +389,7 @@ async def top_gainer_scanner_loop():
       IS_ORDER_PROCESSING = False
       print(f"❌ Chyba v skeneri: {scan_err}", flush=True)
 
-    await asyncio.sleep(8)
+    await asyncio.sleep(5)
 
 
 async def advanced_risk_monitor_loop():
@@ -429,17 +430,17 @@ async def advanced_risk_monitor_loop():
 
           if current_price > trade["highest_price"]:
             trade["highest_price"] = current_price
-            if pnl_pct >= 0.8:
-              new_trailing_sl = trade["highest_price"] * 0.995
+            if pnl_pct >= 0.8:  #[cite: 4]
+              new_trailing_sl = trade["highest_price"] * 0.995  #[cite: 4]
               if new_trailing_sl > trade["current_sl_price"]:
                 trade["current_sl_price"] = new_trailing_sl
 
-          if not trade["break_even_activated"] and pnl_pct >= 0.4:
+          if not trade["break_even_activated"] and pnl_pct >= 0.4:  #[cite: 4]
             trade["break_even_activated"] = True
             if trade["entry_price"] > trade["current_sl_price"]:
               trade["current_sl_price"] = trade["entry_price"]
 
-          if not trade["trailing_tp_activated"] and pnl_pct >= 0.8:
+          if not trade["trailing_tp_activated"] and pnl_pct >= 0.8:  #[cite: 4]
             trade["trailing_tp_activated"] = True
 
           if trade["trailing_tp_activated"]:
@@ -447,7 +448,7 @@ async def advanced_risk_monitor_loop():
                 (trade["highest_price"] - current_price)
                 / trade["highest_price"]
             ) * 100
-            if drop_from_peak >= 0.3:
+            if drop_from_peak >= 0.3:  #[cite: 4]
               try:
                 order_body = json.dumps({
                     "instId": symbol,
@@ -597,7 +598,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - CyberHUD 4.1 (Top 30 USDC)</title>
+    <title>Apex Scalper Pro - CyberHUD 4.1 (Top 20 USDC)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -643,7 +644,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 4.1 (Top 30 USDC Radar)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 4.1 (Top 20 USDC Radar)</div>
         </div>
 
         <div class="controls-row">
@@ -700,13 +701,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
-                    ✅ Žiadny aktívny obchod. Skenujem Top 30 USDC trh na <strong>{{ current_tf }}</strong> TF...
+                    ✅ Žiadny aktívny obchod. Skenujem Top 20 USDC trh na <strong>{{ current_tf }}</strong> TF...
                 </div>
             {% endif %}
         </div>
 
         <div class="section-block">
-            <div class="section-title">📊 Top 30 USDC Radar & Checklist (TF: {{ current_tf }})</div>
+            <div class="section-title">📊 Top 20 USDC Radar & Checklist (TF: {{ current_tf }})</div>
             {% if radar %}
                 <table>
                     <tr><th>Symbol</th><th>24h Zmena</th><th>Objemový Mom.</th><th>Impulz / Fib</th><th>Pripravenosť</th></tr>
@@ -721,7 +722,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Načítavam Top 30 USDC mincí do radaru...</div>
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Načítavam Top 20 USDC mincí do radaru...</div>
             {% endif %}
         </div>
 
@@ -861,7 +862,7 @@ async def dashboard():
 async def api_status():
   return {
       "status": "online",
-      "bot_type": "Apex Scalper Pro 4.1 (Top 30 USDC Radar)",
+      "bot_type": "Apex Scalper Pro 4.1 (Top 20 USDC Radar)",
       "mode": CURRENT_STRATEGY_MODE,
       "timeframe": CURRENT_TIMEFRAME,
       "current_stage": CURRENT_STAGE,
