@@ -147,12 +147,12 @@ async def top_gainer_scanner_loop():
                 continue
 
             if CURRENT_MODE == "CONSERVATIVE":
-                min_vol = 100000.0
-                min_change = 2.0
+                min_vol = 30000.0   # Znížené zo 100000.0 pre viac príležitostí
+                min_change = 1.0    # Znížené z 2.0%
                 max_change = 15.0
             else:
-                min_vol = 50000.0  
-                min_change = 1.5   
+                min_vol = 15000.0   # Znížené z 50000.0 pre rýchlejší scalping
+                min_change = 0.5    # Znížené z 1.5%
                 max_change = 25.0  
 
             candidates = []
@@ -238,8 +238,8 @@ async def top_gainer_scanner_loop():
                     await asyncio.sleep(5)
                     continue
 
-                tp_price = current_price * 1.025
-                sl_price = current_price * 0.98
+                tp_price = current_price * 1.012  # Znížené z 1.025 na +1.2% pre rýchly zisk
+                sl_price = current_price * 0.99   # Utiahnuté z 0.98 na -1.0% pre menšie riziko
                 PRICE_HISTORY = [current_price]
 
                 ACTIVE_TRADES[coin_name] = {
@@ -266,7 +266,7 @@ async def top_gainer_scanner_loop():
                     f"<b>Pár:</b> {best_target['instId']}\n"
                     f"<b>Cena:</b> {current_price:.4f} USDC\n"
                     f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
-                    f"<b>Stop-Loss:</b> {sl_price:.4f} USDC (-2%)"
+                    f"<b>Stop-Loss:</b> {sl_price:.4f} USDC (-1%)"
                 )
 
         except Exception as scan_err:
@@ -308,22 +308,24 @@ async def advanced_risk_monitor_loop():
 
                     if current_price > trade["highest_price"]:
                         trade["highest_price"] = current_price
-                        if pnl_pct >= 1.2:
-                            new_trailing_sl = trade["highest_price"] * 0.992
+                        if pnl_pct >= 0.8: # Posúvanie trailing SL už od 0.8%
+                            new_trailing_sl = trade["highest_price"] * 0.995
                             if new_trailing_sl > trade["current_sl_price"]:
                                 trade["current_sl_price"] = new_trailing_sl
 
-                    if not trade["break_even_activated"] and pnl_pct >= 0.8:
+                    # Aktivácia Break-Even (na nulu) už pri +0.4%
+                    if not trade["break_even_activated"] and pnl_pct >= 0.4:
                         trade["break_even_activated"] = True
                         if trade["entry_price"] > trade["current_sl_price"]:
                             trade["current_sl_price"] = trade["entry_price"]
 
-                    if not trade["trailing_tp_activated"] and pnl_pct >= 1.5:
+                    # Aktivácia Trailing TP už pri +0.8%
+                    if not trade["trailing_tp_activated"] and pnl_pct >= 0.8:
                         trade["trailing_tp_activated"] = True
 
                     if trade["trailing_tp_activated"]:
                         drop_from_peak = ((trade["highest_price"] - current_price) / trade["highest_price"]) * 100
-                        if drop_from_peak >= 0.5:
+                        if drop_from_peak >= 0.3: # Uzamknutie pri poklese o 0.3% z maxima
                             try:
                                 order_body = json.dumps({
                                     "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
