@@ -30,8 +30,7 @@ def send_telegram_msg(message: str):
             "text": message,
             "parse_mode": "HTML"
         }
-        res = requests.post(url, json=payload, timeout=5)
-        print(f"📱 Telegram odpoveď: {res.status_code}", flush=True)
+        requests.post(url, json=payload, timeout=5)
     except Exception as err:
         print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
@@ -43,7 +42,7 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []       
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem trh..."
 LAST_TRADE_TIME = {}  
-MAX_PARALLEL_TRADES = 1  
+MAX_PARALLEL_TRADES = 1  # 🛡️ Anti-Fragmentation: Výhradne 1 obchod naraz
 trade_lock = asyncio.Lock()  
 
 CURRENT_MODE = "AGGRESSIVE" # AGGRESSIVE / CONSERVATIVE
@@ -100,12 +99,12 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 SKENER S BEZPEČNOSTNOU KONTROLOU ZOSTATKU ---
+# --- 🔍 AUTOMATICKÝ SKENER TRHU ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE
     await asyncio.sleep(5)
     
-    start_msg = f"[{get_sk_time_str()}] ⚡ PRO SCALPER SPUSTENÝ (Režim: {CURRENT_MODE})"
+    start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER PRO SPUSTENÝ (Režim: {CURRENT_MODE})"
     print(start_msg, flush=True)
     send_telegram_msg(start_msg)
 
@@ -116,7 +115,7 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(5)
                 continue
 
-            # 1. Kontrola zostatku skôr, než vôbec vyberáme mince
+            # Kontrola dostupného zostatku USDC
             balance_res = okx_request('GET', '/api/v5/account/balance')
             if balance_res.get('code') != '0':
                 CURRENT_STAGE = "STAV: ⚠️ Chyba pri načítavaní zostatku z OKX."
@@ -129,13 +128,13 @@ async def top_gainer_scanner_loop():
                     if detail.get('ccy') == 'USDC':
                         free_capital = float(detail.get('availBal', 0) or detail.get('cashBal', 0) or 0)
 
-            # 🛡️ DÔLEŽITÁ POISTKA: Ak je zostatok USDC 0 alebo v mínuse, bot vôbec nepošle nákup a radšej čaká
+            # Poistka proti zápornému zostatku/chybe 51008
             if free_capital <= 0.0:
-                CURRENT_STAGE = f"STAV: 🛑 Zostatok USDC je v mínuse alebo 0 ({free_capital:.2f}$). Čakám na kladný zostatok..."
+                CURRENT_STAGE = f"STAV: 🛑 Nedostatok USDC ({free_capital:.2f}$). Čakám na kladný zostatok..."
                 await asyncio.sleep(15)
                 continue
 
-            CURRENT_STAGE = f"STAV: 🟢 MIMO OBCHODU [{CURRENT_MODE}]. Zostatok OK ({free_capital:.2f}$). Skenujem..."
+            CURRENT_STAGE = f"STAV: 🟢 MIMO OBCHODU [{CURRENT_MODE}]. Skenujem trh..."
             tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
             if tickers_res.get('code') != '0' or not tickers_res.get('data'):
                 await asyncio.sleep(5)
@@ -146,16 +145,16 @@ async def top_gainer_scanner_loop():
                 min_change = 2.0
                 max_change = 15.0
             else:
-                min_vol = 10000.0
-                min_change = 1.0
-                max_change = 30.0
+                min_vol = 10000.0 # Minimálny obrat > 10 000 USDC[cite: 1]
+                min_change = 1.0  # Rast od 1.0%[cite: 1]
+                max_change = 30.0 # Rast do 30.0%[cite: 1]
 
             candidates = []
             for item in tickers_res['data']:
                 inst_id = item.get('instId', '').upper()
-                if not inst_id.endswith('-USDC'):
+                if not inst_id.endswith('-USDC'): # Iba -USDC páry[cite: 1]
                     continue
-                if inst_id in ['USDC-USDC', 'USDT-USDC', 'BTC-USDC', 'ETH-USDC']:
+                if inst_id in ['USDC-USDC', 'USDT-USDC', 'BTC-USDC', 'ETH-USDC']: # Vynechanie hlavných coinov a stablecoinov[cite: 1]
                     continue
 
                 try:
@@ -190,7 +189,7 @@ async def top_gainer_scanner_loop():
 
             now_ts = datetime.now().timestamp()
             if coin_name in LAST_TRADE_TIME:
-                if now_ts - LAST_TRADE_TIME[coin_name] < 60:
+                if now_ts - LAST_TRADE_TIME[coin_name] < 60: # 60s cooldown[cite: 1]
                     await asyncio.sleep(5)
                     continue
 
@@ -201,7 +200,7 @@ async def top_gainer_scanner_loop():
                 LAST_TRADE_TIME[coin_name] = now_ts
                 CURRENT_STAGE = f"STAV: Kupujem {best_target['instId']}..."
                 
-                # Použijeme maximálne 98% z reálneho kladného zostatku, strop je 1000 USDC
+                # 98% z voľného kapitálu, strop 1000 USDC[cite: 1]
                 safe_budget = min(free_capital * 0.98, 1000.0)
                 current_price = best_target['price']
                 coin_amount = safe_budget / current_price
@@ -225,7 +224,7 @@ async def top_gainer_scanner_loop():
                     continue
 
                 tp_price = current_price * 1.02
-                sl_price = current_price * 0.985
+                sl_price = current_price * 0.985 # Počiatočný Stop-Loss (-1.5%)[cite: 1]
                 PRICE_HISTORY = [current_price]
 
                 ACTIVE_TRADES[coin_name] = {
@@ -259,7 +258,7 @@ async def top_gainer_scanner_loop():
 
         await asyncio.sleep(5)
 
-# --- 🛡️ MONITOR OBCHODU ---
+# --- 🛡️ MONITOR OBCHODU & RISK MANAGEMENT ---
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE, PRICE_HISTORY
     await asyncio.sleep(3)
@@ -280,6 +279,7 @@ async def advanced_risk_monitor_loop():
                 
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
                 
+                # 15-minútová časová poistka[cite: 1]
                 if now_time - bought_time > timedelta(minutes=15):
                     try:
                         order_body = json.dumps({
@@ -324,6 +324,7 @@ async def advanced_risk_monitor_loop():
                             if new_trailing_sl > trade["current_sl_price"]:
                                 trade["current_sl_price"] = new_trailing_sl
 
+                    # Break-Even na +0.7%[cite: 1]
                     if not trade["break_even_activated"] and pnl_pct >= 0.7:
                         trade["break_even_activated"] = True
                         if trade["entry_price"] > trade["current_sl_price"]:
@@ -334,6 +335,7 @@ async def advanced_risk_monitor_loop():
                                 f"<b>Ochrana na vstupe:</b> {trade['entry_price']:.4f} USDC"
                             )
 
+                    # Trailing TP aktivácia od +1.2%[cite: 1]
                     if not trade["trailing_tp_activated"] and pnl_pct >= 1.2:
                         trade["trailing_tp_activated"] = True
                         send_telegram_msg(
@@ -342,6 +344,7 @@ async def advanced_risk_monitor_loop():
                             f"<b>Zisk:</b> +{pnl_pct:.2f}%. Sledujem vlnu."
                         )
 
+                    # Výstup pri poklese o 0.4% z maxima[cite: 1]
                     if trade["trailing_tp_activated"]:
                         drop_from_peak = ((trade["highest_price"] - current_price) / trade["highest_price"]) * 100
                         if drop_from_peak >= 0.4:
@@ -444,7 +447,7 @@ async def emergency_sell():
         CURRENT_STAGE = "STAV: 🟢 Mimo obchodu (Ručný výstup). Skenujem..."
         return JSONResponse({"status": "success", "sold": sold_summary})
 
-# --- 🖼️ CYBERPUNK HUD ---
+# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -719,7 +722,7 @@ async def dashboard():
 async def api_status():
     return {
         "status": "online",
-        "bot_type": "Apex Flexible Scalper 3.0",
+        "bot_type": "Apex Scalper Pro 3.0",
         "mode": CURRENT_MODE,
         "current_stage": CURRENT_STAGE,
         "active_trades": ACTIVE_TRADES,
