@@ -38,39 +38,16 @@ MARKET_RADAR = []
 DAILY_PNL_CALENDAR = {}
 CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
-CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem OKX Demo trh..."
+CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živé Top Gainery na Demo..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz[cite: 1]
+MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
 CURRENT_MODE = "AGGRESSIVE"
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 
-# 🛡️ DEMO WHELIST / AKTÍVNE PÁRY PRE DEMO ÚČET
-DEMO_ALLOWED_PAIRS = [
-    "BTC-USDC",
-    "ETH-USDC",
-    "SOL-USDC",
-    "XRP-USDC",
-    "DOGE-USDC",
-    "ADA-USDC",
-    "AVAX-USDC",
-    "LINK-USDC",
-    "SUI-USDC",
-    "NEAR-USDC",
-    "RENDER-USDC",
-    "PEPE-USDC",
-    "SHIB-USDC",
-    "BTC-USDT",
-    "ETH-USDT",
-    "SOL-USDT",
-    "XRP-USDT",
-    "DOGE-USDT",
-    "PEPE-USDT",
-    "RENDER-USDT",
-]
-
+# 🛡️ BLACKLIST: Mince, ktoré na demo účte robia drobenie a trieštenie objednávok[cite: 1]
 EXCLUDED_COINS = ["ZAMA"]
 
 
@@ -137,7 +114,7 @@ def okx_request(method: str, path: str, body: str = ""):
     return {"code": "-1", "msg": str(err)}
 
 
-# --- 📈 INDIKÁTOROVÁ LOGIKA PRE DEMO TRH ---
+# --- 📈 INDIKÁTOROVÁ LOGIKA PRE TOP GAINERS ---
 def evaluate_indicator_signal(inst_id: str) -> bool:
   try:
     url = f"/api/v5/market/candles?instId={inst_id}&bar=5m&limit=30"
@@ -152,24 +129,23 @@ def evaluate_indicator_signal(inst_id: str) -> bool:
       return False
 
     closes = [float(c[4]) for c in raw_candles]
-    # Jednoduchá a spoľahlivá podmienka rastu na demo pároch
+    # Overenie rastového trendu na 5m sviečkach
     return closes[-1] > closes[-3]
   except Exception as e:
     print(f"❌ Chyba indikátora pre {inst_id}: {e}", flush=True)
     return True
 
 
-# --- 🔍 AUTOMATICKÝ SKENER PRE OKX DEMO ---
+# --- 🔍 DYNAMICKÝ TOP GAINER SKENER PRE DEMO ---
 async def top_gainer_scanner_loop():
   global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE, IS_ORDER_PROCESSING
   await asyncio.sleep(5)
 
-  start_msg = (
-      f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.4 SPUSTENÝ [OKX Demo Mode]"
-  )
+  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.5 SPUSTENÝ [Live Top Gainer Demo]"
   print(start_msg, flush=True)
   send_telegram_msg(
-      "🤖 <b>Apex Scalper 3.4 spustený!</b> Optimalizovaný pre OKX Demo účet."
+      "🤖 <b>Apex Scalper 3.5 spustený!</b> Dynamické skenowanie Top Gainerov pre"
+      " demo je aktívne."
   )
 
   while True:
@@ -208,16 +184,23 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(10)
         continue
 
-      CURRENT_STAGE = f"STAV: 🟢 DEMO SKENER. {currency_to_use} OK ({free_capital:.2f}$). Skenujem trh..."
+      CURRENT_STAGE = f"STAV: 🟢 TOP GAINER SKENER. {currency_to_use} OK ({free_capital:.2f}$). Skenujem trh..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
       if tickers_res.get("code") != "0" or not tickers_res.get("data"):
         await asyncio.sleep(5)
         continue
 
+      min_vol = 10000.0  # Minimálny objem likvidity
+      min_change = 0.5   # Minimálny 24h rast od +0.5%[cite: 1]
+      max_change = 40.0  # Maximálny 24h rast do +40%
+
       candidates = []
       for item in tickers_res["data"]:
         inst_id = item.get("instId", "").upper()
-        if inst_id not in DEMO_ALLOWED_PAIRS:
+        # Skenujeme USDC aj USDT páry, aby sme zachytili širšie spektrum Top Gainerov
+        if not inst_id.endswith("-USDC") and not inst_id.endswith("-USDT"):
+          continue
+        if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC", "BTC-USDT", "ETH-USDT"]:
           continue
 
         coin_base = inst_id.split("-")[0]
@@ -231,17 +214,18 @@ async def top_gainer_scanner_loop():
               item.get("volCcy24h", 0) or item.get("vol24h", 0) or 0
           )
 
-          if open24h > 0 and last_p > 0:
+          if open24h > 0 and last_p > 0 and vol24h >= min_vol:
             change_pct = ((last_p - open24h) / open24h) * 100
-            if evaluate_indicator_signal(inst_id):
-              probability = int(min(max(abs(change_pct) * 10 + 60, 65), 98))
-              candidates.append({
-                  "instId": inst_id,
-                  "price": last_p,
-                  "change": change_pct,
-                  "volume": vol24h,
-                  "probability": probability,
-              })
+            if min_change <= change_pct <= max_change:
+              if evaluate_indicator_signal(inst_id):
+                probability = int(min(max((change_pct / max_change) * 100, 60), 98))
+                candidates.append({
+                    "instId": inst_id,
+                    "price": last_p,
+                    "change": change_pct,
+                    "volume": vol24h,
+                    "probability": probability,
+                })
         except Exception:
           continue
 
@@ -253,14 +237,22 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(5)
         continue
 
-      best_target = candidates[0]
-      coin_name = best_target["instId"].split("-")[0]
+      # Vyberieme najlepší gainer, príp. prejdeme kandidátov, ak by demo niektorého nepodporovalo
+      best_target = None
+      for cand in candidates:
+        coin_name = cand["instId"].split("-")[0]
+        now_ts = datetime.now().timestamp()
+        if coin_name in LAST_TRADE_TIME:
+          if now_ts - LAST_TRADE_TIME[coin_name] < 600:  # 10 min cooldown
+            continue
+        best_target = cand
+        break
 
-      now_ts = datetime.now().timestamp()
-      if coin_name in LAST_TRADE_TIME:
-        if now_ts - LAST_TRADE_TIME[coin_name] < 600:  # 10 min cooldown pre demo
-          await asyncio.sleep(5)
-          continue
+      if not best_target:
+        await asyncio.sleep(5)
+        continue
+
+      coin_name = best_target["instId"].split("-")[0]
 
       # 🛡️ Zámok proti triešteniu a paralelnému odosielaniu[cite: 1]
       async with trade_lock:
@@ -268,10 +260,9 @@ async def top_gainer_scanner_loop():
           continue
 
         IS_ORDER_PROCESSING = True
-        LAST_TRADE_TIME[coin_name] = now_ts
+        LAST_TRADE_TIME[coin_name] = datetime.now().timestamp()
         CURRENT_STAGE = (
-            f"STAV: ⚡ Signál pre {best_target['instId']} (Šanca:"
-            f" {best_target['probability']}%). Vystavujem objednávku..."
+            f"STAV: ⚡ Top Gainer nájdený: {best_target['instId']} (+{best_target['change']:.2f}%). Vystavujem nákup..."
         )
 
         safe_budget = min(free_capital * 0.95, 500.0)  # Investícia do 500$[cite: 1]
@@ -294,17 +285,13 @@ async def top_gainer_scanner_loop():
 
         order_res = okx_request("POST", "/api/v5/trade/order", order_body)
         if order_res.get("code") != "0":
-          print(f"❌ Nákup zlyhal na demo burze: {order_res}", flush=True)
-          send_telegram_msg(
-              "❌ <b>Chyba nákupu na Demo:</b>"
-              f" {order_res.get('msg', 'Neznáma chyba')}"
-          )
+          print(f"❌ Nákup zlyhal na demo burze pre {best_target['instId']}: {order_res}", flush=True)
           IS_ORDER_PROCESSING = False
-          await asyncio.sleep(5)
+          await asyncio.sleep(3)
           continue
 
         tp_price = current_price * 1.012  # +1.2% Take Profit[cite: 1]
-        sl_price = current_price * 0.99  # -1.0% Stop-Loss[cite: 1]
+        sl_price = current_price * 0.99   # -1.0% Stop-Loss[cite: 1]
         PRICE_HISTORY = [current_price]
 
         ACTIVE_TRADES[coin_name] = {
@@ -325,13 +312,13 @@ async def top_gainer_scanner_loop():
 
         IS_ORDER_PROCESSING = False
         CURRENT_STAGE = (
-            f"STAV: 🔴 V OBCHODE [{best_target['instId']}] (Demo Mode"
-            " aktívny)..."
+            f"STAV: 🔴 V OBCHODE [{best_target['instId']}] (+{best_target['change']:.2f}%)..."
         )
 
         send_telegram_msg(
-            f"🟢 <b>[DEMO NÁKUP]</b>\n"
+            f"🟢 <b>[TOP GAINER DEMO NÁKUP]</b>\n"
             f"<b>Pár:</b> {best_target['instId']}\n"
+            f"<b>24h Rast:</b> +{best_target['change']:.2f}%\n"
             f"<b>Odhadovaná šanca:</b> {best_target['probability']}%\n"
             f"<b>Cena:</b> {current_price:.4f}\n"
             f"<b>Investícia:</b> ~{safe_budget:.2f} {currency_to_use}\n"
@@ -340,7 +327,7 @@ async def top_gainer_scanner_loop():
 
     except Exception as scan_err:
       IS_ORDER_PROCESSING = False
-      print(f"❌ Chyba v demo skeneri: {scan_err}", flush=True)
+      print(f"❌ Chyba v top gainer skeneri: {scan_err}", flush=True)
 
     await asyncio.sleep(10)
 
@@ -536,7 +523,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - CyberHUD 3.4 (OKX Demo Test)</title>
+    <title>Apex Scalper Pro - CyberHUD 3.5 (Top Gainer Demo)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -592,7 +579,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 3.4 (OKX Demo Test)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 3.5 (Top Gainer Demo)</div>
         </div>
 
         <div class="controls-row">
@@ -610,7 +597,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <div class="stat-value">{{ total_trades }}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Úspešnosť (Win Rate)</div>
+                <div class="stat-label">Úspešność (Win Rate)</div>
                 <div class="stat-value" style="color: #00ff88;">{{ win_rate }}%</div>
             </div>
             <div class="stat-card">
@@ -642,7 +629,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
-                    ✅ Žiadny aktívny obchod. Skenujem OKX Demo páry...
+                    ✅ Žiadny aktívny obchod. Skenujem živé Top Gainery...
                 </div>
             {% endif %}
         </div>
@@ -668,7 +655,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div class="section-block">
-            <div class="section-title">📊 Živý Radar Trhu (OKX Demo Whitelist)</div>
+            <div class="section-title">📊 Živý Radar Trhu (Top Gainers Demo)</div>
             {% if radar %}
                 <table>
                     <tr><th>Symbol</th><th>Cena</th><th>24h Rast</th><th>Objem</th><th>Šanca (%)</th></tr>
@@ -683,7 +670,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem demo trh...</div>
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem trh s Top Gainerami...</div>
             {% endif %}
         </div>
 
@@ -714,7 +701,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% endif %}
         </div>
 
-        <div class="refresh-info">APEX HUD 3.4 | Obnovenie 2s | SK Čas: {{ current_time }}</div>
+        <div class="refresh-info">APEX HUD 3.5 | Obnovenie 2s | SK Čas: {{ current_time }}</div>
     </div>
 
     <script>
@@ -819,7 +806,7 @@ async def dashboard():
 async def api_status():
   return {
       "status": "online",
-      "bot_type": "Apex Scalper Pro 3.4 (OKX Demo Optimized)",
+      "bot_type": "Apex Scalper Pro 3.5 (Top Gainer Demo Live)",
       "mode": CURRENT_MODE,
       "current_stage": CURRENT_STAGE,
       "active_trades": ACTIVE_TRADES,
