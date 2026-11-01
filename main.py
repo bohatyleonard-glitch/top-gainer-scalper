@@ -1,8 +1,11 @@
 import os
 import time
-from datetime import datetime
+import hmac
+import hashlib
+import base64
 import requests
 import threading
+from datetime import datetime
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 import uvicorn
@@ -10,20 +13,23 @@ from jinja2 import Template
 
 app = FastAPI()
 
-# --- NASTAVENIA OKX API ---
-API_KEY = os.getenv("OKX_API_KEY", "")
-API_SECRET_KEY = os.getenv("OKX_SECRET_KEY", "")
-API_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "")
+# --- NASTAVENIA OKX API & TELEGRAMU ---
+API_KEY = os.getenv("638848ca-e65c-4074-bcfd-20cf4d292f2c", "")
+API_SECRET_KEY = os.getenv("885934366C54F33B276E9E49E8EF87CF", "")
+API_PASSPHRASE = os.getenv("Australia111/", "")
 USE_DEMO = os.getenv("OKX_USE_DEMO", "true").lower() == "true"
+
+TELEGRAM_TOKEN = os.getenv("9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8", "")
+TELEGRAM_CHAT_ID = os.getenv("9130979784", "")
 
 # Globálny stav bota pre Dashboard
 bot_state = {
     "status": "online",
-    "bot_type": "Top Gainer Scalper (Live Radar Edition)",
+    "bot_type": "Top Gainer Scalper (Full API & Telegram Edition)",
     "last_scan": "Zatiaľ neskenované",
     "account_balances": {},
     "active_trades": {},
-    "market_radar": [],  # Tu budeme ukladať mince, ktoré spĺňajú kritériá rastu
+    "market_radar": [],
     "logs": []
 }
 
@@ -35,7 +41,59 @@ def log_message(msg):
     if len(bot_state["logs"]) > 50:
         bot_state["logs"].pop()
 
-# --- HTML DASHBOARD ŠABLÓNA S RADAROM ---
+def send_telegram(message):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        print(f"Chyba pri posielaní Telegram správy: {e}")
+
+# --- OKX PODPIS A API VOLANIA ---
+def get_okx_signature(timestamp, method, request_path, body=""):
+    message = timestamp + method + request_path + body
+    mac = hmac.new(bytes(API_SECRET_KEY, encoding='utf-8'), bytes(message, encoding='utf-8'), digestmod=hashlib.sha256)
+    return base64.b64encode(mac.digest()).decode('utf-8')
+
+def get_okx_headers(method, request_path, body=""):
+    timestamp = datetime.utcnow().isoformat()[:-3] + 'Z'
+    signature = get_okx_signature(timestamp, method, request_path, body)
+    headers = {
+        "OK-ACCESS-KEY": API_KEY,
+        "OK-ACCESS-SIGN": signature,
+        "OK-ACCESS-TIMESTAMP": timestamp,
+        "OK-ACCESS-PASSPHRASE": API_PASSPHRASE,
+        "Content-Type": "application/json"
+    }
+    if USE_DEMO:
+        headers["x-simulated-trading"] = "1"
+    return headers
+
+def fetch_account_balance():
+    if not API_KEY or not API_SECRET_KEY or not API_PASSPHRASE:
+        return {"USDC": {"available_balance": "0.00 (Chýbajú API kľúče)"}}
+    try:
+        path = "/api/v5/account/balance"
+        headers = get_okx_headers("GET", path)
+        url = f"https://www.okx.com{path}"
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+        
+        balances = {}
+        if data.get("code") == "0" and "data" in data:
+            for detail in data["data"][0].get("details", []):
+                ccy = detail.get("ccy")
+                avail = detail.get("availBal", "0")
+                if float(avail) > 0:
+                    balances[ccy] = {"available_balance": avail}
+        return balances if balances else {"USDC": {"available_balance": "0.00"}}
+    except Exception as e:
+        log_message(f"Chyba pri načítavaní zostatkov z OKX: {str(e)}")
+        return {}
+
+# --- HTML DASHBOARD ŠABLÓNA ---
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="sk">
@@ -65,7 +123,7 @@ DASHBOARD_TEMPLATE = """
         <div class="header">
             <div>
                 <h1>🤖 Top Gainer Scalper</h1>
-                <p style="margin: 0; color: #94a3b8;">Live Radar & OKX Demo Monitor</p>
+                <p style="margin: 0; color: #94a3b8;">OKX Demo Účet & Živý Radar</p>
             </div>
             <div>
                 <span class="status-badge">ONLINE</span>
@@ -73,21 +131,19 @@ DASHBOARD_TEMPLATE = """
         </div>
 
         <div class="card-grid">
-            <!-- 1. Zostatky -->
             <div class="card">
-                <h2>💰 Zostatky (Účet)</h2>
+                <h2>💰 Reálne Zostatky (OKX Demo)</h2>
                 <table>
                     <tr><th>Mena</th><th>Dostupné</th></tr>
                     {% for coin, data in balances.items() %}
                     <tr>
                         <td><strong>{{ coin }}</strong></td>
-                        <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
+                        <td>{{ data.available_balance }}</td>
                     </tr>
                     {% endfor %}
                 </table>
             </div>
 
-            <!-- 2. Aktívne obchody -->
             <div class="card">
                 <h2>📈 Aktívne Obchody</h2>
                 {% if trades %}
@@ -107,13 +163,12 @@ DASHBOARD_TEMPLATE = """
             </div>
         </div>
 
-        <!-- 3. Živý Radar Trhu -->
         <div class="card" style="margin-top: 20px;">
-            <h2>⚡ Živý Radar Trhu (Mince rastúce 2% - 25% s objemom >50k)</h2>
+            <h2>⚡ Živý Radar Trhu (Rast 2% - 25% | Objem >50k)</h2>
             {% if radar %}
                 <table>
                     <tr><th>Symbol</th><th>Cena</th><th>Rast za 24h</th><th>Objem (USDC)</th></tr>
-                    дова{% for item in radar %}
+                    {% for item in radar %}
                     <tr>
                         <td><strong>{{ item.symbol }}</strong></td>
                         <td>{{ item.price }}</td>
@@ -123,11 +178,10 @@ DASHBOARD_TEMPLATE = """
                     {% endfor %}
                 </table>
             {% else %}
-                <p style="color: #94a3b8; text-align: center; margin-top: 15px;">Prebieha skenovanie trhu alebo žiadna minca momentálne nespĺňa kritériá...</p>
+                <p style="color: #94a3b8; text-align: center; margin-top: 15px;">Skenujem trh, čakám na mince spĺňajúce podmienky...</p>
             {% endif %}
         </div>
 
-        <!-- 4. Logy -->
         <div class="card" style="margin-top: 20px;">
             <h2>📋 Živé Logy Bota (Posledný sken: {{ last_scan }})</h2>
             <div class="logs-box">
@@ -145,12 +199,12 @@ DASHBOARD_TEMPLATE = """
 </html>
 """
 
-# --- WEBOVÉ CESTY (ROUTES) ---
+# --- WEBOVÉ CESTY ---
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     balances = bot_state["account_balances"]
     if not balances:
-        balances = {"USDC": {"available_balance": "227.20"}}
+        balances = {"USDC": {"available_balance": "Načítavam..."}}
     
     template = Template(DASHBOARD_TEMPLATE)
     rendered_html = template.render(
@@ -163,23 +217,19 @@ def dashboard():
     )
     return rendered_html
 
-@app.get("/api/status")
-def api_status():
-    return {
-        "status": bot_state["status"],
-        "market_radar": bot_state["market_radar"],
-        "active_trades": bot_state["active_trades"],
-        "sk_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-
-# --- HLAVNÁ SKENOVACIA SLUČKA (BACKGROUND WORKER) ---
+# --- HLAVNÁ SKENOVACIA SLUČKA ---
 def background_scanner():
-    log_message("Background skener trhu úspešne naštartovaný.")
+    log_message("Background skener s OKX API prepojením naštartovaný.")
+    send_telegram("🚀 *Top Gainer Scalper bot* bol úspešne spustený a pripojený k OKX Demo!")
+    
     while True:
         try:
             bot_state["last_scan"] = datetime.now().strftime("%H:%M:%S")
             
-            # Stiahneme verejné tickery z OKX pre Spot trh
+            # 1. Aktualizujeme zostatky z OKX Demo účtu
+            bot_state["account_balances"] = fetch_account_balance()
+            
+            # 2. Skenujeme trh pre Radar
             url = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
             response = requests.get(url, timeout=10)
             data = response.json()
@@ -188,21 +238,14 @@ def background_scanner():
             if data.get("code") == "0" and "data" in data:
                 for ticker in data["data"]:
                     inst_id = ticker.get("instId", "")
-                    # Zaujímajú nás iba USDC páry (napr. BTC-USDC, ETH-USDC, SOL-USDC...)
                     if inst_id.endswith("-USDC"):
                         try:
-                            # OKX vracia zmenu za 24h v desatinnom čísle alebo percentách (napr. 0.05 = 5%)
-                            # V OKX API v5 je 'sodUtc0' alebo priamo výpočet z ceny, skúsme 'change24h' ak existuje,
-                            # alebo si spočítame open24h a last. Pozrime sa na štandardné pole v OKX:
-                            # V OKX v5 /market/tickers vracajú pole 'last' (aktuálna cena) a 'sodUtc0' (cena o 00:00 UTC)
                             last_price = float(ticker.get("last", 0))
                             sod_price = float(ticker.get("sodUtc0", 0))
-                            vol_24h = float(ticker.get("volCcy24h", 0)) # Objem v sekundárnej mene (USDC)
+                            vol_24h = float(ticker.get("volCcy24h", 0))
                             
                             if sod_price > 0:
                                 change_pct = ((last_price - sod_price) / sod_price) * 100
-                                
-                                # Filter: Objem > 50 000 USDC a rast medzi 2% a 25%
                                 if vol_24h >= 50000 and 2.0 <= change_pct <= 25.0:
                                     potential_coins.append({
                                         "symbol": inst_id,
@@ -213,19 +256,13 @@ def background_scanner():
                         except Exception:
                             continue
             
-            # Zoradíme podľa najväčšieho rastu
             potential_coins = sorted(potential_coins, key=lambda x: float(x["change"]), reverse=True)
-            bot_state["market_radar"] = potential_coins[:10]  # Uložíme top 10 mincí
+            bot_state["market_radar"] = potential_coins[:10]
             
-            if potential_coins:
-                log_message(f"Sken OKX: Nájdených {len(potential_coins)} mincí spĺňajúcich kritériá.")
-            else:
-                log_message("Sken OKX: Žiadna mincia aktuálne nespĺňa rast 2-25% s objemom >50k.")
-
         except Exception as e:
-            log_message(f"Chyba pri skenovaní OKX: {str(e)}")
+            log_message(f"Chyba v skeneri: {str(e)}")
             
-        time.sleep(20)  # Skenuje každých 20 sekúnd
+        time.sleep(20)
 
 if __name__ == "__main__":
     t = threading.Thread(target=background_scanner, daemon=True)
