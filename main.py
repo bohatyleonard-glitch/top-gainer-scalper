@@ -167,7 +167,6 @@ async def top_gainer_scanner_loop():
                 coin_amount = TRADE_BUDGET_USDC / current_price
                 formatted_sz = str(round(coin_amount, 2)) if coin_amount > 1 else str(round(coin_amount, 4))
 
-                # JEDINÝ KĽÚČ PRE AKTÍVNY OBCHOD
                 trade_key = coin_name
                 ACTIVE_TRADES[trade_key] = {
                     "market_pair": best_target['instId'],
@@ -199,7 +198,6 @@ async def top_gainer_scanner_loop():
 
                 CURRENT_STAGE = f"STAV: 🔴 V OBCHODE ({best_target['instId']}) - Sledujem živý PnL..."
 
-                # Odošle sa presne 1 správa o nákupe
                 send_telegram_msg(
                     f"🟢 <b>[⚡ NÁKUP 1000 USDC]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
@@ -213,7 +211,7 @@ async def top_gainer_scanner_loop():
 
         await asyncio.sleep(5)
 
-# --- 🛡️ MONITOR OBCHODU: BEZSPAMOVÁ OCHRANA ---
+# --- 🛡️ MONITOR OBCHODU ---
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
     await asyncio.sleep(3)
@@ -234,7 +232,6 @@ async def advanced_risk_monitor_loop():
                 
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
                 
-                # 1. ČASOVÝ LIMIT 15 MINÚT
                 if now_time - bought_time > timedelta(minutes=15):
                     try:
                         order_body = json.dumps({
@@ -267,7 +264,6 @@ async def advanced_risk_monitor_loop():
                     trade["live_pnl_pct"] = pnl_pct
                     trade["live_pnl_usdc"] = pnl_usdc
 
-                    # 2. TAKE PROFIT (+2%)
                     if current_price >= trade["target_tp_price"]:
                         try:
                             order_body = json.dumps({
@@ -289,7 +285,6 @@ async def advanced_risk_monitor_loop():
                         CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Obchod uzavretý v zisku!"
                         continue
 
-                    # 3. STOP LOSS (-2%)
                     if current_price <= trade["current_sl_price"]:
                         try:
                             order_body = json.dumps({
@@ -326,20 +321,20 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ CYBERPUNK HUD ---
+# --- 🖼️ CYBERPUNK HUD S VLASTNOU TAPETOU V ĽAVEJ ČASTI ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - Clean Mode</title>
+    <title>Apex Scalper Pro - Left Aligned HUD</title>
     <style>
         * { box-sizing: border-box; }
         body { 
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
             margin: 0; 
             padding: 25px;
-            background: linear-gradient(rgba(0,0,0,0.60), rgba(0,0,0,0.60)), url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=1920&auto=format&fit=crop');
+            background: linear-gradient(rgba(0,0,0,0.3), rgba(0,0,0,0.3)), url('/static/wallpaper.jpg');
             background-size: cover;
             background-position: center center;
             background-repeat: no-repeat;
@@ -350,18 +345,18 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             position: relative;
         }
         .container { 
-            max-width: 640px; 
-            margin: 0 auto; 
-            background: rgba(0, 0, 0, 0.45);
+            max-width: 620px; 
+            margin: 0; /* ZAROVNANIE ÚPLNE VĽAVO */
+            background: rgba(0, 0, 0, 0.65);
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(0, 255, 255, 0.25);
+            border: 1px solid rgba(0, 255, 255, 0.3);
             border-radius: 18px;
             padding: 22px;
-            box-shadow: 0 0 30px rgba(0, 255, 255, 0.20);
+            box-shadow: 0 0 35px rgba(0, 255, 255, 0.25);
         }
         .brand-title { font-size: 1rem; font-weight: 800; color: #00f0ff; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 14px; }
-        .status-banner { background: rgba(0, 240, 255, 0.12); border: 2px solid #00f0ff; border-radius: 10px; padding: 14px; font-size: 0.88rem; font-weight: 700; color: #ffffff; margin-bottom: 22px; }
+        .status-banner { background: rgba(0, 240, 255, 0.15); border: 2px solid #00f0ff; border-radius: 10px; padding: 14px; font-size: 0.88rem; font-weight: 700; color: #ffffff; margin-bottom: 22px; }
         .section-block { margin-bottom: 24px; }
         .section-title { font-size: 0.85rem; font-weight: 700; color: #00f0ff; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
         table { width: 100%; border-collapse: collapse; margin-top: 4px; }
@@ -370,14 +365,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .pnl-green { color: #00ff88; font-weight: bold; }
         .pnl-red { color: #ff4444; font-weight: bold; }
         .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(95px, 1fr)); gap: 8px; margin-top: 4px; }
-        .calendar-day { background: rgba(0, 0, 0, 0.60); border: 1px solid rgba(0, 255, 255, 0.30); border-radius: 8px; padding: 8px; text-align: center; font-size: 0.75rem; }
-        .refresh-info { color: rgba(255, 255, 255, 0.6); font-size: 0.7rem; margin-top: 20px; font-weight: 600; text-align: right; }
+        .calendar-day { background: rgba(0, 0, 0, 0.70); border: 1px solid rgba(0, 255, 255, 0.30); border-radius: 8px; padding: 8px; text-align: center; font-size: 0.75rem; }
+        .refresh-info { color: rgba(255, 255, 255, 0.6); font-size: 0.7rem; margin-top: 20px; font-weight: 600; text-align: left; }
     </style>
     <meta http-equiv="refresh" content="2">
 </head>
 <body>
     <div class="container">
-        <div class="brand-title">⚡ Apex Scalper Pro (Clean Mode)</div>
+        <div class="brand-title">⚡ Apex Scalper Pro (Left HUD)</div>
         
         <div class="status-banner">
             {{ current_stage }}
@@ -411,7 +406,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7); background: rgba(0,0,0,0.3); padding: 12px; border-radius: 8px; border: 1px dashed rgba(255,255,255,0.2);">
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
                     ✅ Žiadny aktívny obchod. Bot prísne vyčkáva na čistú príležitosť.
                 </div>
             {% endif %}
@@ -468,11 +463,15 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div class="refresh-info">
-            CLEAN SCALPER | Obnovenie 2s | SK Čas: {{ current_time }}
+            LEFT HUD SCALPER | Obnovenie 2s | SK Čas: {{ current_time }}
         </div>
     </div>
 </body>
 </html>"""
+
+from fastapi.staticfiles import StaticFiles
+import os as std_os
+std_os.makedirs("static", exist_ok=True)
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
@@ -507,13 +506,16 @@ async def dashboard():
 async def api_status():
     return {
         "status": "online",
-        "bot_type": "Apex Clean Scalper",
+        "bot_type": "Apex Left HUD Scalper",
         "current_stage": CURRENT_STAGE,
         "active_trades": ACTIVE_TRADES,
         "market_radar": MARKET_RADAR,
         "calendar": DAILY_PNL_CALENDAR,
         "sk_time": get_sk_time_str()
     }
+
+# Ošetrenie statických súborov pre tapetu
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
