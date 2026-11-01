@@ -88,12 +88,15 @@ def okx_request(method: str, path: str, body: str = ''):
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, MARKET_RADAR, CURRENT_STAGE
     await asyncio.sleep(5)
-    print(f"[{get_sk_time_str()}] ⚡ BEZSPAMOVÝ 1000$ SCALPER SPUSTENÝ", flush=True)
+    
+    start_msg = f"[{get_sk_time_str()}] ⚡ BEZSPAMOVÝ 1000$ SCALPER SPUSTENÝ (Target: 1%)"
+    print(start_msg, flush=True)
+    send_telegram_msg(start_msg)  # <-- Pridaná Telegram notifikácia pri štarte
 
     while True:
         try:
             if len(ACTIVE_TRADES) > 0:
-                CURRENT_STAGE = "STAV: 🔴 V OBCHODE! Čakám na Take Profit (+2%) alebo Stop-Loss (-2%)."
+                CURRENT_STAGE = "STAV: 🔴 V OBCHODE! Čakám na Take Profit (+1%) alebo Stop-Loss (-1%)."
                 await asyncio.sleep(5)
                 continue
 
@@ -172,8 +175,8 @@ async def top_gainer_scanner_loop():
                     "market_pair": best_target['instId'],
                     "entry_price": current_price,
                     "current_price": current_price,
-                    "target_tp_price": current_price * 1.020,
-                    "current_sl_price": current_price * 0.980,
+                    "target_tp_price": current_price * 1.010,  # Zmenené na +1%
+                    "current_sl_price": current_price * 0.990,  # Zmenené na -1%
                     "amount": formatted_sz,
                     "bought_at": get_sk_time_str(),
                     "invested_usdc": TRADE_BUDGET_USDC,
@@ -202,8 +205,8 @@ async def top_gainer_scanner_loop():
                     f"🟢 <b>[⚡ NÁKUP 1000 USDC]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
                     f"<b>Vstupná cena:</b> {current_price:.4f} USDC\n"
-                    f"<b>Cieľ TP (+2%):</b> {current_price * 1.020:.4f} USDC\n"
-                    f"<b>Stop-Loss (-2%):</b> {current_price * 0.980:.4f} USDC"
+                    f"<b>Cieľ TP (+1%):</b> {current_price * 1.010:.4f} USDC\n"
+                    f"<b>Stop-Loss (-1%):</b> {current_price * 0.990:.4f} USDC"
                 )
 
         except Exception as scan_err:
@@ -273,7 +276,7 @@ async def advanced_risk_monitor_loop():
                             record_daily_pnl(pnl_usdc)
 
                             send_telegram_msg(
-                                f"🎯 <b>[TAKE PROFIT +2% 🎉]</b>\n"
+                                f"🎯 <b>[TAKE PROFIT +1% 🎉]</b>\n"
                                 f"<b>Pár:</b> {symbol}\n"
                                 f"<b>Zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:.2f} USDC)"
                             )
@@ -346,7 +349,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
         .container { 
             max-width: 620px; 
-            margin: 0; /* ZAROVNANIE ÚPLNE VĽAVO */
+            margin: 0; 
             background: rgba(0, 0, 0, 0.65);
             backdrop-filter: blur(16px);
             -webkit-backdrop-filter: blur(16px);
