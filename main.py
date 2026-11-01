@@ -39,6 +39,7 @@ ACTIVE_TRADES = {}
 MARKET_RADAR = []  
 DAILY_PNL_CALENDAR = {} 
 LAST_TRADE_TIME = {}  
+CURRENT_STAGE = "FAZA 1: Skenujem trh..." # Sledovač fáz
 MAX_PARALLEL_TRADES = 1  
 trade_lock = asyncio.Lock()
 
@@ -83,15 +84,20 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 ULTRARÝCHLY SKENER TOP 1 GAINER ---
+# --- 🔍 ULTRARÝCHLY SKENER A SPRAVODAJCA FÁZ ---
 async def top_gainer_scanner_loop():
-    global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR
+    global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE
     await asyncio.sleep(5)
     print(f"[{get_sk_time_str()}] ⚡ AGRESÍVNY SCALPER PRO SPUSŤENÝ!", flush=True)
-    send_telegram_msg("⚡ <b>[ULTRARÝCHLY SCALPER]</b> Bot spustený! Cielime +2% rýchle zisky z Top Gainerov.")
 
     while True:
         try:
+            if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
+                CURRENT_STAGE = "FAZA 3: Obchod Aktívny & Sledovanie PnL"
+                await asyncio.sleep(5)
+                continue
+
+            CURRENT_STAGE = "FAZA 1: Detekcia Top Gainerov na burze..."
             tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
             if tickers_res.get('code') != '0' or not tickers_res.get('data'):
                 await asyncio.sleep(5)
@@ -110,7 +116,7 @@ async def top_gainer_scanner_loop():
                     last_p = float(item.get('last', 0))
                     vol24h = float(item.get('volCcy24h', 0))
 
-                    if open24h > 0 and last_p > 0 and vol24h > 10000: # Menší objemový limit pre rýchlejší vstup
+                    if open24h > 0 and last_p > 0 and vol24h > 10000:
                         change_pct = ((last_p - open24h) / open24h) * 100
                         if 1.5 <= change_pct <= 25.0:
                             probability = int(min(max((change_pct / 25.0) * 100, 50), 99))
@@ -128,20 +134,16 @@ async def top_gainer_scanner_loop():
             if candidates:
                 MARKET_RADAR = candidates[:10]
 
-            if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
-                await asyncio.sleep(5)
-                continue
-
             if not candidates:
                 await asyncio.sleep(5)
                 continue
 
-            best_target = candidates[0] # BERE ABSOLÚTNE TOP 1 MINCU
+            best_target = candidates[0]
             coin_name = best_target['instId'].split('-')[0]
 
             now_ts = datetime.now().timestamp()
             if coin_name in LAST_TRADE_TIME:
-                if now_ts - LAST_TRADE_TIME[coin_name] < 60: # Skrátený odstup na 1 minútu
+                if now_ts - LAST_TRADE_TIME[coin_name] < 60:
                     await asyncio.sleep(5)
                     continue
 
@@ -149,8 +151,10 @@ async def top_gainer_scanner_loop():
                 if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
                     continue
 
+                # FAZA 2: VYBRANÝ TOKEN & PRÍPRAVA OBCHODU
+                CURRENT_STAGE = f"FAZA 2: Vybraný {best_target['instId']} (+{best_target['change']:.2f}%) - Príprava nákupu..."
                 LAST_TRADE_TIME[coin_name] = now_ts
-                print(f"🎯 AGRESÍVNY VSTUP: Top 1 Gainer {best_target['instId']} (+{best_target['change']:.2f}%)", flush=True)
+                print(f"🎯 FAZA 2: Vybraný token {best_target['instId']}", flush=True)
 
                 balance_res = okx_request('GET', '/api/v5/account/balance')
                 if balance_res.get('code') != '0':
@@ -164,7 +168,7 @@ async def top_gainer_scanner_loop():
                             free_capital = float(detail.get('availBal', 0))
 
                 if free_capital < 10:
-                    print(f"❌ Nedostatok kapitálu: {free_capital} USDC", flush=True)
+                    CURRENT_STAGE = "FAZA 1: Nedostatok USDC kapitálu..."
                     await asyncio.sleep(15)
                     continue
 
@@ -190,24 +194,31 @@ async def top_gainer_scanner_loop():
                     await asyncio.sleep(5)
                     continue
 
-                tp_price = current_price * 1.020 # Take Profit +2.0%
-                sl_price = current_price * 0.980 # Stop Loss -2.0%
+                tp_price = current_price * 1.020
+                sl_price = current_price * 0.980
 
+                # FAZA 3: REALIZÁCIA NÁKUPU
                 ACTIVE_TRADES[coin_name] = {
                     "entry_price": current_price,
+                    "current_price": current_price,
                     "target_tp_price": tp_price,
                     "current_sl_price": sl_price,
                     "amount": formatted_sz,
                     "bought_at": get_sk_time_str(),
                     "market_pair": best_target['instId'],
-                    "invested_usdc": safe_budget
+                    "invested_usdc": safe_budget,
+                    "live_pnl_pct": 0.0,
+                    "live_pnl_usdc": 0.0
                 }
+                CURRENT_STAGE = f"FAZA 3: NAKÚPENÉ! Sledujem PnL pre {best_target['instId']}"
 
                 send_telegram_msg(
-                    f"🟢 <b>[⚡ SCALP NÁKUP #1 GAINER]</b>\n"
+                    f"🟢 <b>[⚡ NAKÚPENÉ - FAZA 3]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
-                    f"<b>Cena:</b> {current_price:.4f} USDC\n"
-                    f"<b>Cieľ (TP +2%):</b> {tp_price:.4f} USDC\n"
+                    f"<b>Vstupná cena:</b> {current_price:.4f} USDC\n"
+                    f"<b>Množstvo:</b> {formatted_sz} {coin_name}\n"
+                    f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
+                    f"<b>Cieľ (+2% TP):</b> {tp_price:.4f} USDC\n"
                     f"<b>Stop-Loss (-2%):</b> {sl_price:.4f} USDC"
                 )
 
@@ -216,9 +227,9 @@ async def top_gainer_scanner_loop():
 
         await asyncio.sleep(5)
 
-# --- 🛡️ AGRESÍVNY RISK & EXIT MONITOR ---
+# --- 🛡️ RISK MONITOR & ŽIVÝ PNL PREPOČET (FAZA 3) ---
 async def advanced_risk_monitor_loop():
-    global ACTIVE_TRADES
+    global ACTIVE_TRADES, CURRENT_STAGE
     await asyncio.sleep(3)
     
     while True:
@@ -238,16 +249,17 @@ async def advanced_risk_monitor_loop():
                 
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
                 
-                # 15 MINÚTOVÝ TIMEOUT PRE RYCHLY SCALPING
+                # TIMEOUT 15 MINÚT
                 if now_time - bought_time > timedelta(minutes=15):
                     try:
                         order_body = json.dumps({
                             "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                         })
                         okx_request('POST', '/api/v5/trade/order', order_body)
-                        send_telegram_msg(f"⏱️ <b>[TIMEOUT 15m]</b> Uzatvorený pár {symbol} na uvoľnenie kapitálu.")
-                        record_daily_pnl(0.0)
+                        send_telegram_msg(f"⏱️ <b>[TIMEOUT 15m]</b> Uzatvorený pár {symbol}")
+                        record_daily_pnl(trade.get("live_pnl_usdc", 0.0))
                         del ACTIVE_TRADES[coin]
+                        CURRENT_STAGE = "FAZA 1: Hľadám ďalšieho lídra..."
                     except Exception:
                         pass
                     continue
@@ -256,24 +268,29 @@ async def advanced_risk_monitor_loop():
                 if ticker_res.get('code') == '0' and ticker_res.get('data'):
                     current_price = float(ticker_res['data'][0]['last'])
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
+                    pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
 
-                    # 1. DOSIAHNUTÝ PEVNÝ TAKE PROFIT (+2.0%)
+                    # Aktuálny Živý PnL pre HUD
+                    trade["current_price"] = current_price
+                    trade["live_pnl_pct"] = pnl_pct
+                    trade["live_pnl_usdc"] = pnl_usdc
+
+                    # 1. DOSIAHNUTÝ TAKE PROFIT (+2.0%)
                     if current_price >= trade["target_tp_price"]:
                         try:
                             order_body = json.dumps({
                                 "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                             })
                             okx_request('POST', '/api/v5/trade/order', order_body)
-                            
-                            est_pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
-                            record_daily_pnl(est_pnl_usdc)
+                            record_daily_pnl(pnl_usdc)
 
                             send_telegram_msg(
-                                f"🎯 <b>[TAKE PROFIT DOSIAHNUTÝ +2%]</b>\n"
+                                f"🎯 <b>[TAKE PROFIT +2%]</b>\n"
                                 f"<b>Pár:</b> {symbol}\n"
-                                f"<b>Zisk:</b> +{pnl_pct:.2f}% (~{est_pnl_usdc:+.2f} USDC)"
+                                f"<b>Zisk:</b> +{pnl_pct:.2f}% (~{pnl_usdc:+.2f} USDC)"
                             )
                             del ACTIVE_TRADES[coin]
+                            CURRENT_STAGE = "FAZA 1: Obchod v zisku uzavretý! Skenujem ďalej..."
                         except Exception as err:
                             print(f"❌ Chyba TP: {err}", flush=True)
                         continue
@@ -285,22 +302,21 @@ async def advanced_risk_monitor_loop():
                                 "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                             })
                             okx_request('POST', '/api/v5/trade/order', order_body)
-                            
-                            est_pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
-                            record_daily_pnl(est_pnl_usdc)
+                            record_daily_pnl(pnl_usdc)
 
                             send_telegram_msg(
                                 f"🚨 <b>[STOP-LOSS EXECUTED]</b>\n"
                                 f"<b>Pár:</b> {symbol}\n"
-                                f"<b>Strata:</b> {pnl_pct:.2f}% (~{est_pnl_usdc:+.2f} USDC)"
+                                f"<b>Strata:</b> {pnl_pct:.2f}% (~{pnl_usdc:+.2f} USDC)"
                             )
                             del ACTIVE_TRADES[coin]
+                            CURRENT_STAGE = "FAZA 1: Obchod uzavretý v SL. Hľadám nový signál..."
                         except Exception as err:
                             print(f"❌ Chyba SL: {err}", flush=True)
                         continue
 
         except Exception as main_err:
-            print(f"❌ Chyba v monitorovacom cykle: {main_err}", flush=True)
+            print(f"❌ Chyba v monitorovaní PnL: {main_err}", flush=True)
             
         await asyncio.sleep(1)
 
@@ -314,13 +330,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ CYBERPUNK HUD ŠABLÓNA ---
+# --- 🖼️ CYBERPUNK HUD ŠABLÓNA S SLEDOM FÁZ A ŽIVÝM PNL ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro</title>
+    <title>Apex Scalper Pro - 3 Stage HUD</title>
     <style>
         * { box-sizing: border-box; }
         body { 
@@ -362,31 +378,43 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
 
         .container { 
-            max-width: 580px; 
+            max-width: 620px; 
             margin: 0; 
-            background: rgba(0, 0, 0, 0.30);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(0, 255, 255, 0.18);
+            background: rgba(0, 0, 0, 0.35);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid rgba(0, 255, 255, 0.22);
             border-radius: 16px;
             padding: 20px;
-            box-shadow: 0 0 20px rgba(0, 255, 255, 0.15), 0 0 40px rgba(0, 255, 255, 0.10), 0 0 70px rgba(180, 0, 255, 0.10);
+            box-shadow: 0 0 25px rgba(0, 255, 255, 0.18), 0 0 50px rgba(180, 0, 255, 0.12);
         }
 
         .brand-title {
-            font-size: 0.85rem;
+            font-size: 0.9rem;
             font-weight: 800;
             color: #00f0ff;
             letter-spacing: 2px;
             text-transform: uppercase;
+            margin-bottom: 12px;
+            text-shadow: 0 0 10px rgba(0, 240, 255, 0.7);
+        }
+
+        .stage-box {
+            background: rgba(0, 240, 255, 0.10);
+            border: 1px solid #00f0ff;
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: #ffffff;
             margin-bottom: 20px;
-            text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
+            text-shadow: 0 0 5px rgba(0, 240, 255, 0.5);
         }
 
         .section-block { margin-bottom: 22px; }
 
         .section-title {
-            font-size: 0.85rem;
+            font-size: 0.82rem;
             font-weight: 700;
             color: #ffffff;
             margin-bottom: 6px;
@@ -397,6 +425,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid rgba(0, 255, 255, 0.15); font-size: 0.78rem; color: #ffffff; }
         th { font-weight: 700; color: #00f0ff; text-transform: uppercase; font-size: 0.68rem; letter-spacing: 1px; }
 
+        .pnl-green { color: #00ff88; font-weight: bold; }
+        .pnl-red { color: #ff4444; font-weight: bold; }
+
         .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(85px, 1fr)); gap: 6px; margin-top: 4px; }
         .calendar-day { 
             background: rgba(0, 0, 0, 0.50); 
@@ -406,16 +437,72 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             text-align: center; 
             font-size: 0.72rem;
             color: #ffffff;
-            box-shadow: inset 0 0 10px rgba(0, 255, 255, 0.05);
         }
 
         .refresh-info { color: rgba(255, 255, 255, 0.6); font-size: 0.68rem; margin-top: 20px; font-weight: 600; }
     </style>
-    <meta http-equiv="refresh" content="5">
+    <meta http-equiv="refresh" content="2">
 </head>
 <body>
     <div class="container">
-        <div class="brand-title">⚡ Apex Scalper Pro (+2% Rapid Scalp)</div>
+        <div class="brand-title">⚡ Apex Scalper Pro (3-Stage HUD)</div>
+        
+        <div class="stage-box">
+            📡 AKTUÁLNY STAV BOT-A: <br>
+            <span style="color: #00ff88;">{{ current_stage }}</span>
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">📈 FAZA 3: Aktívny Obchod & Živý PnL</div>
+            {% if trades %}
+                <table>
+                    <tr>
+                        <th>Pár</th>
+                        <th>Vstup</th>
+                        <th>Kusy</th>
+                        <th>Aktuálna Cena</th>
+                        <th>Živý PnL (%)</th>
+                        <th>Živý PnL ($)</th>
+                    </tr>
+                    {% for t, details in trades.items() %}
+                    <tr>
+                        <td><strong>{{ details.market_pair }}</strong></td>
+                        <td>{{ "%.4f" | format(details.entry_price) }}</td>
+                        <td>{{ details.amount }}</td>
+                        <td>{{ "%.4f" | format(details.current_price) }}</td>
+                        <td class="{{ 'pnl-green' if details.live_pnl_pct >= 0 else 'pnl-red' }}">
+                            {{ "%+.2f" | format(details.live_pnl_pct) }}%
+                        </td>
+                        <td class="{{ 'pnl-green' if details.live_pnl_usdc >= 0 else 'pnl-red' }}">
+                            {{ "%+.2f" | format(details.live_pnl_usdc) }} $
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style="font-size: 0.78rem; color: rgba(255, 255, 255, 0.7);">Žiadny aktívny obchod. Čakám na výber v Fáze 2...</div>
+            {% endif %}
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">⚡ FAZA 1 & 2: Radar Kandidátov na Vstup</div>
+            {% if radar %}
+                <table>
+                    <tr><th>Symbol</th><th>Cena</th><th>24h Rast</th><th>Objem</th><th>Šanca</th></tr>
+                    {% for item in radar %}
+                    <tr>
+                        <td><strong>{{ item.instId }}</strong></td>
+                        <td>{{ "%.4f" | format(item.price) }}</td>
+                        <td>+{{ "%.2f" | format(item.change) }}%</td>
+                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
+                        <td><strong style="color: #00f0ff;">{{ item.probability }}%</strong></td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style="font-size: 0.78rem; color: rgba(255, 255, 255, 0.7);">Skenujem trh, hľadám Top Gainera...</div>
+            {% endif %}
+        </div>
 
         <div class="section-block">
             <div class="section-title">💰 Zoznam zostatkov (OKX Demo)</div>
@@ -431,27 +518,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div class="section-block">
-            <div class="section-title">⚡ Živý Radar (Top 1 Target Skenovanie)</div>
-            {% if radar %}
-                <table>
-                    <tr><th>Symbol</th><th>Cena</th><th>Rast</th><th>Objem</th><th>Šanca</th></tr>
-                    {% for item in radar %}
-                    <tr>
-                        <td><strong>{{ item.instId }}</strong></td>
-                        <td>{{ "%.4f" | format(item.price) }}</td>
-                        <td>+{{ "%.2f" | format(item.change) }}%</td>
-                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
-                        <td><strong style="color: #00f0ff;">{{ item.probability }}%</strong></td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            {% else %}
-                <div style="font-size: 0.78rem; color: rgba(255, 255, 255, 0.7);">Skenujem trh, okamžitý nákup pri nájdení Top 1...</div>
-            {% endif %}
-        </div>
-
-        <div class="section-block">
-            <div class="section-title">📅 Kalendár Výsledkov (+2% Scalp PnL)</div>
+            <div class="section-title">📅 Kalendár Výsledkov (Denné PnL)</div>
             {% if calendar %}
                 <div class="calendar-grid">
                     {% for day, data in calendar.items() %}
@@ -467,27 +534,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% endif %}
         </div>
 
-        <div class="section-block">
-            <div class="section-title">📈 Aktívny Scalp Obchod</div>
-            {% if trades %}
-                <table>
-                    <tr><th>Pár</th><th>Vstup</th><th>Cieľ (+2%)</th><th>Stop-Loss (-2%)</th></tr>
-                    {% for t, details in trades.items() %}
-                    <tr>
-                        <td><strong>{{ details.market_pair }}</strong></td>
-                        <td>{{ "%.4f" | format(details.entry_price) }}</td>
-                        <td style="color: #00ff88;"><strong>{{ "%.4f" | format(details.target_tp_price) }}</strong></td>
-                        <td style="color: #ff4444;">{{ "%.4f" | format(details.current_sl_price) }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            {% else %}
-                <div style="font-size: 0.78rem; color: rgba(255, 255, 255, 0.7);">Čakám na najbližšiu #1 mincu na trhu...</div>
-            {% endif %}
-        </div>
-
         <div class="refresh-info">
-            HIGH-SPEED SCALPER | Obnovenie 5s | SK Čas: {{ current_time }}
+            REAL-TIME 3-STAGE SCALPER | Obnovenie 2s | SK Čas: {{ current_time }}
         </div>
     </div>
 </body>
@@ -523,6 +571,7 @@ async def dashboard():
         trades=ACTIVE_TRADES,
         radar=MARKET_RADAR,
         calendar=DAILY_PNL_CALENDAR,
+        current_stage=CURRENT_STAGE,
         current_time=get_sk_time_str()
     )
     return rendered_html
@@ -531,7 +580,8 @@ async def dashboard():
 async def api_status():
     return {
         "status": "online",
-        "bot_type": "Apex Rapid +2% Scalper",
+        "bot_type": "Apex Rapid 3-Stage Scalper",
+        "current_stage": CURRENT_STAGE,
         "active_trades": ACTIVE_TRADES,
         "market_radar": MARKET_RADAR,
         "calendar": DAILY_PNL_CALENDAR,
