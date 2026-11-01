@@ -37,7 +37,7 @@ def send_telegram_msg(message: str):
 
 ACTIVE_TRADES = {}
 MARKET_RADAR = []  
-DAILY_PNL_CALENDAR = {} # Kalendár denných výsledkov PnL (formát "YYYY-MM-DD": {"pnl": suma, "trades": pocet})
+DAILY_PNL_CALENDAR = {} 
 LAST_TRADE_TIME = {}  
 MAX_PARALLEL_TRADES = 1  
 trade_lock = asyncio.Lock()
@@ -51,7 +51,6 @@ def get_sk_date_str() -> str:
     return sk_time.strftime("%Y-%m-%d")
 
 def record_daily_pnl(pnl_amount: float):
-    """Zaznamená výsledok obchodu do denného kalendára"""
     day_str = get_sk_date_str()
     if day_str not in DAILY_PNL_CALENDAR:
         DAILY_PNL_CALENDAR[day_str] = {"pnl": 0.0, "trades": 0}
@@ -84,7 +83,7 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 AUTONÓMNY SKENER TOP GAINEROV (Podľa nemenných podmienok) ---
+# --- 🔍 AUTONÓMNY SKENER TOP GAINEROV ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR
     await asyncio.sleep(10)
@@ -114,11 +113,9 @@ async def top_gainer_scanner_loop():
                     if open24h > 0 and last_p > 0 and vol24h > 50000:
                         change_pct = ((last_p - open24h) / open24h) * 100
                         if 2.0 <= change_pct <= 25.0:
-                            # Výpočet pravdepodobnosti vystrelenia (0-100%) na základe rastu a objemu
-                            # Čím vyšší objem a rast v rozmedzí 2-25%, tým vyššia pravdepodobnosť
-                            vol_score = min(vol24h / 500000.0, 1.0) * 40 # max 40 bodov za objem
-                            growth_score = (change_pct / 25.0) * 60 # max 60 bodov za rast
-                            probability = int(min(max(vol_score + growth_score, 45), 98)) # rozmedzie 45% - 98%
+                            vol_score = min(vol24h / 500000.0, 1.0) * 40
+                            growth_score = (change_pct / 25.0) * 60
+                            probability = int(min(max(vol_score + growth_score, 45), 98))
 
                             candidates.append({
                                 "instId": inst_id,
@@ -221,7 +218,7 @@ async def top_gainer_scanner_loop():
 
         await asyncio.sleep(15)
 
-# --- 🛡️ MONITOROVACÍ CYKLUS PRE VLNY (Nemenný Risk Management) ---
+# --- 🛡️ MONITOROVACÍ CYKLUS PRE VLNY ---
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES
     await asyncio.sleep(5)
@@ -321,37 +318,4 @@ async def advanced_risk_monitor_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scanner_task = asyncio.create_task(top_gainer_scanner_loop())
-    monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    yield
-    scanner_task.cancel()
-    monitor_task.cancel()
-
-app = FastAPI(lifespan=lifespan)
-
-# --- 🌟 PROFESIONÁLNY TRADINGOVÝ VIZUÁL DASHBOARDU ---
-DASHBOARD_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="sk">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro | OKX Demo Dashboard</title>
-    <style>
-        :root {
-            --bg-main: #0b0f19;
-            --bg-card: #131c2e;
-            --border-color: #1e293b;
-            --accent-green: #10b981;
-            --accent-red: #ef4444;
-            --accent-blue: #38bdf8;
-            --text-main: #f8fafc;
-            --text-muted: #94a3b8;
-        }
-        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg-main); color: var(--text-main); margin: 0; padding: 25px; }
-        .container { max-width: 1300px; margin: 0 auto; }
-        
-        .header { display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 20px 30px; border-radius: 16px; border: 1px solid var(--border-color); box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); }
-        .logo-area h1 { margin: 0; font-size: 1.6rem; color: var(--accent-blue); letter-spacing: 0.5px; }
-        .logo-area p { margin: 4px 0 0 0; color: var(--text-muted); font-size: 0.85rem; }
-        .status-badge { display: flex; align-items: center; gap: 8px; background: rgba(16, 185, 129, 0.15); color: var(--accent
+    scanner_task = asyncio.create_task(top_gainer_
