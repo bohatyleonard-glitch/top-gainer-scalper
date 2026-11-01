@@ -1,27 +1,25 @@
 import os
 import time
-import hmac
-import hashlib
-import base64
+from datetime import datetime
 import requests
 import threading
-from datetime import datetime
-from flask import Flask, jsonify, render_template_string
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+import uvicorn
+from jinja2 import Template
 
-app = Flask(__name__)
+app = FastAPI()
 
-# --- NASTAVENIA OKX API (Načítavajú sa z Render Environment Variables) ---
+# --- NASTAVENIA OKX API ---
 API_KEY = os.getenv("OKX_API_KEY", "")
 API_SECRET_KEY = os.getenv("OKX_SECRET_KEY", "")
 API_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "")
 USE_DEMO = os.getenv("OKX_USE_DEMO", "true").lower() == "true"
 
-BASE_URL = "https://www.okx.com"  # Pre demo aj live sa endpointy zhodujú, mení sa len hlavička/flag
-
 # Globálny stav bota pre Dashboard
 bot_state = {
     "status": "online",
-    "bot_type": "Full-Auto Top Gainer Scalper (Dashboard Edition)",
+    "bot_type": "Full-Auto Top Gainer Scalper (FastAPI Dashboard)",
     "last_scan": "Zatiaľ neskenované",
     "account_balances": {},
     "active_trades": {},
@@ -65,7 +63,7 @@ DASHBOARD_TEMPLATE = """
         <div class="header">
             <div>
                 <h1>🤖 Top Gainer Scalper</h1>
-                <p style="margin: 0; color: #94a3b8;">Autonómny bot na OKX Demo</p>
+                <p style="margin: 0; color: #94a3b8;">Autonómny bot na OKX Demo (FastAPI)</p>
             </div>
             <div>
                 <span class="status-badge">ONLINE</span>
@@ -125,30 +123,30 @@ DASHBOARD_TEMPLATE = """
 """
 
 # --- WEBOVÉ CESTY (ROUTES) ---
-@app.route("/")
+@app.get("/", response_class=HTMLResponse)
 def dashboard():
-    # Získame aktuálne zostatky z OKX (alebo simulované, ak API kľúče zatiaľ chýbajú)
     balances = bot_state["account_balances"]
     if not balances:
         balances = {"USDC": {"available_balance": "227.20"}}
-        
-    return render_template_string(
-        DASHBOARD_TEMPLATE,
+    
+    template = Template(DASHBOARD_TEMPLATE)
+    rendered_html = template.render(
         balances=balances,
         trades=bot_state["active_trades"],
         logs=bot_state["logs"],
         current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     )
+    return rendered_html
 
-@app.route("/api/status")
+@app.get("/api/status")
 def api_status():
-    return jsonify({
+    return {
         "status": bot_state["status"],
         "bot_type": bot_state["bot_type"],
         "account_balances": bot_state["account_balances"],
         "active_trades": bot_state["active_trades"],
         "sk_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
+    }
 
 # --- HLAVNÁ SKENOVACIA SLUČKA (BACKGROUND WORKER) ---
 def background_scanner():
@@ -156,22 +154,14 @@ def background_scanner():
     while True:
         try:
             bot_state["last_scan"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            # Tu prebieha samotná logika skenovania trhu (zatiaľ len iteratívny stavový check)
-            # Logujeme aktivitu, aby bolo v logoch vidieť, že bot žije
-            # log_message("Skenujem OKX USDC trhy...")
-            
-            # TODO: Tu sa napojia reálne OKX volania na sťahovanie tickerov a vyhodnocovanie 2% - 25% rastu
-            
+            # Tu prebehne skenovanie trhu
         except Exception as e:
             log_message(f"Chyba v skeneri: {str(e)}")
-            
         time.sleep(15)
 
 if __name__ == "__main__":
-    # Spustenie skenera na pozadí
     t = threading.Thread(target=background_scanner, daemon=True)
     t.start()
     
-    # Spustenie webového servera pre Render
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
