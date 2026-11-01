@@ -40,11 +40,10 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem top 30 USDC trh podľa checklistu..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Anti-fragmentácia: Max 1 obchod naraz[cite: 1, 3]
+MAX_PARALLEL_TRADES = 1
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
-# Režimy & Časové rámce (3m až 4h)
 CURRENT_STRATEGY_MODE = "Agresívny Momentum (Breakout)"
 CURRENT_TIMEFRAME = "5m"
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
@@ -83,7 +82,6 @@ def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
     CLOSED_TRADES_HISTORY.pop()
 
 
-# --- OKX EEA DEMO PROSTREDIE & AUTENTIFIKÁCIA ---
 def okx_request(method: str, path: str, body: str = ""):
   timestamp = (
       datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -114,7 +112,6 @@ def okx_request(method: str, path: str, body: str = ""):
     return {"code": "-1", "msg": str(err)}
 
 
-# --- 📈 INDIKÁTOROVÁ LOGIKA PODĽA PINE SCRIPT v5.4.4 ---
 def evaluate_strategy_checklist(inst_id: str) -> dict:
   result = {
       "volume_status": False,
@@ -181,21 +178,18 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
       result["probability"] = 90 if fib_buy else (50 if volume_bullish else 20)
 
   except Exception as e:
-    print(f"❌ Chyba vyhodnocovania checklistu pre {inst_id}: {e}", flush=True)
+    print(f"❌ DEBUG Chyba checklistu pre {inst_id}: {e}", flush=True)
 
   return result
 
 
-# --- 🔍 AUTOMATICKÝ TOP 30 USDC SKENER (S UPRAVENOU CITLIVOSŤOU) ---
 async def top_gainer_scanner_loop():
   global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING
   await asyncio.sleep(5)
-
-  start_msg = (
-      f"[{get_sk_time_str()}] ⚡ APEX SCALPER SPUSTENÝ [Top 30 USDC Radar | TF:"
-      f" {CURRENT_TIMEFRAME}]"
+  print(
+      f"[{get_sk_time_str()}] ⚡ DEBUG SKENER SPUSTENÝ [TF: {CURRENT_TIMEFRAME}]",
+      flush=True,
   )
-  print(start_msg, flush=True)
 
   while True:
     try:
@@ -206,6 +200,10 @@ async def top_gainer_scanner_loop():
 
       balance_res = okx_request("GET", "/api/v5/account/balance")
       if balance_res.get("code") != "0":
+        print(
+            f"⚠️ DEBUG OKX Zostatok error: {balance_res.get('msg')}",
+            flush=True,
+        )
         CURRENT_STAGE = "STAV: ⚠️ Chyba pri načítavaní zostatku z OKX."
         await asyncio.sleep(10)
         continue
@@ -219,29 +217,24 @@ async def top_gainer_scanner_loop():
           if ccy == "USDC" and val > free_capital:
             free_capital = val
 
-      if free_capital < 10.0:
-        CURRENT_STAGE = (
-            f"STAV: 🛑 Nedostatok USDC ({free_capital:.2f}$). Skontrolujte"
-            " zostatok!"
-        )
-        await asyncio.sleep(10)
-        continue
-
-      CURRENT_STAGE = f"STAV: 🟢 SKENER TOP 30 USDC [TF: {CURRENT_TIMEFRAME} | Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
+      CURRENT_STAGE = f"STAV: 🟢 SKENER TOP 30 USDC [TF: {CURRENT_TIMEFRAME}]. Skenujem..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
       if tickers_res.get("code") != "0" or not tickers_res.get("data"):
+        print(
+            f"⚠️ DEBUG OKX Tickers error: {tickers_res.get('msg')}",
+            flush=True,
+        )
         await asyncio.sleep(4)
         continue
 
-      # 🛠️ ÚPRAVA: Zmiernené filtre, aby bot okamžite zobrazil viac mincí v radare
-      min_vol = 10000.0   
-      min_change = 0.1   
+      min_vol = 10000.0
+      min_change = -100.0  # Povolíme všetko, aby sme videli v logoch mince
       max_change = 100.0
 
       candidates = []
+      total_checked = 0
       for item in tickers_res["data"]:
         inst_id = item.get("instId", "").upper()
-        
         if not inst_id.endswith("-USDC"):
           continue
         if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC"]:
@@ -251,6 +244,7 @@ async def top_gainer_scanner_loop():
         if coin_base in EXCLUDED_COINS:
           continue
 
+        total_checked += 1
         try:
           open24h = float(item.get("open24h", 0))
           last_p = float(item.get("last", 0))
@@ -260,29 +254,37 @@ async def top_gainer_scanner_loop():
 
           if open24h > 0 and last_p > 0 and vol24h >= min_vol:
             change_pct = ((last_p - open24h) / open24h) * 100
-            if min_change <= change_pct <= max_change:
-              chk = evaluate_strategy_checklist(inst_id)
+            chk = evaluate_strategy_checklist(inst_id)
 
-              candidates.append({
-                  "instId": inst_id,
-                  "price": last_p,
-                  "change": change_pct,
-                  "volume": vol24h,
-                  "volume_status": chk["volume_status"],
-                  "impulse_status": chk["impulse_status"],
-                  "fib_status": chk["fib_status"],
-                  "buy_ready": chk["buy_ready"],
-                  "probability": chk["probability"],
-              })
-        except Exception:
+            candidates.append({
+                "instId": inst_id,
+                "price": last_p,
+                "change": change_pct,
+                "volume": vol24h,
+                "volume_status": chk["volume_status"],
+                "impulse_status": chk["impulse_status"],
+                "fib_status": chk["fib_status"],
+                "buy_ready": chk["buy_ready"],
+                "probability": chk["probability"],
+            })
+        except Exception as ex:
+          print(
+              f"❌ DEBUG Chyba spracovania mince {inst_id}: {ex}", flush=True
+          )
           continue
+
+      print(
+          f"🔍 DEBUG Cyklus dokončený. Celkovo preverených USDC mincí:"
+          f" {total_checked}, Vyhovujúci kandidáti: {len(candidates)}",
+          flush=True,
+      )
 
       candidates.sort(
           key=lambda x: (x["buy_ready"], x["probability"], x["change"]),
           reverse=True,
       )
       if candidates:
-        MARKET_RADAR = candidates[:30]  # Zobrazenie presne top 30 USDC tokenov naraz
+        MARKET_RADAR = candidates[:30]
 
       for cand in candidates:
         if not cand["buy_ready"]:
@@ -322,23 +324,10 @@ async def top_gainer_scanner_loop():
           order_res = okx_request("POST", "/api/v5/trade/order", order_body)
 
           if order_res.get("code") != "0":
-            err_data = order_res.get("data", [{}])
-            s_code = (
-                err_data[0].get("sCode")
-                if isinstance(err_data, list) and len(err_data) > 0
-                else ""
+            print(
+                f"❌ DEBUG Nákup zlyhal pre {cand['instId']}: {order_res}",
+                flush=True,
             )
-
-            if s_code == "51155" or "compliance" in str(order_res).lower():
-              print(
-                  f"⏩ {cand['instId']} blokovaný demo účtom. Skúšam ďalšieho"
-                  " tokena...",
-                  flush=True,
-              )
-              IS_ORDER_PROCESSING = False
-              continue
-
-            print(f"❌ Nákup zlyhal pre {cand['instId']}: {order_res}", flush=True)
             IS_ORDER_PROCESSING = False
             break
 
@@ -364,31 +353,15 @@ async def top_gainer_scanner_loop():
           }
 
           IS_ORDER_PROCESSING = False
-          CURRENT_STAGE = (
-              f"STAV: 🔴 V OBCHODE [{cand['instId']}] (TF: {CURRENT_TIMEFRAME} |"
-              f" {CURRENT_STRATEGY_MODE})..."
-          )
-
-          send_telegram_msg(
-              f"🟢 <b>[APEX SCALPER - NÁKUP]</b>\n"
-              f"<b>Pár:</b> {cand['instId']}\n"
-              f"<b>Časový rámec (TF):</b> {CURRENT_TIMEFRAME}\n"
-              f"<b>Nákupná cena:</b> {current_price:.4f}\n"
-              f"<b>Nakúpené množstvo:</b> {formatted_sz} {coin_name}\n"
-              f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
-              f"<b>Stop-Loss:</b> {sl_price:.4f} (-1.0%)\n"
-              f"<b>Pravdepodobnosť:</b> {cand['probability']}%"
-          )
           break
 
     except Exception as scan_err:
       IS_ORDER_PROCESSING = False
-      print(f"❌ Chyba v skeneri: {scan_err}", flush=True)
+      print(f"❌ DEBUG Hlavná chyba skenera: {scan_err}", flush=True)
 
-    await asyncio.sleep(5)
+    await asyncio.sleep(10)
 
 
-# --- 🛡️ MONITOR OBCHODU & RISK MANAGEMENT ---
 async def advanced_risk_monitor_loop():
   global ACTIVE_TRADES, CURRENT_STAGE, PRICE_HISTORY
   await asyncio.sleep(3)
@@ -453,21 +426,11 @@ async def advanced_risk_monitor_loop():
                 })
                 okx_request("POST", "/api/v5/trade/order", order_body)
                 record_closed_trade(symbol, pnl_pct, pnl_usdc, "Take Profit")
-
-                send_telegram_msg(
-                    f"🎯 <b>[APEX SCALPER - TAKE PROFIT VÝSTUP]</b>\n"
-                    f"<b>Pár:</b> {symbol}\n"
-                    f"<b>Predajná cena:</b> {current_price:.4f}\n"
-                    f"<b>Množstvo:</b> {trade['amount']} {coin_base}\n"
-                    f"<b>Výsledok (%):</b> +{pnl_pct:.2f}%\n"
-                    f"<b>Výsledok ($):</b> +{pnl_usdc:+.2f} USDC 🟢"
-                )
               except Exception as err:
                 print(f"❌ Chyba Take Profit: {err}", flush=True)
 
               if coin in ACTIVE_TRADES:
                 del ACTIVE_TRADES[coin]
-              CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Zisk úspešne uzamknutý!"
               continue
 
           if current_price <= trade["current_sl_price"]:
@@ -483,22 +446,11 @@ async def advanced_risk_monitor_loop():
               record_closed_trade(
                   symbol, pnl_pct, pnl_usdc, "Stop-Loss / Ochrana"
               )
-
-              emoji_res = "🟢" if pnl_usdc >= 0 else "🔴"
-              send_telegram_msg(
-                  f"🚨 <b>[APEX SCALPER - STOP-LOSS / EXIT]</b>\n"
-                  f"<b>Pár:</b> {symbol}\n"
-                  f"<b>Výstupná cena:</b> {current_price:.4f}\n"
-                  f"<b>Množstvo:</b> {trade['amount']} {coin_base}\n"
-                  f"<b>Výsledok (%):</b> {pnl_pct:+.2f}%\n"
-                  f"<b>Výsledok ($):</b> {pnl_usdc:+.2f} USDC {emoji_res}"
-              )
             except Exception as err:
               print(f"❌ Chyba SL: {err}", flush=True)
 
             if coin in ACTIVE_TRADES:
               del ACTIVE_TRADES[coin]
-            CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Pozícia zatvorená."
             continue
 
     except Exception as main_err:
@@ -519,7 +471,6 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-# --- 🎛️ API ENDPOINTS ---
 @app.get("/api/set-strategy/{mode}")
 async def set_strategy(mode: str):
   global CURRENT_STRATEGY_MODE
@@ -555,7 +506,6 @@ async def emergency_sell():
     for coin in list(ACTIVE_TRADES.keys()):
       trade = ACTIVE_TRADES[coin]
       symbol = trade["market_pair"]
-      coin_base = symbol.split("-")[0]
       try:
         order_body = json.dumps({
             "instId": symbol,
@@ -565,14 +515,11 @@ async def emergency_sell():
             "sz": str(trade["amount"]),
         })
         okx_request("POST", "/api/v5/trade/order", order_body)
-        pnl_pct = trade.get("live_pnl_pct", 0.0)
-        pnl_usdc = trade.get("live_pnl_usdc", 0.0)
-        record_closed_trade(symbol, pnl_pct, pnl_usdc, "Manuálny Kill Switch")
-
-        send_telegram_msg(
-            f"🚨 <b>[NÚDZOVÝ PREDAJ / KILL SWITCH]</b>\n"
-            f"<b>Pár:</b> {symbol}\n"
-            f"<b>Výsledok:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} USDC)"
+        record_closed_trade(
+            symbol,
+            trade.get("live_pnl_pct", 0.0),
+            trade.get("live_pnl_usdc", 0.0),
+            "Manuálny Kill Switch",
         )
         sold_summary.append(symbol)
       except Exception as e:
@@ -580,7 +527,6 @@ async def emergency_sell():
 
       del ACTIVE_TRADES[coin]
 
-    CURRENT_STAGE = "STAV: 🟢 Mimo obchodu (Ručný výstup). Skenujem..."
     return JSONResponse({
         "status": "success",
         "message": "Pozícia úspešne predaná cez Kill Switch",
@@ -588,7 +534,6 @@ async def emergency_sell():
     })
 
 
-# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE S TOP 30 RADAROM ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -613,29 +558,17 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
         .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
         .brand-title { font-size: 1rem; font-weight: 800; color: #00f0ff; letter-spacing: 2px; text-transform: uppercase; }
-        
         .controls-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,255,255,0.08); border: 1px solid rgba(0,255,255,0.2); padding: 10px 14px; border-radius: 10px; margin-bottom: 15px; flex-wrap: wrap; gap: 8px; }
         .mode-buttons a { text-decoration: none; background: rgba(0,0,0,0.5); border: 1px solid #00f0ff; color: #fff; padding: 5px 9px; font-size: 0.68rem; font-weight: bold; border-radius: 6px; display: inline-block; transition: all 0.2s; }
         .mode-buttons a.active { background: #00f0ff; color: #000; box-shadow: 0 0 10px #00f0ff; }
-        
         .tf-buttons { display: flex; gap: 4px; flex-wrap: wrap; }
         .tf-buttons a { text-decoration: none; background: rgba(0,0,0,0.5); border: 1px solid #ff00ff; color: #fff; padding: 5px 8px; font-size: 0.68rem; font-weight: bold; border-radius: 6px; display: inline-block; transition: all 0.2s; }
         .tf-buttons a.active { background: #ff00ff; color: #000; box-shadow: 0 0 10px #ff00ff; }
-
-        .kill-switch-btn {
-            background: linear-gradient(135deg, #ff0055, #990033);
-            color: #fff; border: 1px solid #ff0055; padding: 5px 10px;
-            border-radius: 6px; font-weight: 800; font-size: 0.68rem;
-            cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
-            box-shadow: 0 0 10px rgba(255, 0, 85, 0.4);
-        }
-        .kill-switch-btn:hover { background: #ff0055; }
-
+        .kill-switch-btn { background: linear-gradient(135deg, #ff0055, #990033); color: #fff; border: 1px solid #ff0055; padding: 5px 10px; border-radius: 6px; font-weight: 800; font-size: 0.68rem; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; box-shadow: 0 0 10px rgba(255, 0, 85, 0.4); }
         .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
         .stat-card { background: rgba(0,0,0,0.6); border: 1px solid rgba(0,255,255,0.25); border-radius: 10px; padding: 10px; text-align: center; }
         .stat-label { font-size: 0.7rem; color: #00f0ff; text-transform: uppercase; font-weight: bold; }
         .stat-value { font-size: 1.1rem; font-weight: bold; margin-top: 4px; }
-
         .status-banner { background: rgba(0, 240, 255, 0.15); border: 2px solid #00f0ff; border-radius: 10px; padding: 12px; font-size: 0.85rem; font-weight: 700; color: #ffffff; margin-bottom: 20px; }
         .section-block { margin-bottom: 22px; }
         .section-title { font-size: 0.85rem; font-weight: 700; color: #00f0ff; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
@@ -704,9 +637,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </tr>
                     {% endfor %}
                 </table>
-                <div class="chart-container">
-                    <canvas id="livePriceChart"></canvas>
-                </div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
                     ✅ Žiadny aktívny obchod. Skenujem Top 30 USDC trh na <strong>{{ current_tf }}</strong> TF...
@@ -775,39 +705,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 alert(data.message || "Pozícia zatvorená!");
                 window.location.reload();
             }
-        }
-
-        const rawHistory = {{ price_history | tojson }};
-        if (rawHistory && rawHistory.length > 0 && document.getElementById('livePriceChart')) {
-            const ctxChart = document.getElementById('livePriceChart').getContext('2d');
-            new Chart(ctxChart, {
-                type: 'line',
-                data: {
-                    labels: rawHistory.map((_, i) => i + 1),
-                    datasets: [{
-                        label: 'Cena',
-                        data: rawHistory,
-                        borderColor: '#00f0ff',
-                        backgroundColor: 'rgba(0, 240, 255, 0.1)',
-                        fill: true,
-                        borderWidth: 2,
-                        tension: 0.3,
-                        pointRadius: 2
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
-                    scales: {
-                        x: { display: false },
-                        y: { 
-                            ticks: { color: '#00f0ff', font: { size: 10 } },
-                            grid: { color: 'rgba(255,255,255,0.05)' }
-                        }
-                    }
-                }
-            });
         }
     </script>
 </body>
