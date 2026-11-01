@@ -35,7 +35,6 @@ def send_telegram_msg(message: str):
         print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
 ACTIVE_TRADES = {}
-# Predvolené testovacie dáta v radaru, aby tabuľka hneď niečo ukazovala pokiaľ skener hľadá
 MARKET_RADAR = [
     {"instId": "SOL-USDC", "price": 184.20, "change": 4.50, "volume": 88000, "probability": 88},
     {"instId": "XRP-USDC", "price": 0.6210, "change": 3.20, "volume": 65000, "probability": 74}
@@ -330,8 +329,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ HTML ŠABLÓNA ---
-DASHBOARD_TEMPLATE = """<!DOCTYPE html>
+# --- 🖼️ VYTVORENIE INDEX.HTML PRI ŠTARTE (BEZ RIZIKA SYNTAX CHÝB) ---
+HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
@@ -422,5 +421,97 @@ DASHBOARD_TEMPLATE = """<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style
-                
+                <div style="font-size: 0.78rem; color: #111111;">Skenujem trh, čakám na mince spĺňajúce kritériá...</div>
+            {% endif %}
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">📅 Kalendár Denných Výsledkov (PnL Tracker)</div>
+            {% if calendar %}
+                <div class="calendar-grid">
+                    {% for day, data in calendar.items() %}
+                    <div class="calendar-day">
+                        <div>{{ day }}</div>
+                        <div style="font-weight: bold;">{{ "%+.2f" | format(data.pnl) }} $</div>
+                        <div style="font-size: 0.6rem;">{{ data.trades }} obch.</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div style="font-size: 0.78rem; color: #111111;">Zatiaľ žiadne uzavreté obchody.</div>
+            {% endif %}
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">📈 Aktívne Obchody</div>
+            {% if trades %}
+                <table>
+                    <tr><th>Pár</th><th>Vstup</th><th>Stop-Loss</th></tr>
+                    {% for t, details in trades.items() %}
+                    <tr>
+                        <td><strong>{{ details.market_pair }}</strong></td>
+                        <td>{{ "%.4f" | format(details.entry_price) }}</td>
+                        <td>{{ "%.4f" | format(details.current_sl_price) }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style="font-size: 0.78rem; color: #111111;">Žiadny aktívny obchod. Čakám na signál...</div>
+            {% endif %}
+        </div>
+
+        <div class="refresh-info">
+            Obnovenie každých 10s | Aktuálny čas: {{ current_time }}
+        </div>
+    </div>
+</body>
+</html>"""
+
+with open("index.html", "w", encoding="utf-8") as f:
+    f.write(HTML_TEMPLATE_CONTENT)
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    account_balances = {"USDC": {"available_balance": 0.0}}
+    try:
+        balance_res = okx_request('GET', '/api/v5/account/balance')
+        if balance_res.get('code') == '0':
+            found = {}
+            for acc in balance_res.get('data', []):
+                for detail in acc.get('details', []):
+                    ccy = detail.get('ccy')
+                    avail = float(detail.get('availBal', 0))
+                    if avail > 0:
+                        found[ccy] = {"available_balance": avail}
+            if found:
+                account_balances = found
+    except Exception:
+        pass
+
+    with open("index.html", "r", encoding="utf-8") as f:
+        template_content = f.read()
+
+    template = Template(template_content)
+    rendered_html = template.render(
+        balances=account_balances,
+        trades=ACTIVE_TRADES,
+        radar=MARKET_RADAR,
+        calendar=DAILY_PNL_CALENDAR,
+        current_time=get_sk_time_str()
+    )
+    return rendered_html
+
+@app.get("/api/status")
+async def api_status():
+    return {
+        "status": "online",
+        "bot_type": "Apex Gainer Scalper Pro",
+        "active_trades": ACTIVE_TRADES,
+        "market_radar": MARKET_RADAR,
+        "calendar": DAILY_PNL_CALENDAR,
+        "sk_time": get_sk_time_str()
+    }
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
