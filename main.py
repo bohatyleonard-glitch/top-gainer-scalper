@@ -5,7 +5,7 @@ import json
 import asyncio
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Form
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 import requests
@@ -39,15 +39,14 @@ def send_telegram_msg(message: str):
 ACTIVE_TRADES = {}       
 MARKET_RADAR = []        
 DAILY_PNL_CALENDAR = {}  
-CLOSED_TRADES_HISTORY = [] # História pre štatistiky a Win Rate
+CLOSED_TRADES_HISTORY = [] 
 PRICE_HISTORY = []       
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem trh..."
 LAST_TRADE_TIME = {}  
 MAX_PARALLEL_TRADES = 1  
 trade_lock = asyncio.Lock()  
 
-# Aktívny režim skenera (Agresívny / Konzervatívny)
-CURRENT_MODE = "AGGRESSIVE" # Možnosti: AGGRESSIVE, CONSERVATIVE
+CURRENT_MODE = "AGGRESSIVE" # AGGRESSIVE / CONSERVATIVE
 
 def get_sk_time_str() -> str:
     sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -60,14 +59,11 @@ def get_sk_date_str() -> str:
 def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
     global CLOSED_TRADES_HISTORY
     day_str = get_sk_date_str()
-    
-    # Zápis do denného kalendára
     if day_str not in DAILY_PNL_CALENDAR:
         DAILY_PNL_CALENDAR[day_str] = {"pnl": 0.0, "trades": 0}
     DAILY_PNL_CALENDAR[day_str]["pnl"] += pnl_usdc
     DAILY_PNL_CALENDAR[day_str]["trades"] += 1
 
-    # Pridanie do histórie pre štatistiky
     CLOSED_TRADES_HISTORY.insert(0, {
         "pair": pair,
         "pnl_pct": pnl_pct,
@@ -104,7 +100,7 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 SKENER S PODPOROU PREPÍNANIA REŽIMOV ---
+# --- 🔍 SKENER ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE
     await asyncio.sleep(5)
@@ -126,15 +122,14 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(5)
                 continue
 
-            # Dynamické nastavenie filtrov podľa zvoleného režimu
             if CURRENT_MODE == "CONSERVATIVE":
-                min_vol = 50000.0  # Vyšší objem pre väčšiu stabilitu
-                min_change = 2.0   # Prísnejší rast od 2%
-                max_change = 15.0  # Nižší strop
-            else: # AGGRESSIVE
-                min_vol = 10000.0  # Nižší objem pre častejšie obchody
-                min_change = 1.0   # Širší rast od 1%
-                max_change = 30.0  # Vyšší strop
+                min_vol = 50000.0
+                min_change = 2.0
+                max_change = 15.0
+            else:
+                min_vol = 10000.0
+                min_change = 1.0
+                max_change = 30.0
 
             candidates = []
             for item in tickers_res['data']:
@@ -198,8 +193,9 @@ async def top_gainer_scanner_loop():
                         if detail.get('ccy') == 'USDC':
                             free_capital = float(detail.get('availBal', 0))
 
+                # Ochrana: Ak máte na demo účte menej ako 10 USDC, nákup neodošleme, aby burza nevracala chybu 51008
                 if free_capital < 10:
-                    CURRENT_STAGE = f"STAV: ⚠️ Nedostatok USDC (Máš {free_capital:.2f})."
+                    CURRENT_STAGE = f"STAV: ⚠️ Nedostatok USDC na burze (Máš {free_capital:.2f}). Doplň si demo USDC!"
                     await asyncio.sleep(15)
                     continue
 
@@ -403,9 +399,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- API PRE PREPÍNANIE REŽIMOV A EMERGENCY SELL ---
-@app.post("/api/set-mode")
-async def set_mode(mode: str = Form(...)):
+# --- API ENDPOINTS (BEZ POTREBY PYTHON-MULTIPART) ---
+@app.get("/api/set-mode/{mode}")
+async def set_mode(mode: str):
     global CURRENT_MODE
     if mode in ["AGGRESSIVE", "CONSERVATIVE"]:
         CURRENT_MODE = mode
@@ -445,7 +441,7 @@ async def emergency_sell():
         CURRENT_STAGE = "STAV: 🟢 Mimo obchodu (Ručný výstup). Skenujem..."
         return JSONResponse({"status": "success", "sold": sold_summary})
 
-# --- 🖼️ CYBERPUNK HUD 3.0 S KOMPLETNÝMI ŠTATISTIKÁMI A PREPÍNAČOM ---
+# --- 🖼️ CYBERPUNK HUD ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -471,10 +467,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
         .brand-title { font-size: 1rem; font-weight: 800; color: #00f0ff; letter-spacing: 2px; text-transform: uppercase; }
         
-        /* Prepínač režimov a Kill Switch */
         .controls-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,255,255,0.08); border: 1px solid rgba(0,255,255,0.2); padding: 10px 14px; border-radius: 10px; margin-bottom: 15px; }
-        .mode-buttons button { background: rgba(0,0,0,0.5); border: 1px solid #00f0ff; color: #fff; padding: 6px 12px; font-size: 0.75rem; font-weight: bold; cursor: pointer; border-radius: 6px; transition: all 0.2s; }
-        .mode-buttons button.active { background: #00f0ff; color: #000; box-shadow: 0 0 10px #00f0ff; }
+        .mode-buttons a { text-decoration: none; background: rgba(0,0,0,0.5); border: 1px solid #00f0ff; color: #fff; padding: 6px 12px; font-size: 0.75rem; font-weight: bold; border-radius: 6px; display: inline-block; transition: all 0.2s; }
+        .mode-buttons a.active { background: #00f0ff; color: #000; box-shadow: 0 0 10px #00f0ff; }
         
         .kill-switch-btn {
             background: linear-gradient(135deg, #ff0055, #990033);
@@ -485,7 +480,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
         .kill-switch-btn:hover { background: #ff0055; }
 
-        /* Štatistiky Panel (Win Rate & Zisk) */
         .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
         .stat-card { background: rgba(0,0,0,0.6); border: 1px solid rgba(0,255,255,0.25); border-radius: 10px; padding: 10px; text-align: center; }
         .stat-label { font-size: 0.7rem; color: #00f0ff; text-transform: uppercase; font-weight: bold; }
@@ -512,17 +506,15 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="brand-title">⚡ Apex Scalper HUD 3.0</div>
         </div>
 
-        <!-- 🎛️ OVLÁDACÍ PANEL: REŽIM + KILL SWITCH -->
         <div class="controls-row">
             <div class="mode-buttons">
                 <span style="font-size: 0.75rem; color: #00f0ff; font-weight: bold; margin-right: 6px;">REŽIM:</span>
-                <button class="{{ 'active' if current_mode == 'AGGRESSIVE' else '' }}" onclick="setMode('AGGRESSIVE')">Agresívny</button>
-                <button class="{{ 'active' if current_mode == 'CONSERVATIVE' else '' }}" onclick="setMode('CONSERVATIVE')">Konzervatívny</button>
+                <a href="/api/set-mode/AGGRESSIVE" class="{{ 'active' if current_mode == 'AGGRESSIVE' else '' }}">Agresívny</a>
+                <a href="/api/set-mode/CONSERVATIVE" class="{{ 'active' if current_mode == 'CONSERVATIVE' else '' }}">Konzervatívny</a>
             </div>
             <button class="kill-switch-btn" onclick="triggerKillSwitch()">🚨 KILL SWITCH</button>
         </div>
 
-        <!-- 📊 CELKOVÉ ŠTATISTIKY (WIN RATE & ZISK) -->
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-label">Celkovo Obchodov</div>
@@ -637,15 +629,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     </div>
 
     <script>
-        // 🎛️ PREPÍNANIE REŽIMU JEDNÝM KLIKNUTÍM
-        async function setMode(mode) {
-            const formData = new URLSearchParams();
-            formData.append('mode', mode);
-            await fetch('/api/set-mode', { method: 'POST', body: formData });
-            window.location.reload();
-        }
-
-        // 🚨 NÚDZOVÉ TLAČIDLO
         async function triggerKillSwitch() {
             if (confirm("⚠️ Naozaj chceš okamžite predajom zatvoriť aktívnu pozíciu?")) {
                 const res = await fetch('/api/emergency-sell', { method: 'POST' });
@@ -655,7 +638,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             }
         }
 
-        // 📈 MINI GRAF
         const rawHistory = {{ price_history | tojson }};
         if (rawHistory && rawHistory.length > 0 && document.getElementById('livePriceChart')) {
             const ctxChart = document.getElementById('livePriceChart').getContext('2d');
@@ -710,7 +692,6 @@ async def dashboard():
     except Exception:
         pass
 
-    # Výpočet štatistík a Win Rate
     total_trades = len(CLOSED_TRADES_HISTORY)
     winning_trades = sum(1 for t in CLOSED_TRADES_HISTORY if t["pnl_pct"] > 0)
     win_rate = round((winning_trades / total_trades * 100) if total_trades > 0 else 0.0, 1)
