@@ -326,186 +326,136 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🌟 PROFESIONÁLNY TRADINGOVÝ VIZUÁL DASHBOARDU ---
+# --- 🌆 ŽIVÝ KYBERPUNKOVÝ HTML DASHBOARD ---
 DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro | OKX Demo Dashboard</title>
+    <title>Apex Scalper Pro | Cyberpunk OKX Terminal</title>
     <style>
         :root {
-            --bg-main: #0b0f19;
-            --bg-card: #131c2e;
-            --border-color: #1e293b;
-            --accent-green: #10b981;
-            --accent-red: #ef4444;
-            --accent-blue: #38bdf8;
-            --text-main: #f8fafc;
-            --text-muted: #94a3b8;
+            --neon-blue: #00f0ff;
+            --neon-pink: #ff007f;
+            --neon-purple: #7000ff;
+            --neon-green: #00ff66;
+            --bg-dark: #05070f;
+            --card-bg: rgba(12, 16, 32, 0.75);
+            --border-glow: rgba(0, 240, 255, 0.3);
+            --text-main: #e2e8f0;
+            --text-dim: #94a3b8;
         }
-        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg-main); color: var(--text-main); margin: 0; padding: 25px; }
-        .container { max-width: 1300px; margin: 0 auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); padding: 20px 30px; border-radius: 16px; border: 1px solid var(--border-color); box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); }
-        .logo-area h1 { margin: 0; font-size: 1.6rem; color: var(--accent-blue); letter-spacing: 0.5px; }
-        .logo-area p { margin: 4px 0 0 0; color: var(--text-muted); font-size: 0.85rem; }
-        .status-badge { display: flex; align-items: center; gap: 8px; background: rgba(16, 185, 129, 0.15); color: var(--accent-green); padding: 8px 16px; border-radius: 30px; font-weight: 600; font-size: 0.9rem; border: 1px solid rgba(16, 185, 129, 0.3); }
-        .pulse-dot { width: 9px; height: 9px; background: var(--accent-green); border-radius: 50%; box-shadow: 0 0 8px var(--accent-green); animation: pulse 2s infinite; }
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+
+        * { box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background-color: var(--bg-dark); 
+            color: var(--text-main); 
+            margin: 0; 
+            padding: 20px;
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        /* Živé animované pozadie (Cyberpunk Grid & Light Rays) */
+        #canvas-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: -1;
+            background: radial-gradient(circle at 50% 20%, #101428 0%, #03050a 100%);
+        }
+
+        .container { max-width: 1300px; margin: 0 auto; position: relative; z-index: 1; }
+
+        .header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            background: var(--card-bg); 
+            padding: 22px 30px; 
+            border-radius: 16px; 
+            border: 1px solid var(--border-glow); 
+            box-shadow: 0 0 25px rgba(0, 240, 255, 0.15);
+            backdrop-filter: blur(12px);
+        }
+
+        .logo-area h1 { 
+            margin: 0; 
+            font-size: 1.8rem; 
+            color: var(--neon-blue); 
+            letter-spacing: 2px;
+            text-shadow: 0 0 10px rgba(0, 240, 255, 0.6), 0 0 20px rgba(0, 240, 255, 0.2);
+            text-transform: uppercase;
+        }
+
+        .logo-area p { margin: 4px 0 0 0; color: var(--text-dim); font-size: 0.85rem; letter-spacing: 1px; }
+
+        .status-badge { 
+            display: flex; 
+            align-items: center; 
+            gap: 10px; 
+            background: rgba(0, 255, 102, 0.1); 
+            color: var(--neon-green); 
+            padding: 8px 18px; 
+            border-radius: 30px; 
+            font-weight: 700; 
+            font-size: 0.85rem; 
+            border: 1px solid rgba(0, 255, 102, 0.4);
+            box-shadow: 0 0 15px rgba(0, 255, 102, 0.2);
+        }
+
+        .pulse-dot { 
+            width: 10px; 
+            height: 10px; 
+            background: var(--neon-green); 
+            border-radius: 50%; 
+            box-shadow: 0 0 12px var(--neon-green); 
+            animation: pulse 1.5s infinite alternate; 
+        }
+
+        @keyframes pulse { 0% { opacity: 0.4; transform: scale(0.9); } 100% { opacity: 1; transform: scale(1.2); } }
+
         .grid-top { display: grid; grid-template-columns: 1fr 1fr; gap: 25px; margin-top: 25px; }
-        .card { background: var(--bg-card); padding: 24px; border-radius: 16px; border: 1px solid var(--border-color); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); }
-        h2 { margin-top: 0; color: var(--text-main); font-size: 1.1rem; border-bottom: 1px solid var(--border-color); padding-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+
+        .card { 
+            background: var(--card-bg); 
+            padding: 24px; 
+            border-radius: 16px; 
+            border: 1px solid rgba(112, 0, 255, 0.3); 
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+            backdrop-filter: blur(10px);
+            transition: border-color 0.3s ease;
+        }
+
+        .card:hover { border-color: var(--neon-blue); }
+
+        h2 { 
+            margin-top: 0; 
+            color: var(--neon-blue); 
+            font-size: 1.1rem; 
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1); 
+            padding-bottom: 12px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center;
+            letter-spacing: 0.5px;
+        }
+
         table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-        th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border-color); font-size: 0.9rem; }
-        th { color: var(--text-muted); font-weight: 500; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.5px; }
-        .tag-green { color: var(--accent-green); font-weight: 600; }
-        .badge-prob { background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); padding: 4px 8px; border-radius: 6px; font-weight: 600; font-size: 0.8rem; border: 1px solid rgba(56, 189, 248, 0.3); }
-        .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; margin-top: 15px; }
-        .calendar-day { background: #0f172a; border: 1px solid var(--border-color); border-radius: 10px; padding: 12px; text-align: center; }
-        .calendar-date { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 6px; }
-        .calendar-pnl { font-size: 1rem; font-weight: 700; }
-        .pnl-plus { color: var(--accent-green); }
-        .pnl-minus { color: var(--accent-red); }
-        .calendar-trades { font-size: 0.7rem; color: var(--text-muted); margin-top: 4px; }
-        .refresh-info { text-align: center; color: var(--text-muted); font-size: 0.8rem; margin-top: 25px; }
-    </style>
-    <meta http-equiv="refresh" content="10">
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <div class="logo-area">
-                <h1>⚡ APEX GAINER SCALPER PRO</h1>
-                <p>Autonómny OKX Demo Algoritmus & Profesionálny Radar</p>
-            </div>
-            <div>
-                <div class="status-badge">
-                    <div class="pulse-dot"></div> SYSTÉM ONLINE
-                </div>
-            </div>
-        </div>
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); font-size: 0.9rem; }
+        th { color: var(--text-dim); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 1px; }
 
-        <div class="grid-top">
-            <div class="card">
-                <h2>💰 Reálne Zostatky (OKX Demo)</h2>
-                <table>
-                    <tr><th>Mena</th><th>Dostupné</th></tr>
-                    {% for coin, data in balances.items() %}
-                    <tr>
-                        <td><strong>{{ coin }}</strong></td>
-                        <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            </div>
-
-            <div class="card">
-                <h2>📈 Aktívne Obchody</h2>
-                {% if trades %}
-                    <table>
-                        <tr><th>Pár</th><th>Vstup</th><th>Stop-Loss</th></tr>
-                        {% for t, details in trades.items() %}
-                        <tr>
-                            <td><strong>{{ details.market_pair }}</strong></td>
-                            <td>{{ "%.4f" | format(details.entry_price) }}</td>
-                            <td>{{ "%.4f" | format(details.current_sl_price) }}</td>
-                        </tr>
-                        {% endfor %}
-                    </table>
-                {% else %}
-                    <p style="color: var(--text-muted); text-align: center; margin-top: 35px; font-size: 0.9rem;">Žiadny aktívny obchod. Čakám na optimálny signál...</p>
-                {% endif %}
-            </div>
-        </div>
-
-        <div class="card" style="margin-top: 25px;">
-            <h2>
-                <span>⚡ Živý Radar Trhu (Top Gainers: 2% - 25% | Objem >50k)</span>
-                <span style="font-size: 0.8rem; color: var(--text-muted);">AI Analýza Vystrelenia</span>
-            </h2>
-            {% if radar %}
-                <table>
-                    <tr><th>Symbol</th><th>Cena (USDC)</th><th>Rast za 24h</th><th>Objem (USDC)</th><th>Pravdepodobnosť výstrelu</th></tr>
-                    {% for item in radar %}
-                    <tr>
-                        <td><strong>{{ item.instId }}</strong></td>
-                        <td>{{ "%.4f" | format(item.price) }}</td>
-                        <td class="tag-green">+{{ "%.2f" | format(item.change) }}%</td>
-                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
-                        <td><span class="badge-prob">{{ item.probability }}% Šanca</span></td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            {% else %}
-                <p style="color: var(--text-muted); text-align: center; margin-top: 20px;">Skenujem trh, čakám na mince spĺňajúce kritériá...</p>
-            {% endif %}
-        </div>
-
-        <div class="card" style="margin-top: 25px;">
-            <h2>📅 Kalendár Denných Výsledkov (PnL Tracker)</h2>
-            {% if calendar %}
-                <div class="calendar-grid">
-                    {% for day, data in calendar.items() %}
-                    <div class="calendar-day">
-                        <div class="calendar-date">{{ day }}</div>
-                        <div class="calendar-pnl {% if data.pnl >= 0 %}pnl-plus{% else %}pnl-minus{% endif %}">
-                            {{ "%+.2f" | format(data.pnl) }} $
-                        </div>
-                        <div class="calendar-trades">{{ data.trades }} obchodov</div>
-                    </div>
-                    {% endfor %}
-                </div>
-            {% else %}
-                <p style="color: var(--text-muted); text-align: center; margin-top: 15px; font-size: 0.9rem;">Zatiaľ žiadne uzavreté obchody v tomto kalendárnom období.</p>
-            {% endif %}
-        </div>
-
-        <div class="refresh-info">
-            Profesionálny Dashboard sa automaticky obnovuje každých 10 sekúnd. | Aktuálny čas: {{ current_time }}
-        </div>
-    </div>
-</body>
-</html>"""
-
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    account_balances = {"USDC": {"available_balance": 0.0}}
-    try:
-        balance_res = okx_request('GET', '/api/v5/account/balance')
-        if balance_res.get('code') == '0':
-            found = {}
-            for acc in balance_res.get('data', []):
-                for detail in acc.get('details', []):
-                    ccy = detail.get('ccy')
-                    avail = float(detail.get('availBal', 0))
-                    if avail > 0:
-                        found[ccy] = {"available_balance": avail}
-            if found:
-                account_balances = found
-    except Exception:
-        pass
-
-    template = Template(DASHBOARD_TEMPLATE)
-    rendered_html = template.render(
-        balances=account_balances,
-        trades=ACTIVE_TRADES,
-        radar=MARKET_RADAR,
-        calendar=DAILY_PNL_CALENDAR,
-        current_time=get_sk_time_str()
-    )
-    return rendered_html
-
-@app.get("/api/status")
-async def api_status():
-    return {
-        "status": "online",
-        "bot_type": "Apex Gainer Scalper Pro",
-        "active_trades": ACTIVE_TRADES,
-        "market_radar": MARKET_RADAR,
-        "calendar": DAILY_PNL_CALENDAR,
-        "sk_time": get_sk_time_str()
-    }
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+        .tag-green { color: var(--neon-green); font-weight: bold; text-shadow: 0 0 8px rgba(0, 255, 102, 0.4); }
+        
+        .badge-prob { 
+            background: rgba(255, 0, 127, 0.15); 
+            color: var(--neon-pink); 
+            padding: 4px 10px; 
+            border-radius: 8px; 
+            font-weight: 700; 
+            font-size: 0.8rem; 
+            border: 1px solid rgba(255, 0, 127, 0.4);
+            box-shadow: 0 0 10px rgba(255, 0,
