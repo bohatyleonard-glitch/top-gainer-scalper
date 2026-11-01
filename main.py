@@ -325,8 +325,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ SCI-FI MESTO Z BUDÚCNOSTI AKO POZADIE + ČIERNE PÍSMO NA ĽAVEJ STRANE (BEZ RÁMU) ---
-DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
+# --- 🖼️ HTML ŠABLÓNA (BEZ RIZIKA SYNTAKTICKÝCH CHÝB) ---
+DASHBOARD_TEMPLATE = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
@@ -338,7 +338,6 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
             margin: 0; 
             padding: 25px;
-            /* Fixné sci-fi cyberpunkové mesto ako pozadie na celú obrazovku */
             background: url('https://images.unsplash.com/photo-1578632767115-351597cf2477?q=80&w=1920&auto=format&fit=crop') no-repeat center center fixed;
             background-size: cover;
             color: #000000;
@@ -348,12 +347,11 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
         .container { 
             max-width: 580px; 
             margin: 0; 
-            background: transparent; /* Úplne bez pozadia a bez akéhokoľvek rámu */
+            background: transparent; 
             padding: 0;
             box-shadow: none;
         }
 
-        /* 1. Hore názov malým písmom */
         .brand-title {
             font-size: 0.8rem;
             font-weight: 800;
@@ -363,7 +361,6 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
             margin-bottom: 20px;
         }
 
-        /* Sekcie pod sebou */
         .section-block {
             margin-bottom: 22px;
         }
@@ -396,10 +393,8 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <!-- 1. Hore názov malým písmom -->
         <div class="brand-title">Apex Scalper Pro</div>
 
-        <!-- 2. Zoznam zostatkov -->
         <div class="section-block">
             <div class="section-title">💰 Zoznam zostatkov (OKX Demo)</div>
             <table>
@@ -413,7 +408,6 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
             </table>
         </div>
 
-        <!-- 3. Živý Radar Trhu -->
         <div class="section-block">
             <div class="section-title">⚡ Živý Radar Trhu (Top Gainers 2% - 25% | Objem >50k)</div>
             {% if radar %}
@@ -430,4 +424,91 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.78rem; color: #11111
+                <div style="font-size: 0.78rem; color: #111111;">Skenujem trh, čakám na mince spĺňajúce kritériá...</div>
+            {% endif %}
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">📅 Kalendár Denných Výsledkov (PnL Tracker)</div>
+            {% if calendar %}
+                <div class="calendar-grid">
+                    {% for day, data in calendar.items() %}
+                    <div class="calendar-day">
+                        <div>{{ day }}</div>
+                        <div style="font-weight: bold;">{{ "%+.2f" | format(data.pnl) }} $</div>
+                        <div style="font-size: 0.6rem;">{{ data.trades }} obch.</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div style="font-size: 0.78rem; color: #111111;">Zatiaľ žiadne uzavreté obchody.</div>
+            {% endif %}
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">📈 Aktívne Obchody</div>
+            {% if trades %}
+                <table>
+                    <tr><th>Pár</th><th>Vstup</th><th>Stop-Loss</th></tr>
+                    {% for t, details in trades.items() %}
+                    <tr>
+                        <td><strong>{{ details.market_pair }}</strong></td>
+                        <td>{{ "%.4f" | format(details.entry_price) }}</td>
+                        <td>{{ "%.4f" | format(details.current_sl_price) }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style="font-size: 0.78rem; color: #111111;">Žiadny aktívny obchod. Čakám na signál...</div>
+            {% endif %}
+        </div>
+
+        <div class="refresh-info">
+            Obnovenie každých 10s | Aktuálny čas: {{ current_time }}
+        </div>
+    </div>
+</body>
+</html>"""
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    account_balances = {"USDC": {"available_balance": 0.0}}
+    try:
+        balance_res = okx_request('GET', '/api/v5/account/balance')
+        if balance_res.get('code') == '0':
+            found = {}
+            for acc in balance_res.get('data', []):
+                for detail in acc.get('details', []):
+                    ccy = detail.get('ccy')
+                    avail = float(detail.get('availBal', 0))
+                    if avail > 0:
+                        found[ccy] = {"available_balance": avail}
+            if found:
+                account_balances = found
+    except Exception:
+        pass
+
+    template = Template(DASHBOARD_TEMPLATE)
+    rendered_html = template.render(
+        balances=account_balances,
+        trades=ACTIVE_TRADES,
+        radar=MARKET_RADAR,
+        calendar=DAILY_PNL_CALENDAR,
+        current_time=get_sk_time_str()
+    )
+    return rendered_html
+
+@app.get("/api/status")
+async def api_status():
+    return {
+        "status": "online",
+        "bot_type": "Apex Gainer Scalper Pro",
+        "active_trades": ACTIVE_TRADES,
+        "market_radar": MARKET_RADAR,
+        "calendar": DAILY_PNL_CALENDAR,
+        "sk_time": get_sk_time_str()
+    }
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
