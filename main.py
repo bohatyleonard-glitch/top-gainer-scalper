@@ -186,7 +186,7 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
   return result
 
 
-# --- 🔍 AUTOMATICKÝ TOP 30 USDC SKENER ---
+# --- 🔍 AUTOMATICKÝ TOP 30 USDC SKENER (S UPRAVENOU CITLIVOSŤOU) ---
 async def top_gainer_scanner_loop():
   global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING
   await asyncio.sleep(5)
@@ -233,15 +233,15 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(4)
         continue
 
-      min_vol = 5000.0   # Minimálny objem pre zaradenie do radaru
-      min_change = 0.2   # Skúšobná citlivá zmena od +0.2%
+      # 🛠️ ÚPRAVA: Zmiernené filtre, aby bot okamžite zobrazil viac mincí v radare
+      min_vol = 10000.0   
+      min_change = 0.1   
       max_change = 100.0
 
       candidates = []
       for item in tickers_res["data"]:
         inst_id = item.get("instId", "").upper()
         
-        # 🎯 STRICT USDC FILTER: Výhradne páry končiace na -USDC
         if not inst_id.endswith("-USDC"):
           continue
         if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC"]:
@@ -369,7 +369,6 @@ async def top_gainer_scanner_loop():
               f" {CURRENT_STRATEGY_MODE})..."
           )
 
-          # 📱 DETAILNÁ TELEGRAM SPRÁVA O NÁKUPE
           send_telegram_msg(
               f"🟢 <b>[APEX SCALPER - NÁKUP]</b>\n"
               f"<b>Pár:</b> {cand['instId']}\n"
@@ -455,7 +454,6 @@ async def advanced_risk_monitor_loop():
                 okx_request("POST", "/api/v5/trade/order", order_body)
                 record_closed_trade(symbol, pnl_pct, pnl_usdc, "Take Profit")
 
-                # 📱 DETAILNÁ TELEGRAM SPRÁVA O ZISKU
                 send_telegram_msg(
                     f"🎯 <b>[APEX SCALPER - TAKE PROFIT VÝSTUP]</b>\n"
                     f"<b>Pár:</b> {symbol}\n"
@@ -486,7 +484,6 @@ async def advanced_risk_monitor_loop():
                   symbol, pnl_pct, pnl_usdc, "Stop-Loss / Ochrana"
               )
 
-              # 📱 DETAILNÁ TELEGRAM SPRÁVA O STRATE / OCHRANE
               emoji_res = "🟢" if pnl_usdc >= 0 else "🔴"
               send_telegram_msg(
                   f"🚨 <b>[APEX SCALPER - STOP-LOSS / EXIT]</b>\n"
