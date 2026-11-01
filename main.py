@@ -100,7 +100,7 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 SKENER ---
+# --- 🔍 SKENER S BEZPEČNOSTNOU KONTROLOU ZOSTATKU ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE
     await asyncio.sleep(5)
@@ -116,7 +116,7 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(5)
                 continue
 
-            # Najskôr skontrolujeme stav účtu a zostatok USDC skôr než budeme vyberať mince
+            # 1. Kontrola zostatku skôr, než vôbec vyberáme mince
             balance_res = okx_request('GET', '/api/v5/account/balance')
             if balance_res.get('code') != '0':
                 CURRENT_STAGE = "STAV: ⚠️ Chyba pri načítavaní zostatku z OKX."
@@ -127,14 +127,15 @@ async def top_gainer_scanner_loop():
             for acc in balance_res.get('data', []):
                 for detail in acc.get('details', []):
                     if detail.get('ccy') == 'USDC':
-                        free_capital = float(detail.get('availBal', 0))
+                        free_capital = float(detail.get('availBal', 0) or detail.get('cashBal', 0) or 0)
 
-            if free_capital < 10.0:
-                CURRENT_STAGE = f"STAV: 🛑 NEDOSTATOK USDC ({free_capital:.2f}$). Doplň si demo USDC na OKX!"
-                await asyncio.sleep(10)
+            # 🛡️ DÔLEŽITÁ POISTKA: Ak je zostatok USDC 0 alebo v mínuse, bot vôbec nepošle nákup a radšej čaká
+            if free_capital <= 0.0:
+                CURRENT_STAGE = f"STAV: 🛑 Zostatok USDC je v mínuse alebo 0 ({free_capital:.2f}$). Čakám na kladný zostatok..."
+                await asyncio.sleep(15)
                 continue
 
-            CURRENT_STAGE = f"STAV: 🟢 MIMO OBCHODU [{CURRENT_MODE}]. Skenujem trh..."
+            CURRENT_STAGE = f"STAV: 🟢 MIMO OBCHODU [{CURRENT_MODE}]. Zostatok OK ({free_capital:.2f}$). Skenujem..."
             tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
             if tickers_res.get('code') != '0' or not tickers_res.get('data'):
                 await asyncio.sleep(5)
@@ -200,6 +201,7 @@ async def top_gainer_scanner_loop():
                 LAST_TRADE_TIME[coin_name] = now_ts
                 CURRENT_STAGE = f"STAV: Kupujem {best_target['instId']}..."
                 
+                # Použijeme maximálne 98% z reálneho kladného zostatku, strop je 1000 USDC
                 safe_budget = min(free_capital * 0.98, 1000.0)
                 current_price = best_target['price']
                 coin_amount = safe_budget / current_price
@@ -219,7 +221,6 @@ async def top_gainer_scanner_loop():
                 order_res = okx_request('POST', '/api/v5/trade/order', order_body)
                 if order_res.get('code') != '0':
                     print(f"❌ Nákup zlyhal na burze: {order_res}", flush=True)
-                    send_telegram_msg(f"❌ <b>Chyba nákupu na burze:</b> {order_res.get('msg', 'Neznáma chyba')}")
                     await asyncio.sleep(5)
                     continue
 
@@ -686,9 +687,8 @@ async def dashboard():
             for acc in balance_res.get('data', []):
                 for detail in acc.get('details', []):
                     ccy = detail.get('ccy')
-                    avail = float(detail.get('availBal', 0))
-                    if avail > 0:
-                        found[ccy] = {"available_balance": avail}
+                    avail = float(detail.get('availBal', 0) or detail.get('cashBal', 0) or 0)
+                    found[ccy] = {"available_balance": avail}
             if found:
                 account_balances = found
     except Exception:
