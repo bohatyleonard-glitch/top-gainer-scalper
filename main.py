@@ -100,12 +100,12 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 AUTOMATICKÝ SKENER TRHU ---
+# --- 🔍 AUTOMATICKÝ SKENER TRHU (VÝHRADNE USDC) ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE
     await asyncio.sleep(5)
     
-    start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER PRO SPUSTENÝ (Režim: {CURRENT_MODE})"
+    start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER PRO SPUSTENÝ [USDC Spot Režim] (Režim: {CURRENT_MODE})"
     print(start_msg, flush=True)
     send_telegram_msg(start_msg)
 
@@ -116,7 +116,7 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(5)
                 continue
 
-            # Kontrola reálne dostupného zostatku (availBal)
+            # Kontrola reálne dostupného zostatku USDC (availBal)
             balance_res = okx_request('GET', '/api/v5/account/balance')
             if balance_res.get('code') != '0':
                 CURRENT_STAGE = "STAV: ⚠️ Chyba pri načítavaní zostatku z OKX."
@@ -124,31 +124,20 @@ async def top_gainer_scanner_loop():
                 continue
 
             free_capital = 0.0
-            active_currency = "USDC"
-            
             for acc in balance_res.get('data', []):
                 for detail in acc.get('details', []):
-                    ccy = detail.get('ccy')
-                    if ccy in ["USDC", "USDT"]:
-                        # 🛡️ Striktne berieme IBA availBal, žiadny fallback na cashBal
+                    if detail.get('ccy') == 'USDC':
                         avail_raw = detail.get('availBal', 0)
-                        avail = float(avail_raw) if avail_raw else 0.0
-                        print(f"💰 Reálny availBal pre {ccy}: {avail}", flush=True)
-                        
-                        if ccy == "USDC" and avail > 0:
-                            free_capital = avail
-                            active_currency = "USDC"
-                            break
-                        elif ccy == "USDT" and avail > 0 and free_capital <= 0:
-                            free_capital = avail
-                            active_currency = "USDT"
+                        free_capital = float(avail_raw) if avail_raw else 0.0
+                        print(f"💰 Reálny availBal pre USDC: {free_capital}", flush=True)
+                        break
 
             if free_capital < 10.0:
-                CURRENT_STAGE = f"STAV: 🛑 Nedostatok voľného kapitálu (availBal < 10). USDC/USDT je zablokované alebo 0."
+                CURRENT_STAGE = f"STAV: 🛑 Nedostatok USDC ({free_capital:.2f}$). Skontrolujte zostatok na OKX!"
                 await asyncio.sleep(10)
                 continue
 
-            CURRENT_STAGE = f"STAV: 🟢 MIMO OBCHODU [{CURRENT_MODE}]. Používam {active_currency} (Dostupné: {free_capital:.2f}$). Skenujem..."
+            CURRENT_STAGE = f"STAV: 🟢 MIMO OBCHODU [{CURRENT_MODE}]. USDC OK ({free_capital:.2f}$). Skenujem trh..."
             tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
             if tickers_res.get('code') != '0' or not tickers_res.get('data'):
                 await asyncio.sleep(5)
@@ -159,17 +148,16 @@ async def top_gainer_scanner_loop():
                 min_change = 2.0
                 max_change = 15.0
             else:
-                min_vol = 10000.0  # Obrat > 10 000[cite: 1]
+                min_vol = 10000.0  # Obrat > 10 000 USDC[cite: 1]
                 min_change = 1.0   # Rast od 1.0%[cite: 1]
                 max_change = 30.0  # Rast do 30.0%[cite: 1]
 
-            target_suffix = f"-{active_currency}"
             candidates = []
             for item in tickers_res['data']:
                 inst_id = item.get('instId', '').upper()
-                if not inst_id.endswith(target_suffix):
+                if not inst_id.endswith('-USDC'): # Striktne -USDC páry[cite: 1]
                     continue
-                if inst_id in ['USDC-USDC', 'USDT-USDT', 'BTC-USDC', 'ETH-USDC', 'USDC-USDT', 'USDT-USDC']:
+                if inst_id in ['USDC-USDC', 'USDT-USDC', 'BTC-USDC', 'ETH-USDC']:
                     continue
 
                 try:
@@ -215,7 +203,7 @@ async def top_gainer_scanner_loop():
                 LAST_TRADE_TIME[coin_name] = now_ts
                 CURRENT_STAGE = f"STAV: Kupujem {best_target['instId']}..."
                 
-                safe_budget = min(free_capital * 0.98, 1000.0) # Max 98%, strop 1000[cite: 1]
+                safe_budget = min(free_capital * 0.98, 1000.0) # Max 98%, strop 1000 USDC[cite: 1]
                 current_price = best_target['price']
                 coin_amount = safe_budget / current_price
 
@@ -223,18 +211,20 @@ async def top_gainer_scanner_loop():
                 if formatted_sz <= 0:
                     formatted_sz = round(coin_amount, 4)
 
+                # 🛡️ Presné nastavenie pre čistý SPOT Cash nákup USDC bez marže
                 order_body = json.dumps({
                     "instId": best_target['instId'],
                     "tdMode": "cash",
                     "side": "buy",
                     "ordType": "market",
-                    "sz": str(formatted_sz)
+                    "sz": str(formatted_sz),
+                    "tgtCcy": "base_ccy" # Vynúti nákup podľa množstva základu, aby OKX neskúšalo riešiť USD požičiavanie
                 })
 
                 order_res = okx_request('POST', '/api/v5/trade/order', order_body)
                 if order_res.get('code') != '0':
                     print(f"❌ Nákup zlyhal na burze: {order_res}", flush=True)
-                    send_telegram_msg(f"❌ <b>Chyba nákupu ({active_currency}):</b> {order_res.get('msg', 'Neznáma chyba')}")
+                    send_telegram_msg(f"❌ <b>Chyba nákupu USDC:</b> {order_res.get('msg', 'Neznáma chyba')}")
                     await asyncio.sleep(5)
                     continue
 
@@ -261,11 +251,11 @@ async def top_gainer_scanner_loop():
                 CURRENT_STAGE = f"STAV: 🔴 V OBCHODE ({best_target['instId']}) - Sledujem vlnu..."
 
                 send_telegram_msg(
-                    f"🟢 <b>[⚡ SPOT NÁKUP ({CURRENT_MODE})]</b>\n"
+                    f"🟢 <b>[⚡ SPOT NÁKUP USDC ({CURRENT_MODE})]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
-                    f"<b>Vstupná cena:</b> {current_price:.4f} {active_currency}\n"
-                    f"<b>Investícia:</b> ~{safe_budget:.2f} {active_currency}\n"
-                    f"<b>Stop-Loss:</b> {sl_price:.4f} {active_currency}"
+                    f"<b>Vstupná cena:</b> {current_price:.4f} USDC\n"
+                    f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
+                    f"<b>Stop-Loss:</b> {sl_price:.4f} USDC"
                 )
 
         except Exception as scan_err:
@@ -347,7 +337,7 @@ async def advanced_risk_monitor_loop():
                             send_telegram_msg(
                                 f"🛡️ <b>[BREAK-EVEN AKTIVOVANÝ]</b>\n"
                                 f"<b>Pár:</b> {symbol}\n"
-                                f"<b>Ochrana na vstupe:</b> {trade['entry_price']:.4f}"
+                                f"<b>Ochrana na vstupe:</b> {trade['entry_price']:.4f} USDC"
                             )
 
                     # Trailing TP aktivácia od +1.2%[cite: 1]
@@ -373,7 +363,7 @@ async def advanced_risk_monitor_loop():
                                 send_telegram_msg(
                                     f"🎯 <b>[TRAILING TAKE PROFIT 🎉]</b>\n"
                                     f"<b>Pár:</b> {symbol}\n"
-                                    f"<b>Výsledný zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:+.2f})"
+                                    f"<b>Výsledný zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:+.2f} USDC)"
                                 )
                             except Exception as err:
                                 print(f"❌ Chyba Trailing TP: {err}", flush=True)
@@ -395,7 +385,7 @@ async def advanced_risk_monitor_loop():
                             send_telegram_msg(
                                 f"🚨 <b>[{sl_type_msg} ZASIAHNUTÝ 🛑]</b>\n"
                                 f"<b>Pár:</b> {symbol}\n"
-                                f"<b>Výsledok:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f})"
+                                f"<b>Výsledok:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} USDC)"
                             )
                         except Exception as err:
                             print(f"❌ Chyba SL: {err}", flush=True)
@@ -468,7 +458,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - CyberHUD 3.0</title>
+    <title>Apex Scalper Pro - CyberHUD 3.0 (USDC)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -524,7 +514,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 3.0</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 3.0 (USDC)</div>
         </div>
 
         <div class="controls-row">
@@ -600,7 +590,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div class="section-block">
-            <div class="section-title">📊 Živý Radar Trhu</div>
+            <div class="section-title">📊 Živý Radar Trhu (USDC)</div>
             {% if radar %}
                 <table>
                     <tr><th>Symbol</th><th>Cena</th><th>24h Rast</th><th>Objem</th><th>Šanca</th></tr>
@@ -667,7 +657,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 data: {
                     labels: rawHistory.map((_, i) => i + 1),
                     datasets: [{
-                        label: 'Cena',
+                        label: 'Cena (USDC)',
                         data: rawHistory,
                         borderColor: '#00f0ff',
                         backgroundColor: 'rgba(0, 240, 255, 0.1)',
@@ -706,7 +696,6 @@ async def dashboard():
                 for detail in acc.get('details', []):
                     ccy = detail.get('ccy')
                     if ccy in ALLOWED_CURRENCIES:
-                        # V dashboardi zobrazujeme striktne availBal
                         avail_raw = detail.get('availBal', 0)
                         avail = float(avail_raw) if avail_raw else 0.0
                         found[ccy] = {"available_balance": avail}
@@ -720,7 +709,7 @@ async def dashboard():
     total_trades = len(CLOSED_TRADES_HISTORY)
     winning_trades = sum(1 for t in CLOSED_TRADES_HISTORY if t["pnl_pct"] > 0)
     win_rate = round((winning_trades / total_trades * 100) if total_trades > 0 else 0.0, 1)
-    total_pnl_usdc = sum(t["pnl_usdc"] for t in CLOSED_TRADES_HISTORY)
+    total_pnl_usdc = sum(t["pnl_usdc"] for t in CLOSED_TRALES_HISTORY) if 'CLOSED_TRADES_HISTORY' in globals() else 0.0
 
     template = Template(HTML_TEMPLATE_CONTENT)
     return template.render(
@@ -742,7 +731,7 @@ async def dashboard():
 async def api_status():
     return {
         "status": "online",
-        "bot_type": "Apex Scalper Pro 3.0",
+        "bot_type": "Apex Scalper Pro 3.0 (USDC Spot)",
         "mode": CURRENT_MODE,
         "current_stage": CURRENT_STAGE,
         "active_trades": ACTIVE_TRADES,
