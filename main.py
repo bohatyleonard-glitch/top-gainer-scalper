@@ -38,15 +38,15 @@ MARKET_RADAR = []
 DAILY_PNL_CALENDAR = {}
 CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
-CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živý trh podľa checklistu..."
+CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem top 30 USDC trh podľa checklistu..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Maximálne 1 obchod naraz
+MAX_PARALLEL_TRADES = 1  # 🛡️ Anti-fragmentácia: Max 1 obchod naraz[cite: 1, 3]
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
-# Režimy & Rozšírené Timeframes (3m až 4h)
+# Režimy & Časové rámce (3m až 4h)
 CURRENT_STRATEGY_MODE = "Agresívny Momentum (Breakout)"
-CURRENT_TIMEFRAME = "5m"  # Predvolený TF
+CURRENT_TIMEFRAME = "5m"
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 EXCLUDED_COINS = ["ZAMA"]
 
@@ -186,13 +186,13 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
   return result
 
 
-# --- 🔍 AUTOMATICKÝ USDC SKENER (ŠIRŠÍ RADAR) ---
+# --- 🔍 AUTOMATICKÝ TOP 30 USDC SKENER ---
 async def top_gainer_scanner_loop():
   global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING
   await asyncio.sleep(5)
 
   start_msg = (
-      f"[{get_sk_time_str()}] ⚡ APEX SCALPER SPUSTENÝ [USDC Široký Radar | TF:"
+      f"[{get_sk_time_str()}] ⚡ APEX SCALPER SPUSTENÝ [Top 30 USDC Radar | TF:"
       f" {CURRENT_TIMEFRAME}]"
   )
   print(start_msg, flush=True)
@@ -227,14 +227,14 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(10)
         continue
 
-      CURRENT_STAGE = f"STAV: 🟢 SKENER USDC [TF: {CURRENT_TIMEFRAME} | Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
+      CURRENT_STAGE = f"STAV: 🟢 SKENER TOP 30 USDC [TF: {CURRENT_TIMEFRAME} | Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
       if tickers_res.get("code") != "0" or not tickers_res.get("data"):
         await asyncio.sleep(4)
         continue
 
-      min_vol = 5000.0   # Znížený limit objemu na skúšku, aby zobralo viac mincí
-      min_change = 0.2   # Znížená počiatočná zmena už od +0.2%
+      min_vol = 5000.0   # Minimálny objem pre zaradenie do radaru
+      min_change = 0.2   # Skúšobná citlivá zmena od +0.2%
       max_change = 100.0
 
       candidates = []
@@ -282,7 +282,7 @@ async def top_gainer_scanner_loop():
           reverse=True,
       )
       if candidates:
-        MARKET_RADAR = candidates[:25]  # Zobrazenie až 25 USDC mincí naraz
+        MARKET_RADAR = candidates[:30]  # Zobrazenie presne top 30 USDC tokenov naraz
 
       for cand in candidates:
         if not cand["buy_ready"]:
@@ -332,7 +332,7 @@ async def top_gainer_scanner_loop():
             if s_code == "51155" or "compliance" in str(order_res).lower():
               print(
                   f"⏩ {cand['instId']} blokovaný demo účtom. Skúšam ďalšieho"
-                  " Top Gainera...",
+                  " tokena...",
                   flush=True,
               )
               IS_ORDER_PROCESSING = False
@@ -369,14 +369,16 @@ async def top_gainer_scanner_loop():
               f" {CURRENT_STRATEGY_MODE})..."
           )
 
+          # 📱 DETAILNÁ TELEGRAM SPRÁVA O NÁKUPE
           send_telegram_msg(
-              f"🟢 <b>[NÁKUP - USDC | TF {CURRENT_TIMEFRAME}]</b>\n"
+              f"🟢 <b>[APEX SCALPER - NÁKUP]</b>\n"
               f"<b>Pár:</b> {cand['instId']}\n"
-              f"<b>24h Rast:</b> +{cand['change']:.2f}%\n"
-              f"<b>Pravdepodobnosť:</b> {cand['probability']}%\n"
-              f"<b>Cena:</b> {current_price:.4f}\n"
+              f"<b>Časový rámec (TF):</b> {CURRENT_TIMEFRAME}\n"
+              f"<b>Nákupná cena:</b> {current_price:.4f}\n"
+              f"<b>Nakúpené množstvo:</b> {formatted_sz} {coin_name}\n"
               f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
-              f"<b>Stop-Loss:</b> {sl_price:.4f} (-1%)"
+              f"<b>Stop-Loss:</b> {sl_price:.4f} (-1.0%)\n"
+              f"<b>Pravdepodobnosť:</b> {cand['probability']}%"
           )
           break
 
@@ -403,6 +405,7 @@ async def advanced_risk_monitor_loop():
           continue
         trade = ACTIVE_TRADES[coin]
         symbol = trade["market_pair"]
+        coin_base = symbol.split("-")[0]
 
         ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={symbol}")
         if ticker_res.get("code") == "0" and ticker_res.get("data"):
@@ -452,17 +455,21 @@ async def advanced_risk_monitor_loop():
                 okx_request("POST", "/api/v5/trade/order", order_body)
                 record_closed_trade(symbol, pnl_pct, pnl_usdc, "Take Profit")
 
+                # 📱 DETAILNÁ TELEGRAM SPRÁVA O ZISKU
                 send_telegram_msg(
-                    f"🎯 <b>[TAKE PROFIT - VÝSLEDOK]</b>\n"
+                    f"🎯 <b>[APEX SCALPER - TAKE PROFIT VÝSTUP]</b>\n"
                     f"<b>Pár:</b> {symbol}\n"
-                    f"<b>Zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:+.2f})"
+                    f"<b>Predajná cena:</b> {current_price:.4f}\n"
+                    f"<b>Množstvo:</b> {trade['amount']} {coin_base}\n"
+                    f"<b>Výsledok (%):</b> +{pnl_pct:.2f}%\n"
+                    f"<b>Výsledok ($):</b> +{pnl_usdc:+.2f} USDC 🟢"
                 )
               except Exception as err:
                 print(f"❌ Chyba Take Profit: {err}", flush=True)
 
               if coin in ACTIVE_TRADES:
                 del ACTIVE_TRADES[coin]
-              CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Zisk uzamknutý!"
+              CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Zisk úspešne uzamknutý!"
               continue
 
           if current_price <= trade["current_sl_price"]:
@@ -479,10 +486,15 @@ async def advanced_risk_monitor_loop():
                   symbol, pnl_pct, pnl_usdc, "Stop-Loss / Ochrana"
               )
 
+              # 📱 DETAILNÁ TELEGRAM SPRÁVA O STRATE / OCHRANE
+              emoji_res = "🟢" if pnl_usdc >= 0 else "🔴"
               send_telegram_msg(
-                  f"🚨 <b>[STOP-LOSS / OCHRANA]</b>\n"
+                  f"🚨 <b>[APEX SCALPER - STOP-LOSS / EXIT]</b>\n"
                   f"<b>Pár:</b> {symbol}\n"
-                  f"<b>Výsledok:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f})"
+                  f"<b>Výstupná cena:</b> {current_price:.4f}\n"
+                  f"<b>Množstvo:</b> {trade['amount']} {coin_base}\n"
+                  f"<b>Výsledok (%):</b> {pnl_pct:+.2f}%\n"
+                  f"<b>Výsledok ($):</b> {pnl_usdc:+.2f} USDC {emoji_res}"
               )
             except Exception as err:
               print(f"❌ Chyba SL: {err}", flush=True)
@@ -546,6 +558,7 @@ async def emergency_sell():
     for coin in list(ACTIVE_TRADES.keys()):
       trade = ACTIVE_TRADES[coin]
       symbol = trade["market_pair"]
+      coin_base = symbol.split("-")[0]
       try:
         order_body = json.dumps({
             "instId": symbol,
@@ -555,18 +568,14 @@ async def emergency_sell():
             "sz": str(trade["amount"]),
         })
         okx_request("POST", "/api/v5/trade/order", order_body)
+        pnl_pct = trade.get("live_pnl_pct", 0.0)
         pnl_usdc = trade.get("live_pnl_usdc", 0.0)
-        record_closed_trade(
-            symbol,
-            trade.get("live_pnl_pct", 0.0),
-            pnl_usdc,
-            "Manuálny Kill Switch",
-        )
+        record_closed_trade(symbol, pnl_pct, pnl_usdc, "Manuálny Kill Switch")
 
         send_telegram_msg(
             f"🚨 <b>[NÚDZOVÝ PREDAJ / KILL SWITCH]</b>\n"
             f"<b>Pár:</b> {symbol}\n"
-            f"<b>PnL:</b> {trade.get('live_pnl_pct', 0.0):+.2f}%"
+            f"<b>Výsledok:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} USDC)"
         )
         sold_summary.append(symbol)
       except Exception as e:
@@ -582,13 +591,13 @@ async def emergency_sell():
     })
 
 
-# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE S ŠIROKÝM RADAROM ---
+# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE S TOP 30 RADAROM ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - CyberHUD 4.0 (Wide Radar)</title>
+    <title>Apex Scalper Pro - CyberHUD 4.1 (Top 30 USDC)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -600,7 +609,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             color: #ffffff; min-height: 100vh;
         }
         .container { 
-            max-width: 780px; margin: 0; background: rgba(0, 0, 0, 0.78);
+            max-width: 800px; margin: 0; background: rgba(0, 0, 0, 0.78);
             backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 18px; padding: 22px;
             box-shadow: 0 0 35px rgba(0, 255, 255, 0.25);
@@ -646,7 +655,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 4.0 (Wide USDC Radar)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 4.1 (Top 30 USDC Radar)</div>
         </div>
 
         <div class="controls-row">
@@ -703,13 +712,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
-                    ✅ Žiadny aktívny obchod. Skenujem široký USDC trh na <strong>{{ current_tf }}</strong> TF...
+                    ✅ Žiadny aktívny obchod. Skenujem Top 30 USDC trh na <strong>{{ current_tf }}</strong> TF...
                 </div>
             {% endif %}
         </div>
 
         <div class="section-block">
-            <div class="section-title">📊 Široký Radar USDC Trhu & Checklist (TF: {{ current_tf }})</div>
+            <div class="section-title">📊 Top 30 USDC Radar & Checklist (TF: {{ current_tf }})</div>
             {% if radar %}
                 <table>
                     <tr><th>Symbol</th><th>24h Zmena</th><th>Objemový Mom.</th><th>Impulz / Fib</th><th>Pripravenosť</th></tr>
@@ -724,7 +733,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% endfor %}
                 </table>
             {% else %}
-                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Načítavam dáta USDC do radaru...</div>
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Načítavam Top 30 USDC mincí do radaru...</div>
             {% endif %}
         </div>
 
@@ -758,7 +767,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </table>
         </div>
 
-        <div class="refresh-info">APEX HUD 4.0 | Režim: {{ current_mode }} | TF: {{ current_tf }} | SK Čas: {{ current_time }}</div>
+        <div class="refresh-info">APEX HUD 4.1 | Režim: {{ current_mode }} | TF: {{ current_tf }} | SK Čas: {{ current_time }}</div>
     </div>
 
     <script>
@@ -864,7 +873,7 @@ async def dashboard():
 async def api_status():
   return {
       "status": "online",
-      "bot_type": "Apex Scalper Pro 4.0 (Wide USDC Radar)",
+      "bot_type": "Apex Scalper Pro 4.1 (Top 30 USDC Radar)",
       "mode": CURRENT_STRATEGY_MODE,
       "timeframe": CURRENT_TIMEFRAME,
       "current_stage": CURRENT_STAGE,
