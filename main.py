@@ -45,6 +45,7 @@ CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem trh..."
 LAST_TRADE_TIME = {}  
 MAX_PARALLEL_TRADES = 1  # 🛡️ Anti-Fragmentation: Výhradne 1 obchod naraz
 trade_lock = asyncio.Lock()  
+IS_ORDER_PROCESSING = False  # 🛡️ Ochrana proti dvojitému odoslaniu príkazu
 
 CURRENT_MODE = "AGGRESSIVE" # AGGRESSIVE / CONSERVATIVE
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
@@ -101,19 +102,19 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 AUTOMATICKÝ SKENER TRHU (SMART LIMIT + 1H COOLDOWN) ---
+# --- 🔍 AUTOMATICKÝ SKENER TRHU (SMART LIMIT + 1H COOLDOWN + ORDER GUARD) ---
 async def top_gainer_scanner_loop():
-    global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE
+    global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE, IS_ORDER_PROCESSING
     await asyncio.sleep(5)
     
     start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER PRO SPUSTENÝ [Smart Limit USDC Režim]"
     print(start_msg, flush=True)
-    send_telegram_msg(f"🤖 <b>Apex Scalper Pro spustený!</b> Používam inteligentné Limitné príkazy.")
+    send_telegram_msg(f"🤖 <b>Apex Scalper Pro spustený!</b> Používam inteligentné Limitné príkazy s ochranou proti duplikácii.")
 
     while True:
         try:
-            if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
-                CURRENT_STAGE = "STAV: 🔴 V OBCHODE! Čakám na dokončenie pozície..."
+            if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
+                CURRENT_STAGE = "STAV: 🔴 V OBCHODE / SPRACOVÁVAM PRÍKAZ! Čakám..."
                 await asyncio.sleep(5)
                 continue
 
@@ -147,9 +148,9 @@ async def top_gainer_scanner_loop():
                 min_change = 2.0
                 max_change = 15.0
             else:
-                min_vol = 20000.0  # Min objem 20k USDC
-                min_change = 1.5   # Rast od 1.5%
-                max_change = 25.0  # Rast do 25.0%
+                min_vol = 20000.0  
+                min_change = 1.5   
+                max_change = 25.0  
 
             candidates = []
             for item in tickers_res['data']:
@@ -191,22 +192,21 @@ async def top_gainer_scanner_loop():
 
             now_ts = datetime.now().timestamp()
             if coin_name in LAST_TRADE_TIME:
-                # 🛡️ 1-HODINOVÝ COOLDOWN na rovnakú mincu po predaji
                 if now_ts - LAST_TRADE_TIME[coin_name] < 3600:
                     await asyncio.sleep(5)
                     continue
 
             async with trade_lock:
-                if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
+                if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
                     continue
 
+                IS_ORDER_PROCESSING = True  # 🛡️ Zamknutie proti zdvojeniu
                 LAST_TRADE_TIME[coin_name] = now_ts
                 CURRENT_STAGE = f"STAV: Vystavujem Limit nákup pre {best_target['instId']}..."
                 
                 safe_budget = min(free_capital * 0.95, 500.0)
                 current_price = best_target['price']
                 
-                # 💡 SMART LIMIT: Nákupná cena o 0.15% vyššie ako aktuálna pre istotu exekúcie bez slippage
                 limit_buy_price = current_price * 1.0015
                 coin_amount = safe_budget / limit_buy_price
 
@@ -228,6 +228,7 @@ async def top_gainer_scanner_loop():
                 if order_res.get('code') != '0':
                     print(f"❌ Limit nákup zlyhal na burze: {order_res}", flush=True)
                     send_telegram_msg(f"❌ <b>Chyba Limit nákupu USDC:</b> {order_res.get('msg', 'Neznáma chyba')}")
+                    IS_ORDER_PROCESSING = False
                     await asyncio.sleep(5)
                     continue
 
@@ -251,6 +252,7 @@ async def top_gainer_scanner_loop():
                     "live_pnl_usdc": 0.0
                 }
 
+                IS_ORDER_PROCESSING = False  # Odomknutie po úspešnom nákupe
                 CURRENT_STAGE = f"STAV: 🔴 V OBCHODE ({best_target['instId']}) - Čakám na vývoj..."
 
                 send_telegram_msg(
@@ -262,6 +264,7 @@ async def top_gainer_scanner_loop():
                 )
 
         except Exception as scan_err:
+            IS_ORDER_PROCESSING = False
             print(f"❌ Chyba v skeneri: {scan_err}", flush=True)
 
         await asyncio.sleep(5)
@@ -282,8 +285,6 @@ async def advanced_risk_monitor_loop():
                     continue
                 trade = ACTIVE_TRADES[coin]
                 symbol = trade["market_pair"]
-                
-                # ŽIADNY ČASOVÝ LIMIT - pozícia čaká výhradne na TP alebo SL
                 
                 ticker_res = okx_request('GET', f'/api/v5/market/ticker?instId={symbol}')
                 if ticker_res.get('code') == '0' and ticker_res.get('data'):
