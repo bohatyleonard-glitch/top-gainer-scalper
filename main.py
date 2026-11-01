@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 import requests
 from jinja2 import Template
@@ -39,6 +39,7 @@ def send_telegram_msg(message: str):
 ACTIVE_TRADES = {}       
 MARKET_RADAR = []        
 DAILY_PNL_CALENDAR = {}  
+PRICE_HISTORY = []       # Pre živý graf v dashboarde
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem trh pre stabilný scalp..."
 LAST_TRADE_TIME = {}  
 MAX_PARALLEL_TRADES = 1  
@@ -85,12 +86,12 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 SKENER S FLEXIBILNÝM ROZPOČTOM A OCHRANOU ---
+# --- 🔍 SKENER ---
 async def top_gainer_scanner_loop():
-    global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE
+    global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY
     await asyncio.sleep(5)
     
-    start_msg = f"[{get_sk_time_str()}] ⚡ STABILNÝ SCALPER SPUSTENÝ (Flexibilný rozpočet & Vlny)"
+    start_msg = f"[{get_sk_time_str()}] ⚡ PRO SCALPER SPUSTENÝ (HUD 2.0 s Grafom & Kill Switch)"
     print(start_msg, flush=True)
     send_telegram_msg(start_msg)
 
@@ -120,9 +121,9 @@ async def top_gainer_scanner_loop():
                     last_p = float(item.get('last', 0))
                     vol24h = float(item.get('volCcy24h', 0) or item.get('vol24h', 0) or 0)
 
-                    if open24h > 0 and last_p > 0 and vol24h > 10000: #[cite: 2] Zmiernený objem
+                    if open24h > 0 and last_p > 0 and vol24h > 10000:
                         change_pct = ((last_p - open24h) / open24h) * 100
-                        if 1.0 <= change_pct <= 30.0: # Zmiernený rast
+                        if 1.0 <= change_pct <= 30.0:
                             probability = int(min(max((change_pct / 30.0) * 100, 50), 99))
                             candidates.append({
                                 "instId": inst_id,
@@ -174,7 +175,6 @@ async def top_gainer_scanner_loop():
                     await asyncio.sleep(15)
                     continue
 
-                # Flexibilné využitie kapitálu (zamedzuje chybám 51008 ak nemáš presne 1000 USDC)
                 safe_budget = min(free_capital * 0.98, 1000.0)
                 current_price = best_target['price']
                 coin_amount = safe_budget / current_price
@@ -199,6 +199,7 @@ async def top_gainer_scanner_loop():
 
                 tp_price = current_price * 1.02
                 sl_price = current_price * 0.985
+                PRICE_HISTORY = [current_price]
 
                 ACTIVE_TRADES[coin_name] = {
                     "market_pair": best_target['instId'],
@@ -231,9 +232,9 @@ async def top_gainer_scanner_loop():
 
         await asyncio.sleep(5)
 
-# --- 🛡️ MONITOR OBCHODU S BREAK-EVEN A TRAILING TP ---
+# --- 🛡️ MONITOR OBCHODU ---
 async def advanced_risk_monitor_loop():
-    global ACTIVE_TRADES, CURRENT_STAGE
+    global ACTIVE_TRADES, CURRENT_STAGE, PRICE_HISTORY
     await asyncio.sleep(3)
     
     while True:
@@ -277,6 +278,10 @@ async def advanced_risk_monitor_loop():
                 ticker_res = okx_request('GET', f'/api/v5/market/ticker?instId={symbol}')
                 if ticker_res.get('code') == '0' and ticker_res.get('data'):
                     current_price = float(ticker_res['data'][0]['last'])
+                    PRICE_HISTORY.append(current_price)
+                    if len(PRICE_HISTORY) > 30:
+                        PRICE_HISTORY.pop(0)
+
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
                     pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
 
@@ -370,29 +375,74 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ WEB DASHBOARD ---
+# --- 🚨 API ENDPOINT FOR EMERGENCY SELL (KILL SWITCH) ---
+@app.post("/api/emergency-sell")
+async def emergency_sell():
+    global ACTIVE_TRADES, CURRENT_STAGE
+    async with trade_lock:
+        if not ACTIVE_TRADES:
+            return JSONResponse({"status": "warning", "message": "Žiadny aktívny obchod na predaj."})
+        
+        sold_summary = []
+        for coin in list(ACTIVE_TRADES.keys()):
+            trade = ACTIVE_TRADES[coin]
+            symbol = trade["market_pair"]
+            try:
+                order_body = json.dumps({
+                    "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
+                })
+                res = okx_request('POST', '/api/v5/trade/order', order_body)
+                pnl_usdc = trade.get("live_pnl_usdc", 0.0)
+                record_daily_pnl(pnl_usdc)
+
+                send_telegram_msg(
+                    f"🚨 <b>[NÚDZOVÝ MANUÁLNY PREDAJ / KILL SWITCH]</b>\n"
+                    f"<b>Pár:</b> {symbol}\n"
+                    f"<b>PnL:</b> {trade.get('live_pnl_pct', 0.0):+.2f}%"
+                )
+                sold_summary.append(symbol)
+            except Exception as e:
+                print(f"Chyba pri emergency sell: {e}", flush=True)
+
+            del ACTIVE_TRADES[coin]
+
+        CURRENT_STAGE = "STAV: 🟢 Mimo obchodu (Ručný výstup). Skenujem..."
+        return JSONResponse({"status": "success", "sold": sold_summary})
+
+# --- 🖼️ CYBERPUNK HUD S GRAFOM, SOUND ALERTS A KILL SWITCH ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - Dashboard</title>
+    <title>Apex Scalper Pro - CyberHUD 2.0</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
         body { 
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
             margin: 0; padding: 25px;
-            background: linear-gradient(rgba(0,0,0,0.35), rgba(0,0,0,0.35)), url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=1920&auto=format&fit=crop');
+            background: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.4)), url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=1920&auto=format&fit=crop');
             background-size: cover; background-position: center; background-attachment: fixed;
             color: #ffffff; min-height: 100vh;
         }
         .container { 
-            max-width: 620px; margin: 0; background: rgba(0, 0, 0, 0.65);
+            max-width: 650px; margin: 0; background: rgba(0, 0, 0, 0.70);
             backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 18px; padding: 22px;
             box-shadow: 0 0 35px rgba(0, 255, 255, 0.25);
         }
-        .brand-title { font-size: 1rem; font-weight: 800; color: #00f0ff; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 14px; }
+        .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+        .brand-title { font-size: 1rem; font-weight: 800; color: #00f0ff; letter-spacing: 2px; text-transform: uppercase; }
+        .kill-switch-btn {
+            background: linear-gradient(135deg, #ff0055, #990033);
+            color: #fff; border: 1px solid #ff0055; padding: 8px 14px;
+            border-radius: 8px; font-weight: 800; font-size: 0.75rem;
+            cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
+            box-shadow: 0 0 12px rgba(255, 0, 85, 0.4);
+            transition: all 0.2s ease;
+        }
+        .kill-switch-btn:hover { background: #ff0055; box-shadow: 0 0 20px rgba(255, 0, 85, 0.8); }
         .status-banner { background: rgba(0, 240, 255, 0.15); border: 2px solid #00f0ff; border-radius: 10px; padding: 14px; font-size: 0.88rem; font-weight: 700; color: #ffffff; margin-bottom: 22px; }
         .section-block { margin-bottom: 24px; }
         .section-title { font-size: 0.85rem; font-weight: 700; color: #00f0ff; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
@@ -401,6 +451,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         th { font-weight: 700; color: #00f0ff; text-transform: uppercase; font-size: 0.72rem; }
         .pnl-green { color: #00ff88; font-weight: bold; }
         .pnl-red { color: #ff4444; font-weight: bold; }
+        .chart-container { background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(0, 255, 255, 0.2); border-radius: 10px; padding: 10px; margin-top: 10px; height: 160px; }
         .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(95px, 1fr)); gap: 8px; margin-top: 4px; }
         .calendar-day { background: rgba(0, 0, 0, 0.70); border: 1px solid rgba(0, 255, 255, 0.30); border-radius: 8px; padding: 8px; text-align: center; font-size: 0.75rem; }
         .refresh-info { color: rgba(255, 255, 255, 0.6); font-size: 0.7rem; margin-top: 20px; font-weight: 600; text-align: left; }
@@ -409,7 +460,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <div class="brand-title">⚡ Apex Scalper Pro (Flexible Budget)</div>
+        <div class="header-bar">
+            <div class="brand-title">⚡ Apex Scalper Pro HUD 2.0</div>
+            <button class="kill-switch-btn" onclick="triggerKillSwitch()">🚨 KILL SWITCH</button>
+        </div>
         
         <div class="status-banner">{{ current_stage }}</div>
 
@@ -429,6 +483,11 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </tr>
                     {% endfor %}
                 </table>
+
+                <!-- 📈 MINI GRAF PRIAMO V HUD -->
+                <div class="chart-container">
+                    <canvas id="livePriceChart"></canvas>
+                </div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
                     ✅ Žiadny aktívny obchod. Bot vyčkáva na príležitosť.
@@ -483,8 +542,71 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% endif %}
         </div>
 
-        <div class="refresh-info">FLEXIBLE SCALPER | Obnovenie 2s | SK Čas: {{ current_time }}</div>
+        <div class="refresh-info">APEX HUD 2.0 | Obnovenie 2s | SK Čas: {{ current_time }}</div>
     </div>
+
+    <script>
+        // 🔊 WEB AUDIO SYNTH ZVUKOVÉ UPOZORNENIA
+        function playAlertSound(freq = 880, type = 'sine') {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = type;
+                osc.frequency.value = freq;
+                gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.25);
+            } catch(e){}
+        }
+
+        // 🚨 NÚDZOVÉ TLAČIDLO (KILL SWITCH)
+        async function triggerKillSwitch() {
+            if (confirm("⚠️ Naozaj chceš okamžite predajom zatvoriť aktívnu pozíciu?")) {
+                playAlertSound(440, 'sawtooth');
+                const res = await fetch('/api/emergency-sell', { method: 'POST' });
+                const data = await res.json();
+                alert(data.message || "Pozícia zatvorená!");
+                window.location.reload();
+            }
+        }
+
+        // 📈 RENDER MINI-GRAFU PRE AKTÍVNY OBCHOD
+        const rawHistory = {{ price_history | tojson }};
+        if (rawHistory && rawHistory.length > 0 && document.getElementById('livePriceChart')) {
+            const ctxChart = document.getElementById('livePriceChart').getContext('2d');
+            new Chart(ctxChart, {
+                type: 'line',
+                data: {
+                    labels: rawHistory.map((_, i) => i + 1),
+                    datasets: [{
+                        label: 'Cena v čase (USDC)',
+                        data: rawHistory,
+                        borderColor: '#00f0ff',
+                        backgroundColor: 'rgba(0, 240, 255, 0.1)',
+                        fill: true,
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { display: false },
+                        y: { 
+                            ticks: { color: '#00f0ff', font: { size: 10 } },
+                            grid: { color: 'rgba(255,255,255,0.05)' }
+                        }
+                    }
+                }
+            });
+        }
+    </script>
 </body>
 </html>"""
 
@@ -513,6 +635,7 @@ async def dashboard():
         radar=MARKET_RADAR,
         calendar=DAILY_PNL_CALENDAR,
         current_stage=CURRENT_STAGE,
+        price_history=PRICE_HISTORY,
         current_time=get_sk_time_str()
     )
 
@@ -520,11 +643,12 @@ async def dashboard():
 async def api_status():
     return {
         "status": "online",
-        "bot_type": "Apex Flexible Scalper",
+        "bot_type": "Apex Flexible Scalper 2.0",
         "current_stage": CURRENT_STAGE,
         "active_trades": ACTIVE_TRADES,
         "market_radar": MARKET_RADAR,
         "calendar": DAILY_PNL_CALENDAR,
+        "price_history": PRICE_HISTORY,
         "sk_time": get_sk_time_str()
     }
 
