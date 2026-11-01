@@ -5,8 +5,8 @@ import base64
 import hmac
 import json
 import os
-from fastapi import FastAPI, JSONResponse
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, JSONResponse
 import requests
 from jinja2 import Template
 import uvicorn
@@ -40,7 +40,7 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem 5m trh (Indikátor)..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Výhradne 1 obchod naraz
+MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
@@ -116,10 +116,6 @@ def okx_request(method: str, path: str, body: str = ""):
 
 # --- 📈 5M INDIKÁTOROVÁ LOGIKA (HEIKIN ASHI + OBJEMOVÝ OSCILÁTOR) ---
 def evaluate_indicator_signal(inst_id: str) -> bool:
-  """Stiahne 5m sviečky z OKX, spočíta Heikin Ashi a objemový oscilátor
-
-  presne podľa logiky z Pine Script indikátora v5.4.4.
-  """
   try:
     url = f"/api/v5/market/candles?instId={inst_id}&bar=5m&limit=100"
     res = okx_request("GET", url)
@@ -175,7 +171,7 @@ def evaluate_indicator_signal(inst_id: str) -> bool:
     signal_line = calc_ema(oscillator_values, 9)
     ha_close_ema9 = calc_ema(ha_closes, 9)
 
-    idx = -1  # Posledná uzavretá/tvoriaca sa 5m sviečka
+    idx = -1
     osc_val = oscillator_values[idx]
     sig_val = signal_line[idx]
     prev_osc = oscillator_values[idx - 1]
@@ -190,7 +186,6 @@ def evaluate_indicator_signal(inst_id: str) -> bool:
         and ha_closes[idx - 1] <= ha_close_ema9[idx - 1]
     )
 
-    # Agresívny Momentum Breakout signál z indikátora
     buy_trigger = cond_volume_crossover or (
         cond_volume_bullish and crossover_close_ema
     )
@@ -200,20 +195,21 @@ def evaluate_indicator_signal(inst_id: str) -> bool:
     return False
 
 
-# --- 🔍 AUTOMATICKÝ 5M SKENER S INDIKÁTOROM ---
+# --- 🔍 AUTOMATICKÝ 5M SKENER S INDIKÁTOROM & ANTI-FRAGMENTÁCIOU ---
 async def top_gainer_scanner_loop():
   global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, CURRENT_MODE, IS_ORDER_PROCESSING
   await asyncio.sleep(5)
 
-  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.1 SPUSTENÝ [5m TF + Objemový Indikátor]"
+  start_msg = f"[{get_sk_time_str()}] ⚡ APEX SCALPER 3.1 SPUSTENÝ [Anti-Frag + 5m Indikátor]"
   print(start_msg, flush=True)
   send_telegram_msg(
-      "🤖 <b>Apex Scalper 3.1 spustený!</b> Integrovaná 5m objemová stratégia je"
-      " aktívna."
+      "🤖 <b>Apex Scalper 3.1 spustený!</b> Ochrana proti triešteniu a 5m"
+      " indikátor sú aktívne."
   )
 
   while True:
     try:
+      # 🛡️ Ochrana proti triešteniu: Ak už beží obchod alebo sa spracováva príkaz, skener nepustí ďalšiu objednávku
       if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
         CURRENT_STAGE = "STAV: 🔴 V OBCHODE / SPRACOVÁVAM PRÍKAZ! Čakám..."
         await asyncio.sleep(5)
@@ -241,7 +237,7 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(10)
         continue
 
-      CURRENT_STAGE = f"STAV: 🟢 5m SKENER [Indikátor aktívny]. USDC OK ({free_capital:.2f}$). Hľadám signál..."
+      CURRENT_STAGE = f"STAV: 🟢 5m SKENER [Anti-Frag]. USDC OK ({free_capital:.2f}$). Skenujem trh..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
       if tickers_res.get("code") != "0" or not tickers_res.get("data"):
         await asyncio.sleep(5)
@@ -259,6 +255,7 @@ async def top_gainer_scanner_loop():
         if inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC"]:
           continue
 
+        # 🛡️ Kontrola Blacklistu (ZAMA atď.)
         coin_base = inst_id.split("-")[0]
         if coin_base in EXCLUDED_COINS:
           continue
@@ -273,7 +270,6 @@ async def top_gainer_scanner_loop():
           if open24h > 0 and last_p > 0 and vol24h >= min_vol:
             change_pct = ((last_p - open24h) / open24h) * 100
             if min_change <= change_pct <= max_change:
-              # Najprv otestujeme, či 5m indikátor potvrdzuje nákupný signál!
               if evaluate_indicator_signal(inst_id):
                 probability = int(
                     min(max((change_pct / max_change) * 100, 60), 99)
@@ -305,6 +301,7 @@ async def top_gainer_scanner_loop():
           await asyncio.sleep(5)
           continue
 
+      # 🛡️ Zámok proti triešteniu a paralelnému odosielaniu
       async with trade_lock:
         if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
           continue
@@ -312,7 +309,7 @@ async def top_gainer_scanner_loop():
         IS_ORDER_PROCESSING = True
         LAST_TRADE_TIME[coin_name] = now_ts
         CURRENT_STAGE = (
-            f"STAV: ⚡ Indikátor potvrdil signál! Nákup pre"
+            f"STAV: ⚡ Indikátor potvrdil signál! Vystavujem objednávku pre"
             f" {best_target['instId']}..."
         )
 
@@ -367,12 +364,12 @@ async def top_gainer_scanner_loop():
 
         IS_ORDER_PROCESSING = False
         CURRENT_STAGE = (
-            f"STAV: 🔴 V OBCHODE [{best_target['instId']}] (5m Indikátor"
-            " aktívny)..."
+            f"STAV: 🔴 V OBCHODE [{best_target['instId']}] (Anti-Frag & 5m"
+            " Indikátor)..."
         )
 
         send_telegram_msg(
-            f"🟢 <b>[5M INDIKÁTOR NÁKUP]</b>\n"
+            f"🟢 <b>[5M INDIKÁTOR NÁKUP (Anti-Frag)]</b>\n"
             f"<b>Pár:</b> {best_target['instId']}\n"
             f"<b>Cena:</b> {current_price:.4f} USDC\n"
             f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
@@ -381,7 +378,7 @@ async def top_gainer_scanner_loop():
 
     except Exception as scan_err:
       IS_ORDER_PROCESSING = False
-      print(f"❌ Chyba v 5m skeneri: {scan_err}", flush=True)
+      print(f"❌ Chyba v skeneri: {scan_err}", flush=True)
 
     await asyncio.sleep(10)
 
@@ -578,7 +575,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro - CyberHUD 3.1 (5m Indikátor)</title>
+    <title>Apex Scalper Pro - CyberHUD 3.1 (Anti-Frag & 5m Indikátor)</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -634,7 +631,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper HUD 3.1 (5m Indikátor)</div>
+            <div class="brand-title">⚡ Apex Scalper HUD 3.1 (Anti-Frag)</div>
         </div>
 
         <div class="controls-row">
@@ -861,7 +858,7 @@ async def dashboard():
 async def api_status():
   return {
       "status": "online",
-      "bot_type": "Apex Scalper Pro 3.1 (5m Indicator + Anti-Frag)",
+      "bot_type": "Apex Scalper Pro 3.1 (Anti-Fragmentation + 5m Indicator)",
       "mode": CURRENT_MODE,
       "current_stage": CURRENT_STAGE,
       "active_trades": ACTIVE_TRADES,
