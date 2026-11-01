@@ -40,14 +40,12 @@ CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem živý trh podľa checklistu..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz[cite: 1, 3]
+MAX_PARALLEL_TRADES = 1  # 🛡️ Ochrana proti triešteniu: Výhradne 1 obchod naraz
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
 # Režimy zodpovedajúce tvojmu Pine Script indikátoru v5.4.4
-CURRENT_STRATEGY_MODE = (
-    "Agresívny Momentum (Breakout)"  # alebo "Korekcia (Fibonacci Touch)"
-)
+CURRENT_STRATEGY_MODE = "Agresívny Momentum (Breakout)"
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 EXCLUDED_COINS = ["ZAMA"]
 
@@ -117,10 +115,6 @@ def okx_request(method: str, path: str, body: str = ""):
 
 # --- 📈 5M INDIKÁTOROVÁ LOGIKA PODĽA PINE SCRIPT v5.4.4 ---
 def evaluate_strategy_checklist(inst_id: str) -> dict:
-  """Vyhodnotí kompletný check-list pre daný token na základe zvoleného režimu
-
-  (Breakout vs Fibonacci 0.786).
-  """
   result = {
       "volume_status": False,
       "impulse_status": False,
@@ -135,7 +129,7 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
       return result
 
     raw_candles = res["data"]
-    raw_candles.reverse()  # Od najstaršej po najnovšiu
+    raw_candles.reverse()
 
     if len(raw_candles) < 25:
       return result
@@ -146,12 +140,10 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     volumes = [float(c[5]) for c in raw_candles]
     opens = [float(c[1]) for c in raw_candles]
 
-    # Objemový oscilátor (EMA 5 vs EMA 20 z objemu so znamením smeru sviečky)
     vol_directions = [
         v if closes[i] > opens[i] else -v for i, v in enumerate(volumes)
     ]
 
-    # Jednoduchá simulácia EMA pre Python
     def calc_ema(data, length):
       alpha = 2 / (length + 1)
       ema_val = data[0]
@@ -163,11 +155,9 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     slow_ma = calc_ema(vol_directions, 20)
     oscillator_val = fast_ma - slow_ma
 
-    # 1. Objemový Momentum (zodpovedá checklistu v indikátore)
     volume_bullish = oscillator_val > 0
     result["volume_status"] = volume_bullish
 
-    # 2. Fibonacci 0.786 výpočet (pre korekčný režim)
     recent_high = max(highs[-25:])
     recent_low = min(lows[-25:])
     range_size = recent_high - recent_low
@@ -175,23 +165,19 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     fib_touch = lows[-1] <= fib_target
     result["fib_status"] = fib_touch
 
-    # 3. Nákupný impulz podľa zvoleného režimu
-  global CURRENT_STRATEGY_MODE
-  if CURRENT_STRATEGY_MODE == "Agresívny Momentum (Breakout)":
-    # Breakout podmienka: Rastúci objemový oscilátor + rast ceny
-    price_breakout = closes[-1] > closes[-3]
-    buy_trigger = volume_bullish and price_breakout
-    result["impulse_status"] = price_breakout
-    result["buy_ready"] = buy_trigger
-    result["probability"] = (
-        85 if buy_trigger else (55 if volume_bullish else 30)
-    )
-  else:
-    # Korekcia (Fibonacci Touch) podmienka
-    fib_buy = volume_bullish and fib_touch
-    result["impulse_status"] = fib_touch
-    result["buy_ready"] = fib_buy
-    result["probability"] = 90 if fib_buy else (50 if volume_bullish else 20)
+    if CURRENT_STRATEGY_MODE == "Agresívny Momentum (Breakout)":
+      price_breakout = closes[-1] > closes[-3]
+      buy_trigger = volume_bullish and price_breakout
+      result["impulse_status"] = price_breakout
+      result["buy_ready"] = buy_trigger
+      result["probability"] = (
+          85 if buy_trigger else (55 if volume_bullish else 30)
+      )
+    else:
+      fib_buy = volume_bullish and fib_touch
+      result["impulse_status"] = fib_touch
+      result["buy_ready"] = fib_buy
+      result["probability"] = 90 if fib_buy else (50 if volume_bullish else 20)
 
   except Exception as e:
     print(f"❌ Chyba vyhodnocovania checklistu pre {inst_id}: {e}", flush=True)
@@ -213,7 +199,6 @@ async def top_gainer_scanner_loop():
 
   while True:
     try:
-      # 🛡️ Ochrana proti triešteniu: Maximálne 1 obchod naraz[cite: 1, 3]
       if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
         CURRENT_STAGE = "STAV: 🔴 V OBCHODE / SPRACOVÁVAM PRÍKAZ! Čakám..."
         await asyncio.sleep(5)
@@ -253,8 +238,8 @@ async def top_gainer_scanner_loop():
         await asyncio.sleep(5)
         continue
 
-      min_vol = 15000.0  # Minimálny objem likvidity[cite: 1, 3]
-      min_change = 0.5  # Minimálny 24h rast od +0.5%[cite: 1, 3]
+      min_vol = 15000.0
+      min_change = 0.5
       max_change = 40.0
 
       candidates = []
@@ -286,7 +271,6 @@ async def top_gainer_scanner_loop():
           if open24h > 0 and last_p > 0 and vol24h >= min_vol:
             change_pct = ((last_p - open24h) / open24h) * 100
             if min_change <= change_pct <= max_change:
-              # Vyhodnotenie checklistu pre danú mincu
               chk = evaluate_strategy_checklist(inst_id)
 
               candidates.append({
@@ -303,7 +287,6 @@ async def top_gainer_scanner_loop():
         except Exception:
           continue
 
-      # Zoradíme kandidátov podľa pripravenosti a rastu
       candidates.sort(
           key=lambda x: (x["buy_ready"], x["probability"], x["change"]),
           reverse=True,
@@ -311,14 +294,13 @@ async def top_gainer_scanner_loop():
       if candidates:
         MARKET_RADAR = candidates[:10]
 
-      # Hľadáme mincu, ktorá spĺňa podmienky na nákup (buy_ready == True)
       best_target = None
       for cand in candidates:
         if cand["buy_ready"]:
           coin_name = cand["instId"].split("-")[0]
           now_ts = datetime.now().timestamp()
           if coin_name in LAST_TRADE_TIME:
-            if now_ts - LAST_TRADE_TIME[coin_name] < 600:  # 10 min cooldown
+            if now_ts - LAST_TRADE_TIME[coin_name] < 600:
               continue
           best_target = cand
           break
@@ -329,7 +311,6 @@ async def top_gainer_scanner_loop():
 
       coin_name = best_target["instId"].split("-")[0]
 
-      # 🛡️ Zámok proti triešteniu a paralelnému odosielaniu[cite: 1, 3]
       async with trade_lock:
         if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
           continue
@@ -338,7 +319,7 @@ async def top_gainer_scanner_loop():
         LAST_TRADE_TIME[coin_name] = datetime.now().timestamp()
         CURRENT_STAGE = f"STAV: ⚡ Checklist splnený pre {best_target['instId']}! Vystavujem nákup..."
 
-        safe_budget = min(free_capital * 0.95, 500.0)  # Investícia do 500$[cite: 1, 3]
+        safe_budget = min(free_capital * 0.95, 500.0)
         current_price = best_target["price"]
 
         coin_amount = safe_budget / current_price
@@ -358,17 +339,13 @@ async def top_gainer_scanner_loop():
 
         order_res = okx_request("POST", "/api/v5/trade/order", order_body)
         if order_res.get("code") != "0":
-          print(
-              f"❌ Nákup zlyhal na demo burze pre {best_target['instId']}:"
-              f" {order_res}",
-              flush=True,
-          )
+          print(f"❌ Nákup zlyhal: {order_res}", flush=True)
           IS_ORDER_PROCESSING = False
           await asyncio.sleep(3)
           continue
 
-        tp_price = current_price * 1.012  # +1.2% Take Profit[cite: 1, 3]
-        sl_price = current_price * 0.99  # -1.0% Stop-Loss[cite: 1, 3]
+        tp_price = current_price * 1.012
+        sl_price = current_price * 0.99
         PRICE_HISTORY = [current_price]
 
         ACTIVE_TRADES[coin_name] = {
@@ -450,13 +427,11 @@ async def advanced_risk_monitor_loop():
               if new_trailing_sl > trade["current_sl_price"]:
                 trade["current_sl_price"] = new_trailing_sl
 
-          # Break-Even aktivácia pri +0.4%[cite: 1, 3]
           if not trade["break_even_activated"] and pnl_pct >= 0.4:
             trade["break_even_activated"] = True
             if trade["entry_price"] > trade["current_sl_price"]:
               trade["current_sl_price"] = trade["entry_price"]
 
-          # Trailing Take Profit aktivácia pri +0.8% s callbackom 0.3%[cite: 1, 3]
           if not trade["trailing_tp_activated"] and pnl_pct >= 0.8:
             trade["trailing_tp_activated"] = True
 
