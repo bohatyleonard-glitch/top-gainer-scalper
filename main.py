@@ -386,4 +386,326 @@ async def set_mode(mode: str):
     return JSONResponse({"status": "error", "message": "Neplatný režim."})
 
 @app.post("/api/emergency-sell")
-async def emergency_
+async def emergency_sell():
+    global ACTIVE_TRADES, CURRENT_STAGE
+    async with trade_lock:
+        if not ACTIVE_TRADES:
+            return JSONResponse({"status": "warning", "message": "Žiadny aktívny obchod na predaj."})
+        
+        sold_summary = []
+        for coin in list(ACTIVE_TRADES.keys()):
+            trade = ACTIVE_TRADES[coin]
+            symbol = trade["market_pair"]
+            try:
+                order_body = json.dumps({
+                    "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
+                })
+                okx_request('POST', '/api/v5/trade/order', order_body)
+                pnl_usdc = trade.get("live_pnl_usdc", 0.0)
+                record_closed_trade(symbol, trade.get('live_pnl_pct', 0.0), pnl_usdc, "Manuálny Kill Switch")
+
+                send_telegram_msg(
+                    f"🚨 <b>[NÚDZOVÝ MANUÁLNY PREDAJ / KILL SWITCH]</b>\n"
+                    f"<b>Pár:</b> {symbol}\n"
+                    f"<b>PnL:</b> {trade.get('live_pnl_pct', 0.0):+.2f}%"
+                )
+                sold_summary.append(symbol)
+            except Exception as e:
+                print(f"Chyba pri emergency sell: {e}", flush=True)
+
+            del ACTIVE_TRADES[coin]
+
+        CURRENT_STAGE = "STAV: 🟢 Mimo obchodu (Ručný výstup). Skenujem..."
+        return JSONResponse({"status": "success", "sold": sold_summary})
+
+# --- 🖼️ CYBERPUNK HUD WEB ROZHRANIE ---
+HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
+<html lang="sk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apex Scalper Pro - CyberHUD 3.0 (USDC)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            margin: 0; padding: 25px;
+            background: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.4)), url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=1920&auto=format&fit=crop');
+            background-size: cover; background-position: center; background-attachment: fixed;
+            color: #ffffff; min-height: 100vh;
+        }
+        .container { 
+            max-width: 680px; margin: 0; background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 18px; padding: 22px;
+            box-shadow: 0 0 35px rgba(0, 255, 255, 0.25);
+        }
+        .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+        .brand-title { font-size: 1rem; font-weight: 800; color: #00f0ff; letter-spacing: 2px; text-transform: uppercase; }
+        
+        .controls-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,255,255,0.08); border: 1px solid rgba(0,255,255,0.2); padding: 10px 14px; border-radius: 10px; margin-bottom: 15px; }
+        .mode-buttons a { text-decoration: none; background: rgba(0,0,0,0.5); border: 1px solid #00f0ff; color: #fff; padding: 6px 12px; font-size: 0.75rem; font-weight: bold; border-radius: 6px; display: inline-block; transition: all 0.2s; }
+        .mode-buttons a.active { background: #00f0ff; color: #000; box-shadow: 0 0 10px #00f0ff; }
+        
+        .kill-switch-btn {
+            background: linear-gradient(135deg, #ff0055, #990033);
+            color: #fff; border: 1px solid #ff0055; padding: 6px 12px;
+            border-radius: 6px; font-weight: 800; font-size: 0.75rem;
+            cursor: pointer; text-transform: uppercase; letter-spacing: 1px;
+            box-shadow: 0 0 10px rgba(255, 0, 85, 0.4);
+        }
+        .kill-switch-btn:hover { background: #ff0055; }
+
+        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
+        .stat-card { background: rgba(0,0,0,0.6); border: 1px solid rgba(0,255,255,0.25); border-radius: 10px; padding: 10px; text-align: center; }
+        .stat-label { font-size: 0.7rem; color: #00f0ff; text-transform: uppercase; font-weight: bold; }
+        .stat-value { font-size: 1.1rem; font-weight: bold; margin-top: 4px; }
+
+        .status-banner { background: rgba(0, 240, 255, 0.15); border: 2px solid #00f0ff; border-radius: 10px; padding: 12px; font-size: 0.85rem; font-weight: 700; color: #ffffff; margin-bottom: 20px; }
+        .section-block { margin-bottom: 22px; }
+        .section-title { font-size: 0.85rem; font-weight: 700; color: #00f0ff; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 4px; }
+        th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(0, 255, 255, 0.20); font-size: 0.8rem; color: #ffffff; }
+        th { font-weight: 700; color: #00f0ff; text-transform: uppercase; font-size: 0.72rem; }
+        .pnl-green { color: #00ff88; font-weight: bold; }
+        .pnl-red { color: #ff4444; font-weight: bold; }
+        .chart-container { background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(0, 255, 255, 0.2); border-radius: 10px; padding: 10px; margin-top: 10px; height: 150px; }
+        .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(95px, 1fr)); gap: 8px; margin-top: 4px; }
+        .calendar-day { background: rgba(0, 0, 0, 0.70); border: 1px solid rgba(0, 255, 255, 0.30); border-radius: 8px; padding: 8px; text-align: center; font-size: 0.75rem; }
+        .refresh-info { color: rgba(255, 255, 255, 0.6); font-size: 0.7rem; margin-top: 20px; font-weight: 600; text-align: left; }
+    </style>
+    <meta http-equiv="refresh" content="2">
+</head>
+<body>
+    <div class="container">
+        <div class="header-bar">
+            <div class="brand-title">⚡ Apex Scalper HUD 3.0 (Smart Limit)</div>
+        </div>
+
+        <div class="controls-row">
+            <div class="mode-buttons">
+                <span style="font-size: 0.75rem; color: #00f0ff; font-weight: bold; margin-right: 6px;">REŽIM:</span>
+                <a href="/api/set-mode/AGGRESSIVE" class="{{ 'active' if current_mode == 'AGGRESSIVE' else '' }}">Agresívny</a>
+                <a href="/api/set-mode/CONSERVATIVE" class="{{ 'active' if current_mode == 'CONSERVATIVE' else '' }}">Konzervatívny</a>
+            </div>
+            <button class="kill-switch-btn" onclick="triggerKillSwitch()">🚨 KILL SWITCH</button>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Celkovo Obchodov</div>
+                <div class="stat-value">{{ total_trades }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Úspešnosť (Win Rate)</div>
+                <div class="stat-value" style="color: #00ff88;">{{ win_rate }}%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Kumulatívny Zisk</div>
+                <div class="stat-value {{ 'pnl-green' if total_pnl_usdc >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(total_pnl_usdc) }} $</div>
+            </div>
+        </div>
+        
+        <div class="status-banner">{{ current_stage }}</div>
+
+        <div class="section-block">
+            <div class="section-title">🔴 Aktívny Obchod & Živý PnL</div>
+            {% if trades %}
+                <table>
+                    <tr><th>Pár</th><th>Vstup</th><th>Investícia</th><th>Aktuálna Cena</th><th>PnL (%)</th><th>PnL ($)</th></tr>
+                    {% for t, details in trades.items() %}
+                    <tr>
+                        <td><strong>{{ details.market_pair }}</strong></td>
+                        <td>{{ "%.4f" | format(details.entry_price) }}</td>
+                        <td>{{ "%.2f" | format(details.invested_usdc) }} $</td>
+                        <td>{{ "%.4f" | format(details.current_price) }}</td>
+                        <td class="{{ 'pnl-green' if details.live_pnl_pct >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(details.live_pnl_pct) }}%</td>
+                        <td class="{{ 'pnl-green' if details.live_pnl_usdc >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(details.live_pnl_usdc) }} $</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+                <div class="chart-container">
+                    <canvas id="livePriceChart"></canvas>
+                </div>
+            {% else %}
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
+                    ✅ Žiadny aktívny obchod. Bot vyčkáva na príležitosť.
+                </div>
+            {% endif %}
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">📜 História Posledných Obchodov</div>
+            {% if history %}
+                <table>
+                    <tr><th>Čas</th><th>Pár</th><th>Dôvod</th><th>Výsledok (%)</th><th>Výsledok ($)</th></tr>
+                    {% for h in history %}
+                    <tr>
+                        <td>{{ h.time }}</td>
+                        <td><strong>{{ h.pair }}</strong></td>
+                        <td>{{ h.reason }}</td>
+                        <td class="{{ 'pnl-green' if h.pnl_pct >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(h.pnl_pct) }}%</td>
+                        <td class="{{ 'pnl-green' if h.pnl_usdc >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(h.pnl_usdc) }} $</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Zatiaľ žiadne uzavreté obchody v tejto relácii.</div>
+            {% endif %}
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">📊 Živý Radar Trhu (USDC)</div>
+            {% if radar %}
+                <table>
+                    <tr><th>Symbol</th><th>Cena</th><th>24h Rast</th><th>Objem</th><th>Šanca</th></tr>
+                    {% for item in radar %}
+                    <tr>
+                        <td><strong>{{ item.instId }}</strong></td>
+                        <td>{{ "%.4f" | format(item.price) }}</td>
+                        <td>+{{ "%.2f" | format(item.change) }}%</td>
+                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
+                        <td><strong style="color: #00f0ff;">{{ item.probability }}%</strong></td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            {% else %}
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Skenujem trh...</div>
+            {% endif %}
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">💰 Zostatky (OKX Demo - USDC, USDT, EUR)</div>
+            <table>
+                <tr><th>Mena</th><th>Dostupné (availBal)</th></tr>
+                {% for coin, data in balances.items() %}
+                <tr><td><strong>{{ coin }}</strong></td><td>{{ "%.4f" | format(data.available_balance | float) }}</td></tr>
+                {% endfor %}
+            </table>
+        </div>
+
+        <div class="section-block">
+            <div class="section-title">📅 Kalendár Výsledkov (Denný PnL)</div>
+            {% if calendar %}
+                <div class="calendar-grid">
+                    {% for day, data in calendar.items() %}
+                    <div class="calendar-day">
+                        <div>{{ day }}</div>
+                        <div style="font-weight: bold; color: #00ff88; margin-top: 4px;">{{ "%+.2f" | format(data.pnl) }} $</div>
+                        <div style="font-size: 0.65rem; color: rgba(255,255,255,0.7); margin-top: 2px;">{{ data.trades }} obch.</div>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.7);">Zatiaľ žiadne uzavreté obchody.</div>
+            {% endif %}
+        </div>
+
+        <div class="refresh-info">APEX HUD 3.0 | Obnovenie 2s | SK Čas: {{ current_time }}</div>
+    </div>
+
+    <script>
+        async function triggerKillSwitch() {
+            if (confirm("⚠️ Naozaj chceš okamžite predajom zatvoriť aktívnu pozíciu?")) {
+                const res = await fetch('/api/emergency-sell', { method: 'POST' });
+                const data = await res.json();
+                alert(data.message || "Pozícia zatvorená!");
+                window.location.reload();
+            }
+        }
+
+        const rawHistory = {{ price_history | tojson }};
+        if (rawHistory && rawHistory.length > 0 && document.getElementById('livePriceChart')) {
+            const ctxChart = document.getElementById('livePriceChart').getContext('2d');
+            new Chart(ctxChart, {
+                type: 'line',
+                data: {
+                    labels: rawHistory.map((_, i) => i + 1),
+                    datasets: [{
+                        label: 'Cena (USDC)',
+                        data: rawHistory,
+                        borderColor: '#00f0ff',
+                        backgroundColor: 'rgba(0, 240, 255, 0.1)',
+                        fill: true,
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { display: false },
+                        y: { 
+                            ticks: { color: '#00f0ff', font: { size: 10 } },
+                            grid: { color: 'rgba(255,255,255,0.05)' }
+                        }
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html>"""
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    account_balances = {curr: {"available_balance": 0.0} for curr in ALLOWED_CURRENCIES}
+    try:
+        balance_res = okx_request('GET', '/api/v5/account/balance')
+        if balance_res.get('code') == '0':
+            found = {}
+            for acc in balance_res.get('data', []):
+                for detail in acc.get('details', []):
+                    ccy = detail.get('ccy')
+                    if ccy in ALLOWED_CURRENCIES:
+                        avail_raw = detail.get('availBal', 0)
+                        avail = float(avail_raw) if avail_raw else 0.0
+                        found[ccy] = {"available_balance": avail}
+            if found:
+                for curr in ALLOWED_CURRENCIES:
+                    if curr in found:
+                        account_balances[curr] = found[curr]
+    except Exception:
+        pass
+
+    total_trades = len(CLOSED_TRADES_HISTORY)
+    winning_trades = sum(1 for t in CLOSED_TRADES_HISTORY if t["pnl_pct"] > 0)
+    win_rate = round((winning_trades / total_trades * 100) if total_trades > 0 else 0.0, 1)
+    total_pnl_usdc = sum(t["pnl_usdc"] for t in CLOSED_TRADES_HISTORY) if 'CLOSED_TRADES_HISTORY' in globals() else 0.0
+
+    template = Template(HTML_TEMPLATE_CONTENT)
+    return template.render(
+        balances=account_balances,
+        trades=ACTIVE_TRADES,
+        radar=MARKET_RADAR,
+        calendar=DAILY_PNL_CALENDAR,
+        history=CLOSED_TRADES_HISTORY,
+        total_trades=total_trades,
+        win_rate=win_rate,
+        total_pnl_usdc=total_pnl_usdc,
+        current_mode=CURRENT_MODE,
+        current_stage=CURRENT_STAGE,
+        price_history=PRICE_HISTORY,
+        current_time=get_sk_time_str()
+    )
+
+@app.get("/api/status")
+async def api_status():
+    return {
+        "status": "online",
+        "bot_type": "Apex Scalper Pro 3.0 (Smart Limit USDC)",
+        "mode": CURRENT_MODE,
+        "current_stage": CURRENT_STAGE,
+        "active_trades": ACTIVE_TRADES,
+        "market_radar": MARKET_RADAR,
+        "history": CLOSED_TRADES_HISTORY,
+        "sk_time": get_sk_time_str()
+    }
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
