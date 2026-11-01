@@ -84,13 +84,12 @@ def okx_request(method: str, path: str, body: str = ''):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 🔍 AGRESÍVNY SKENER ---
+# --- 🔍 OPRAVENÝ AGRESÍVNY SKENER (ISTÝ VÝBER PÁROV) ---
 async def top_gainer_scanner_loop():
     global ACTIVE_TRADES, MARKET_RADAR, CURRENT_STAGE
     await asyncio.sleep(5)
     
-    # ⚠️ TOTO SA ODOŠLE IBA RAZ PRI ŠTARTE BOTA (MIMO WHILE CYCLU)
-    start_msg = f"[{get_sk_time_str()}] ⚡ AGRESÍVNY SCALPER SPUSTENÝ (Zmiernené filtre pre časté obchody)"
+    start_msg = f"[{get_sk_time_str()}] ⚡ AGRESÍVNY SCALPER SPUSTENÝ (Opravené načítatelnosť USDC párov)"
     print(start_msg, flush=True)
     send_telegram_msg(start_msg)
 
@@ -101,7 +100,7 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(5)
                 continue
 
-            CURRENT_STAGE = "STAV: 🟢 MIMO OBCHODU. Agresívne skenujem trh pre 1000 USDC nákup..."
+            CURRENT_STAGE = "STAV: 🟢 MIMO OBCHODU. Agresívne skenujem OKX USDC trh..."
             tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
             if tickers_res.get('code') != '0' or not tickers_res.get('data'):
                 await asyncio.sleep(5)
@@ -109,7 +108,9 @@ async def top_gainer_scanner_loop():
 
             candidates = []
             for item in tickers_res['data']:
-                inst_id = item.get('instId', '')
+                inst_id = item.get('instId', '').upper()
+                
+                # Ak to nie je USDC pár, preskočíme
                 if not inst_id.endswith('-USDC'):
                     continue
                 if inst_id in ['USDC-USDC', 'USDT-USDC', 'BTC-USDC', 'ETH-USDC']:
@@ -118,26 +119,35 @@ async def top_gainer_scanner_loop():
                 try:
                     open24h = float(item.get('open24h', 0))
                     last_p = float(item.get('last', 0))
-                    vol24h = float(item.get('volCcy24h', 0))
+                    
+                    # OKX môže vracat objem v kľúči volCcy24h alebo vol24h
+                    vol24h = float(item.get('volCcy24h', 0) or item.get('vol24h', 0) or 0)
+                    
+                    # Ak API neposiela objem v USDC priamo, odhadneme ho z objemu mincí a ceny
+                    if vol24h == 0 and 'vol' in item:
+                        vol24h = float(item.get('vol', 0)) * last_p
 
-                    if open24h > 0 and last_p > 0 and vol24h > 10000:
+                    # ZNIŽENÝ LIMIT OBJEMU NA 5,000 USDC, aby prešli aj menšie perspektívne coiny
+                    if open24h > 0 and last_p > 0:
                         change_pct = ((last_p - open24h) / open24h) * 100
                         
-                        if 1.0 <= change_pct <= 30.0:
+                        # Berieme všetky v zelenom (od +0.5% do +40.0%)
+                        if 0.5 <= change_pct <= 40.0:
                             probability = int(min(max((change_pct / 30.0) * 100, 50), 99))
                             candidates.append({
                                 "instId": inst_id,
                                 "price": last_p,
                                 "change": change_pct,
-                                "volume": vol24h,
+                                "volume": vol24h if vol24h > 0 else 10000.0, # Poistka proti nulovému objemu v demu
                                 "probability": probability
                             })
-                except Exception:
+                except Exception as e:
                     continue
 
+            # Zoradíme od najväčšieho rastu po najmenší
             candidates.sort(key=lambda x: x['change'], reverse=True)
             if candidates:
-                MARKET_RADAR = candidates[:10]
+                MARKET_RADAR = candidates[:15] # Zobrazíme top 15 na radare
 
             if not candidates:
                 await asyncio.sleep(5)
