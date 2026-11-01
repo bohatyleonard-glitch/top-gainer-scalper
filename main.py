@@ -38,7 +38,7 @@ def send_telegram_msg(message: str):
 # Globálny stav bota pre Dashboard a logiku
 bot_state = {
     "status": "online",
-    "bot_type": "Apex Scalper Pro 3.0 (USDC Spot + Web Dashboard)",
+    "bot_type": "Apex Scalper Pro (Stabilized USDC Spot)",
     "last_scan": "Zatiaľ neskenované",
     "account_balances": {},
     "active_trades": {},
@@ -117,7 +117,7 @@ DASHBOARD_TEMPLATE = """
     <div class="container">
         <div class="header">
             <div>
-                <h1>⚡ Apex Scalper Pro 3.0</h1>
+                <h1>⚡ Apex Scalper Pro (Stabilized)</h1>
                 <p style="margin: 0; color: #94a3b8;">Spot USDC Scalper (OKX Demo)</p>
             </div>
             <div>
@@ -179,8 +179,8 @@ DASHBOARD_TEMPLATE = """
 async def top_gainer_scanner_loop():
     global bot_state, LAST_TRADE_TIME
     await asyncio.sleep(5)
-    log_message("⚡ Autonómny Top Gainer Skener úspešne spustený [USDC Spot Režim]...")
-    send_telegram_msg("🤖 <b>Apex Scalper Pro spustený!</b> Skenujem USDC páry na OKX Demo.")
+    log_message("⚡ Stabilizovaný Skener spustený [USDC Spot Režim]...")
+    send_telegram_msg("🤖 <b>Apex Scalper Pro spustený!</b> Skenujem USDC páry s ochranou proti zacykleniu.")
 
     while True:
         try:
@@ -202,19 +202,12 @@ async def top_gainer_scanner_loop():
                 bot_state["account_balances"] = acc_bals
 
             if len(bot_state["active_trades"]) >= MAX_PARALLEL_TRADES:
-                await asyncio.sleep(5)
+                await asyncio.sleep(10)
                 continue
 
             if balance_res.get('code') != '0':
                 await asyncio.sleep(10)
                 continue
-
-            # Kontrola voľného kapitálu USDC
-            free_capital = 0.0
-            for acc in balance_res.get('data', []):
-                for detail in acc.get('details', []):
-                    if detail.get('ccy') == 'USDC':
-                        free_capital = float(detail.get('availBal', 0) or 0)
 
             if free_capital < 10.0:
                 log_message(f"🛑 Nedostatok USDC kapitálu: {free_capital:.2f}")
@@ -239,9 +232,9 @@ async def top_gainer_scanner_loop():
                     last_p = float(item.get('last', 0))
                     vol24h = float(item.get('volCcy24h', 0) or item.get('vol24h', 0) or 0)
 
-                    if open24h > 0 and last_p > 0 and vol24h >= 10000:
+                    if open24h > 0 and last_p > 0 and vol24h >= 20000: # Zvýšený objem pre istotu
                         change_pct = ((last_p - open24h) / open24h) * 100
-                        if 1.0 <= change_pct <= 30.0:
+                        if 1.5 <= change_pct <= 25.0: # Konzervatívnejšie rozpätie rastu
                             candidates.append({
                                 "instId": inst_id,
                                 "price": last_p,
@@ -252,7 +245,7 @@ async def top_gainer_scanner_loop():
                     continue
 
             if not candidates:
-                await asyncio.sleep(10)
+                await asyncio.sleep(15)
                 continue
 
             candidates.sort(key=lambda x: x['change'], reverse=True)
@@ -261,8 +254,9 @@ async def top_gainer_scanner_loop():
 
             now_ts = datetime.now().timestamp()
             if coin_name in LAST_TRADE_TIME:
-                if now_ts - LAST_TRADE_TIME[coin_name] < 60:
-                    await asyncio.sleep(5)
+                # 🛡️ 5-MINÚTOVÝ COOLDOWN (žiadne bleskové opakovanie tej istej mince)
+                if now_ts - LAST_TRADE_TIME[coin_name] < 300:
+                    await asyncio.sleep(10)
                     continue
 
             async with trade_lock:
@@ -270,9 +264,9 @@ async def top_gainer_scanner_loop():
                     continue
 
                 LAST_TRADE_TIME[coin_name] = now_ts
-                log_message(f"🎯 Nájdený kandidát: {best_target['instId']} (+{best_target['change']:.2f}%)")
+                log_message(f"🎯 Vybraný stabilný kandidát: {best_target['instId']} (+{best_target['change']:.2f}%)")
 
-                safe_budget = min(free_capital * 0.98, 1000.0)
+                safe_budget = min(free_capital * 0.95, 500.0) # Bezpečnejšia alokácia
                 current_price = best_target['price']
                 coin_amount = safe_budget / current_price
 
@@ -296,8 +290,8 @@ async def top_gainer_scanner_loop():
                     await asyncio.sleep(10)
                     continue
 
-                tp_price = current_price * 1.02
-                sl_price = current_price * 0.985
+                tp_price = current_price * 1.025
+                sl_price = current_price * 0.98  # Bezpečnejší Stop-Loss (-2%)
 
                 bot_state["active_trades"][coin_name] = {
                     "market_pair": best_target['instId'],
@@ -316,7 +310,7 @@ async def top_gainer_scanner_loop():
                 }
 
                 send_telegram_msg(
-                    f"🟢 <b>[SPOT NÁKUP USDC]</b>\n"
+                    f"🟢 <b>[STABILIZOVANÝ SPOT NÁKUP]</b>\n"
                     f"<b>Pár:</b> {best_target['instId']}\n"
                     f"<b>Vstup:</b> {current_price:.4f} USDC\n"
                     f"<b>Investícia:</b> ~{safe_budget:.2f} USDC\n"
@@ -326,17 +320,17 @@ async def top_gainer_scanner_loop():
         except Exception as scan_err:
             log_message(f"❌ Chyba v skeneri: {scan_err}")
 
-        await asyncio.sleep(5)
+        await asyncio.sleep(10)
 
 # --- 🛡️ MONITOROVACÍ CYKLUS (RISK MANAGEMENT) ---
 async def advanced_risk_monitor_loop():
     global bot_state
-    await asyncio.sleep(3)
-    log_message("🛡️ Risk Management Monitor úspešne spustený...")
+    await asyncio.sleep(5)
+    log_message("🛡️ Stabilný Risk Management Monitor spustený...")
 
     while True:
         if not bot_state["active_trades"]:
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             continue
             
         try:
@@ -350,15 +344,15 @@ async def advanced_risk_monitor_loop():
                 
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
                 
-                # 15-minútová časová poistka
-                if now_time - bought_time > timedelta(minutes=15):
+                # Predĺžený 30-minútový časový limit na priestor pre rast
+                if now_time - bought_time > timedelta(minutes=30):
                     try:
                         order_body = json.dumps({
                             "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                         })
                         okx_request('POST', '/api/v5/trade/order', order_body)
-                        log_message(f"⏱️ 15m časový limit vypršal pre {symbol}")
-                        send_telegram_msg(f"⏱️ <b>[15m LIMIT - UZATVORENÉ]</b> Pár {symbol} ({trade['live_pnl_pct']:+.2f}%)")
+                        log_message(f"⏱️ 30m časový limit vypršal pre {symbol}")
+                        send_telegram_msg(f"⏱️ <b>[30m LIMIT - UZATVORENÉ]</b> Pár {symbol} ({trade['live_pnl_pct']:+.2f}%)")
                     except Exception:
                         pass
                     
@@ -378,26 +372,26 @@ async def advanced_risk_monitor_loop():
 
                     if current_price > trade["highest_price"]:
                         trade["highest_price"] = current_price
-                        if pnl_pct >= 1.0:
-                            new_trailing_sl = trade["highest_price"] * 0.995
+                        if pnl_pct >= 1.2:
+                            new_trailing_sl = trade["highest_price"] * 0.992
                             if new_trailing_sl > trade["current_sl_price"]:
                                 trade["current_sl_price"] = new_trailing_sl
 
-                    # Break-Even na +0.7%
-                    if not trade["break_even_activated"] and pnl_pct >= 0.7:
+                    # Break-Even na +0.8%
+                    if not trade["break_even_activated"] and pnl_pct >= 0.8:
                         trade["break_even_activated"] = True
                         if trade["entry_price"] > trade["current_sl_price"]:
                             trade["current_sl_price"] = trade["entry_price"]
                             send_telegram_msg(f"🛡️ <b>[BREAK-EVEN]</b> {symbol} zabezpečený na vstupe.")
 
-                    # Trailing TP od +1.2%
-                    if not trade["trailing_tp_activated"] and pnl_pct >= 1.2:
+                    # Trailing TP od +1.5%
+                    if not trade["trailing_tp_activated"] and pnl_pct >= 1.5:
                         trade["trailing_tp_activated"] = True
                         send_telegram_msg(f"🌊 <b>[TRAILING TP AKTÍVNY]</b> Pár {symbol} (+{pnl_pct:.2f}%)")
 
                     if trade["trailing_tp_activated"]:
                         drop_from_peak = ((trade["highest_price"] - current_price) / trade["highest_price"]) * 100
-                        if drop_from_peak >= 0.4:
+                        if drop_from_peak >= 0.5:
                             try:
                                 order_body = json.dumps({
                                     "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
@@ -430,7 +424,7 @@ async def advanced_risk_monitor_loop():
         except Exception as main_err:
             log_message(f"❌ Chyba v monitorovaní: {main_err}")
             
-        await asyncio.sleep(2)
+        await asyncio.sleep(3)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
