@@ -325,381 +325,94 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🌆 KOMPAKTNÝ CYBERPUNK TERMINÁL S VIDITEĽNÝM MESTOM A NEÓNOM BAR ---
+# --- 🖼️ PRESNÝ DIZAJN: OBRÁZOK AKO POZADIE + ČIERNE NÁPISY NA ĽAVEJ STRANE ---
 DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper Pro | Cyberpunk City Terminal</title>
+    <title>Apex Scalper Pro</title>
     <style>
-        :root {
-            --neon-blue: #00f0ff;
-            --neon-pink: #ff007f;
-            --neon-green: #00ff66;
-            --bg-glass: rgba(8, 12, 24, 0.65);
-            --border-glow: rgba(0, 240, 255, 0.25);
-            --text-main: #f1f5f9;
-            --text-dim: #94a3b8;
-        }
-
         * { box-sizing: border-box; }
         body { 
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background-color: #02040a; 
-            color: var(--text-main); 
             margin: 0; 
-            padding: 15px;
-            overflow-x: hidden;
-            position: relative;
+            padding: 25px;
+            /* Fixný obrázok mesta ako pozadie na celú obrazovku */
+            background-image: url('https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1920&auto=format&fit=crop'); /* fallback na high-res cyberpunk alternatívu, príp. priamo tvoj obrázok */
+            background: url('https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?q=80&w=2074&auto=format&fit=crop') no-repeat center center fixed;
+            background-size: cover;
+            color: #000000; /* Všetko písmo je čierne */
+            min-height: 100vh;
         }
 
-        /* Živé mesto pozadie s paralaxou/animáciou */
-        #city-canvas {
+        /* Ak chceš použiť presne ten tvoj nahratý obrázok, použijeme ho ako base64 alebo url. Tu je nastavený na celé pozadie */
+        body::before {
+            content: "";
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 100vh;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            background: url('https://chatgpt.com/imagestoragenew/...') no-repeat center center fixed; /* ak treba, fallback prekrýva jemným svetlým filtrom, aby čierne písmo perfektne vyniklo na svetlejších i tmavších častiach */
             z-index: -1;
-            background: linear-gradient(135deg, #050b18 0%, #020408 100%);
         }
 
-        .container { max-width: 1250px; margin: 0 auto; position: relative; z-index: 1; }
-
-        .header { 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center; 
-            background: var(--bg-glass); 
-            padding: 15px 25px; 
-            border-radius: 12px; 
-            border: 1px solid var(--border-glow); 
-            box-shadow: 0 0 20px rgba(0, 240, 255, 0.1);
-            backdrop-filter: blur(8px);
-        }
-
-        .logo-area h1 { 
+        .container { 
+            max-width: 650px; /* Zarovnané na ľavú stranu, aby bolo vidno mesto */
             margin: 0; 
-            font-size: 1.5rem; 
-            color: var(--neon-blue); 
-            letter-spacing: 1.5px;
-            text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+            background: rgba(255, 255, 255, 0.75); /* Mierne priesvitný biely/krémový podklad, aby čierne písmo bolo dokonale čitateľné na neónovom pozadí */
+            padding: 25px;
+            border-radius: 12px;
+            backdrop-filter: blur(8px);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+
+        /* 1. Hore názov malým písmom */
+        .brand-title {
+            font-size: 0.85rem;
+            font-weight: bold;
+            color: #000000;
+            letter-spacing: 1px;
             text-transform: uppercase;
+            margin-bottom: 15px;
+            border-bottom: 1px solid rgba(0,0,0,0.2);
+            padding-bottom: 5px;
         }
 
-        .logo-area p { margin: 2px 0 0 0; color: var(--text-dim); font-size: 0.75rem; }
-
-        .status-badge { 
-            display: flex; 
-            align-items: center; 
-            gap: 8px; 
-            background: rgba(0, 255, 102, 0.1); 
-            color: var(--neon-green); 
-            padding: 6px 14px; 
-            border-radius: 20px; 
-            font-weight: 700; 
-            font-size: 0.8rem; 
-            border: 1px solid rgba(0, 255, 102, 0.3);
-            box-shadow: 0 0 10px rgba(0, 255, 102, 0.15);
+        /* Sekcie pod sebou */
+        .section-block {
+            margin-bottom: 20px;
         }
 
-        .pulse-dot { 
-            width: 8px; 
-            height: 8px; 
-            background: var(--neon-green); 
-            border-radius: 50%; 
-            box-shadow: 0 0 8px var(--neon-green); 
-            animation: pulse 1.5s infinite alternate; 
+        .section-title {
+            font-size: 0.9rem;
+            font-weight: bold;
+            color: #000000;
+            margin-bottom: 6px;
         }
 
-        @keyframes pulse { 0% { opacity: 0.4; transform: scale(0.9); } 100% { opacity: 1; transform: scale(1.2); } }
+        table { width: 100%; border-collapse: collapse; margin-top: 5px; }
+        th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid rgba(0,0,0,0.15); font-size: 0.8rem; color: #000000; }
+        th { font-weight: 600; color: #333333; text-transform: uppercase; font-size: 0.7rem; }
 
-        .grid-top { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 15px; }
-
-        /* Kompaktnejšie a priehľadnejšie karty, aby bolo vidno pozadie mesta */
-        .card { 
-            background: rgba(10, 14, 28, 0.7); 
-            padding: 16px 20px; 
-            border-radius: 12px; 
-            border: 1px solid rgba(0, 240, 255, 0.15); 
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-            backdrop-filter: blur(6px);
-        }
-
-        h2 { 
-            margin-top: 0; 
-            color: var(--neon-blue); 
-            font-size: 0.95rem; 
-            border-bottom: 1px solid rgba(255, 255, 255, 0.08); 
-            padding-bottom: 8px; 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center;
-        }
-
-        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-        th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid rgba(255, 255, 255, 0.04); font-size: 0.85rem; }
-        th { color: var(--text-dim); text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.5px; }
-
-        .tag-green { color: var(--neon-green); font-weight: bold; text-shadow: 0 0 6px rgba(0, 255, 102, 0.3); }
-        
-        .badge-prob { 
-            background: rgba(255, 0, 127, 0.15); 
-            color: var(--neon-pink); 
-            padding: 3px 8px; 
-            border-radius: 6px; 
-            font-weight: 700; 
-            font-size: 0.75rem; 
-            border: 1px solid rgba(255, 0, 127, 0.3);
-        }
-
-        .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; margin-top: 10px; }
+        .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); gap: 6px; margin-top: 5px; }
         .calendar-day { 
-            background: rgba(4, 6, 12, 0.6); 
-            border: 1px solid rgba(0, 240, 255, 0.15); 
-            border-radius: 8px; 
-            padding: 8px; 
+            background: rgba(255, 255, 255, 0.5); 
+            border: 1px solid rgba(0,0,0,0.2); 
+            border-radius: 6px; 
+            padding: 6px; 
             text-align: center; 
+            font-size: 0.75rem;
+            color: #000000;
         }
 
-        .calendar-date { font-size: 0.7rem; color: var(--text-dim); margin-bottom: 4px; }
-        .calendar-pnl { font-size: 0.9rem; font-weight: bold; }
-        .pnl-plus { color: var(--neon-green); text-shadow: 0 0 6px rgba(0, 255, 102, 0.2); }
-        .pnl-minus { color: #ff3366; }
-        .calendar-trades { font-size: 0.65rem; color: var(--text-dim); margin-top: 2px; }
-
-        .refresh-info { text-align: center; color: var(--text-dim); font-size: 0.75rem; margin-top: 15px; }
+        .refresh-info { color: #222222; font-size: 0.7rem; margin-top: 15px; }
     </style>
     <meta http-equiv="refresh" content="10">
 </head>
 <body>
-    <!-- Živé plátno s kyberpunkovým mestom a blikajúcim neónom BAR -->
-    <canvas id="city-canvas"></canvas>
-
     <div class="container">
-        <!-- Hlavička -->
-        <div class="header">
-            <div class="logo-area">
-                <h1>⚡ APEX SCALPER PRO</h1>
-                <p>Cyberpunk OKX Terminal & Autonomous Top Gainer Scalper</p>
-            </div>
-            <div>
-                <div class="status-badge">
-                    <div class="pulse-dot"></div> TERMINÁL ONLINE
-                </div>
-            </div>
-        </div>
+        <!-- 1. Hore názov malým písmom -->
+        <div class="brand-title">APEX SCALPER PRO</div>
 
-        <!-- Zostatky & Obchody -->
-        <div class="grid-top">
-            <div class="card">
-                <h2>💰 Reálne Zostatky (OKX Demo)</h2>
-                <table>
-                    <tr><th>Mena</th><th>Dostupné</th></tr>
-                    {% for coin, data in balances.items() %}
-                    <tr>
-                        <td><strong>{{ coin }}</strong></td>
-                        <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            </div>
-
-            <div class="card">
-                <h2>📈 Aktívne Obchody</h2>
-                {% if trades %}
-                    <table>
-                        <tr><th>Pár</th><th>Vstup</th><th>Stop-Loss</th></tr>
-                        {% for t, details in trades.items() %}
-                        <tr>
-                            <td><strong style="color: var(--neon-blue);">{{ details.market_pair }}</strong></td>
-                            <td>{{ "%.4f" | format(details.entry_price) }}</td>
-                            <td>{{ "%.4f" | format(details.current_sl_price) }}</td>
-                        </tr>
-                        {% endfor %}
-                    </table>
-                {% else %}
-                    <p style="color: var(--text-dim); text-align: center; margin-top: 20px; font-size: 0.85rem;">Žiadny aktívny obchod. Čakám na signál...</p>
-                {% endif %}
-            </div>
-        </div>
-
-        <!-- Radar -->
-        <div class="card" style="margin-top: 20px;">
-            <h2>
-                <span>⚡ Živý Radar Trhu (Top Gainers 2% - 25% | Objem >50k)</span>
-                <span style="font-size: 0.75rem; color: var(--neon-pink);">AI Volatility Radar</span>
-            </h2>
-            {% if radar %}
-                <table>
-                    <tr><th>Symbol</th><th>Cena (USDC)</th><th>Rast za 24h</th><th>Objem (USDC)</th><th>Pravdepodobnosť výstrelu</th></tr>
-                    {% for item in radar %}
-                    <tr>
-                        <td><strong>{{ item.instId }}</strong></td>
-                        <td>{{ "%.4f" | format(item.price) }}</td>
-                        <td class="tag-green">+{{ "%.2f" | format(item.change) }}%</td>
-                        <td>{{ "{:,.0f}".format(item.volume) }}</td>
-                        <td><span class="badge-prob">{{ item.probability }}% Šanca</span></td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            {% else %}
-                <p style="color: var(--text-dim); text-align: center; margin-top: 15px; font-size: 0.85rem;">Skenujem trh, čakám na mince spĺňajúce kritériá...</p>
-            {% endif %}
-        </div>
-
-        <!-- Kalendár PnL -->
-        <div class="card" style="margin-top: 20px;">
-            <h2>📅 Kalendár Denných Výsledkov (PnL Tracker)</h2>
-            {% if calendar %}
-                <div class="calendar-grid">
-                    {% for day, data in calendar.items() %}
-                    <div class="calendar-day">
-                        <div class="calendar-date">{{ day }}</div>
-                        <div class="calendar-pnl {% if data.pnl >= 0 %}pnl-plus{% else %}pnl-minus{% endif %}">
-                            {{ "%+.2f" | format(data.pnl) }} $
-                        </div>
-                        <div class="calendar-trades">{{ data.trades }} obchodov</div>
-                    </div>
-                    {% endfor %}
-                </div>
-            {% else %}
-                <p style="color: var(--text-dim); text-align: center; margin-top: 10px; font-size: 0.85rem;">Zatiaľ žiadne uzavreté obchody v tomto období.</p>
-            {% endif %}
-        </div>
-
-        <div class="refresh-info">
-            Cyberpunk Terminal sa automaticky obnovuje každých 10 sekúnd. | Čas: {{ current_time }}
-        </div>
-    </div>
-
-    <script>
-        const canvas = document.getElementById('city-canvas');
-        const ctx = canvas.getContext('2d');
-        let width = canvas.width = window.innerWidth;
-        let height = canvas.height = window.innerHeight;
-
-        window.addEventListener('resize', () => {
-            width = canvas.width = window.innerWidth;
-            height = canvas.height = window.innerHeight;
-        });
-
-        // Generovanie budov v pozadí (mesto)
-        const buildings = [];
-        for(let i = 0; i < 22; i++) {
-            buildings.push({
-                x: i * (width / 20),
-                w: width / 22,
-                h: Math.random() * (height * 0.6) + (height * 0.2),
-                color: i % 2 === 0 ? '#070d1d' : '#040710'
-            });
-        }
-
-        // Svetelné lúče / lietajúce objekty
-        const lights = [];
-        for(let i = 0; i < 15; i++) {
-            lights.push({
-                x: Math.random() * width,
-                y: Math.random() * height,
-                speed: Math.random() * 2 + 1,
-                size: Math.random() * 2 + 1,
-                color: i % 3 === 0 ? '#00f0ff' : (i % 3 === 1 ? '#ff007f' : '#00ff66')
-            });
-        }
-
-        let barGlow = 0;
-
-        function drawCity() {
-            ctx.clearRect(0, 0, width, height);
-
-            // Vykreslenie siluety budov mesta
-            buildings.forEach(b => {
-                ctx.fillStyle = b.color;
-                ctx.fillRect(b.x, height - b.h, b.w, b.h);
-
-                // Okná na budovách (niektoré svietia)
-                ctx.fillStyle = 'rgba(0, 240, 255, 0.15)';
-                for(let wy = height - b.h + 20; wy < height - 20; wy += 30) {
-                    for(let wx = b.x + 10; wx < b.x + b.w - 10; wx += 20) {
-                        if((wx + wy) % 5 === 0) {
-                            ctx.fillRect(wx, wy, 8, 12);
-                        }
-                    }
-                }
-            });
-
-            // Blikajúci neónový nápis "BAR" v pozadí mesta
-            barGlow += 0.05;
-            let alphaBar = Math.abs(Math.sin(barGlow)) * 0.7 + 0.3;
-            ctx.save();
-            ctx.font = 'bold 36px monospace';
-            ctx.fillStyle = `rgba(255, 0, 127, ${alphaBar})`;
-            ctx.shadowColor = '#ff007f';
-            ctx.shadowBlur = 20;
-            ctx.fillText("B A R 24H", width * 0.75, height * 0.35);
-            ctx.restore();
-
-            // Pohybujúce sa svetlá / dážď / lúče v meste
-            lights.forEach(l => {
-                l.x -= l.speed;
-                if(l.x < 0) l.x = width;
-
-                ctx.beginPath();
-                ctx.arc(l.x, l.y, l.size, 0, Math.PI * 2);
-                ctx.fillStyle = l.color;
-                ctx.shadowBlur = 10;
-                ctx.shadowColor = l.color;
-                ctx.globalAlpha = 0.8;
-                ctx.fill();
-            });
-
-            requestAnimationFrame(drawCity);
-        }
-        drawCity();
-    </script>
-</body>
-</html>"""
-
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    account_balances = {"USDC": {"available_balance": 0.0}}
-    try:
-        balance_res = okx_request('GET', '/api/v5/account/balance')
-        if balance_res.get('code') == '0':
-            found = {}
-            for acc in balance_res.get('data', []):
-                for detail in acc.get('details', []):
-                    ccy = detail.get('ccy')
-                    avail = float(detail.get('availBal', 0))
-                    if avail > 0:
-                        found[ccy] = {"available_balance": avail}
-            if found:
-                account_balances = found
-    except Exception:
-        pass
-
-    template = Template(DASHBOARD_TEMPLATE)
-    rendered_html = template.render(
-        balances=account_balances,
-        trades=ACTIVE_TRADES,
-        radar=MARKET_RADAR,
-        calendar=DAILY_PNL_CALENDAR,
-        current_time=get_sk_time_str()
-    )
-    return rendered_html
-
-@app.get("/api/status")
-async def api_status():
-    return {
-        "status": "online",
-        "bot_type": "Apex Gainer Scalper Pro (Cyberpunk City Edition)",
-        "active_trades": ACTIVE_TRADES,
-        "market_radar": MARKET_RADAR,
-        "calendar": DAILY_PNL_CALENDAR,
-        "sk_time": get_sk_time_str()
-    }
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+        <!-- 2. Pod ním zoznam zostatkov -->
+        <div class="section-block">
+            <div class="section-
