@@ -325,7 +325,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 🖼️ PRESNÝ DIZAJN: TVOJ OBRÁZOK AKO POZADIE + ČIERNE PÍSMO NA ĽAVEJ STRANE (BEZ RÁMU) ---
+# --- 🖼️ SCI-FI MESTO Z BUDÚCNOSTI AKO POZADIE + ČIERNE PÍSMO NA ĽAVEJ STRANE ---
 DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -338,17 +338,17 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
             margin: 0; 
             padding: 25px;
-            /* Tvoj presný cyberpunkový wallpaper ako fixné pozadie na celú obrazovku */
-            background: url('https://images.unsplash.com/photo-1518709268805-4e9042af9f23?q=80&w=1920&auto=format&fit=crop') no-repeat center center fixed;
+            /* Dokonalé sci-fi cyberpunkové mesto z budúcnosti ako pozadie na celú obrazovku */
+            background: url('https://images.unsplash.com/photo-1578632767115-351597cf2477?q=80&w=1920&auto=format&fit=crop') no-repeat center center fixed;
             background-size: cover;
-            color: #000000; /* Všetko písmo je čisté čierne */
+            color: #000000;
             min-height: 100vh;
         }
 
         .container { 
-            max-width: 580px; /* Kompaktnejšie, aby bolo vidno celé mesto vpravo */
+            max-width: 580px; 
             margin: 0; 
-            background: transparent; /* Žiadny biely rám ani pozadie */
+            background: transparent; 
             padding: 0;
             box-shadow: none;
         }
@@ -381,7 +381,7 @@ DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 
         .calendar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(85px, 1fr)); gap: 6px; margin-top: 4px; }
         .calendar-day { 
-            background: rgba(255, 255, 255, 0.25); /* Veľmi jemný priehľadný podklad pre čitateľnosť v kalendári */
+            background: rgba(255, 255, 255, 0.25); 
             border: 1px solid rgba(0,0,0,0.3); 
             border-radius: 4px; 
             padding: 5px; 
