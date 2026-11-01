@@ -116,6 +116,24 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(5)
                 continue
 
+            # Najskôr skontrolujeme stav účtu a zostatok USDC skôr než budeme vyberať mince
+            balance_res = okx_request('GET', '/api/v5/account/balance')
+            if balance_res.get('code') != '0':
+                CURRENT_STAGE = "STAV: ⚠️ Chyba pri načítavaní zostatku z OKX."
+                await asyncio.sleep(10)
+                continue
+
+            free_capital = 0.0
+            for acc in balance_res.get('data', []):
+                for detail in acc.get('details', []):
+                    if detail.get('ccy') == 'USDC':
+                        free_capital = float(detail.get('availBal', 0))
+
+            if free_capital < 10.0:
+                CURRENT_STAGE = f"STAV: 🛑 NEDOSTATOK USDC ({free_capital:.2f}$). Doplň si demo USDC na OKX!"
+                await asyncio.sleep(10)
+                continue
+
             CURRENT_STAGE = f"STAV: 🟢 MIMO OBCHODU [{CURRENT_MODE}]. Skenujem trh..."
             tickers_res = okx_request('GET', '/api/v5/market/tickers?instType=SPOT')
             if tickers_res.get('code') != '0' or not tickers_res.get('data'):
@@ -180,25 +198,8 @@ async def top_gainer_scanner_loop():
                     continue
 
                 LAST_TRADE_TIME[coin_name] = now_ts
-                CURRENT_STAGE = f"STAV: Overujem zostatok pre {best_target['instId']}..."
+                CURRENT_STAGE = f"STAV: Kupujem {best_target['instId']}..."
                 
-                balance_res = okx_request('GET', '/api/v5/account/balance')
-                if balance_res.get('code') != '0':
-                    await asyncio.sleep(5)
-                    continue
-
-                free_capital = 0.0
-                for acc in balance_res.get('data', []):
-                    for detail in acc.get('details', []):
-                        if detail.get('ccy') == 'USDC':
-                            free_capital = float(detail.get('availBal', 0))
-
-                # Ochrana: Ak máte na demo účte menej ako 10 USDC, nákup neodošleme, aby burza nevracala chybu 51008
-                if free_capital < 10:
-                    CURRENT_STAGE = f"STAV: ⚠️ Nedostatok USDC na burze (Máš {free_capital:.2f}). Doplň si demo USDC!"
-                    await asyncio.sleep(15)
-                    continue
-
                 safe_budget = min(free_capital * 0.98, 1000.0)
                 current_price = best_target['price']
                 coin_amount = safe_budget / current_price
@@ -218,6 +219,7 @@ async def top_gainer_scanner_loop():
                 order_res = okx_request('POST', '/api/v5/trade/order', order_body)
                 if order_res.get('code') != '0':
                     print(f"❌ Nákup zlyhal na burze: {order_res}", flush=True)
+                    send_telegram_msg(f"❌ <b>Chyba nákupu na burze:</b> {order_res.get('msg', 'Neznáma chyba')}")
                     await asyncio.sleep(5)
                     continue
 
@@ -399,7 +401,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- API ENDPOINTS (BEZ POTREBY PYTHON-MULTIPART) ---
+# --- API ENDPOINTS ---
 @app.get("/api/set-mode/{mode}")
 async def set_mode(mode: str):
     global CURRENT_MODE
