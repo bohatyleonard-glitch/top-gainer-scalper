@@ -48,7 +48,7 @@ CURRENT_TIMEFRAME = "15m"
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 EXCLUDED_COINS = ["ZAMA"]
 
-# 🎛️ NASTAVITEĽNÉ PARAMETRE INDIKÁTORA v5.4.5 (ovládané aj cez Web)
+# 🎛️ NASTAVITEĽNÉ PARAMETRE INDIKÁTORA v5.4.5
 SETTINGS = {
     "fast_len": 5,
     "slow_len": 20,
@@ -61,7 +61,10 @@ SETTINGS = {
     "be_trigger_pct": 1.2,
     "use_trailing_tp": True,
     "ttp_trigger_pct": 1.2,
-    "ttp_callback_pct": 0.4
+    "ttp_callback_pct": 0.4,
+    "min_vol": 10000.0,
+    "min_change": -50.0, # Uvoľnené, aby ukazovalo aj mince v miernej korekcii
+    "max_change": 100.0
 }
 
 def get_sk_time_str() -> str:
@@ -127,7 +130,7 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
       "impulse_status": False,
       "fib_status": False,
       "buy_ready": False,
-      "probability": 0,
+      "probability": 35,
   }
   try:
     url = f"/api/v5/market/candles?instId={inst_id}&bar={CURRENT_TIMEFRAME}&limit=40"
@@ -167,7 +170,7 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     osc_history = [fast_ma - slow_ma for _ in range(signal_len)]
     signal_line = calc_ema(osc_history, signal_len)
 
-    volume_bullish = oscillator_val > 0 and oscillator_val > signal_line
+    volume_bullish = oscillator_val > 0
     result["volume_status"] = volume_bullish
 
     recent_high = max(highs[-25:])
@@ -175,21 +178,21 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     range_size = recent_high - recent_low
     
     fib_val = float(SETTINGS["fib_choice"])
-    fib_target = recent_high - (range_size * fib_val)
+    fib_target = recent_high - (range_size * fib_val) if range_size > 0 else recent_low
     fib_touch = lows[-1] <= fib_target
     result["fib_status"] = fib_touch
 
     if CURRENT_STRATEGY_MODE == "Agresívny Momentum (Breakout)":
-      price_breakout = closes[-1] > closes[-3] or (oscillator_val > oscillator_val - 1)
+      price_breakout = closes[-1] > closes[-3]
       buy_trigger = volume_bullish and price_breakout
       result["impulse_status"] = price_breakout
       result["buy_ready"] = buy_trigger
-      result["probability"] = 85 if buy_trigger else (55 if volume_bullish else 30)
+      result["probability"] = 85 if buy_trigger else (55 if volume_bullish else 35)
     else:
       fib_buy = volume_bullish and fib_touch
       result["impulse_status"] = fib_touch
       result["buy_ready"] = fib_buy
-      result["probability"] = 90 if fib_buy else (50 if volume_bullish else 20)
+      result["probability"] = 90 if fib_buy else (50 if volume_bullish else 30)
 
   except Exception as e:
     print(f"❌ Chyba checklistu pre {inst_id}: {e}", flush=True)
@@ -201,7 +204,7 @@ async def top_gainer_scanner_loop():
   await asyncio.sleep(2)
 
   print(f"[{get_sk_time_str()}] ⚡ APEX SCALPER v5.4.5 SPUSTENÝ [Top 20 USDC | TF: {CURRENT_TIMEFRAME}]", flush=True)
-  send_telegram_msg(f"🚀 <b>[APEX SCALPER v5.4.5]</b> Bot spustený podľa indikátora.")
+  send_telegram_msg(f"🚀 <b>[APEX SCALPER v5.4.5]</b> Skener spustil monitorovanie trhu.")
 
   while True:
     try:
@@ -230,7 +233,6 @@ async def top_gainer_scanner_loop():
         continue
 
       candidates = []
-      count = 0
       for item in tickers_res["data"]:
         inst_id = item.get("instId", "").upper()
         if not inst_id.endswith("-USDC") or inst_id in ["USDC-USDC", "USDT-USDC", "BTC-USDC", "ETH-USDC"]:
@@ -243,9 +245,9 @@ async def top_gainer_scanner_loop():
           last_p = safe_float(item.get("last", 0))
           vol24h = safe_float(item.get("volCcy24h", 0) or item.get("vol24h", 0) or 0)
 
-          if open24h > 0 and last_p > 0 and vol24h >= 10000.0:
+          if open24h > 0 and last_p > 0 and vol24h >= float(SETTINGS["min_vol"]):
             change_pct = ((last_p - open24h) / open24h) * 100
-            if 0.1 <= change_pct <= 100.0:
+            if float(SETTINGS["min_change"]) <= change_pct <= float(SETTINGS["max_change"]):
               chk = evaluate_strategy_checklist(inst_id)
 
               candidates.append({
@@ -253,15 +255,13 @@ async def top_gainer_scanner_loop():
                   "volume_status": chk["volume_status"], "impulse_status": chk["impulse_status"],
                   "fib_status": chk["fib_status"], "buy_ready": chk["buy_ready"], "probability": chk["probability"],
               })
-              count += 1
-              if count >= 15:
-                break
         except Exception:
           continue
 
-      candidates.sort(key=lambda x: (x["buy_ready"], x["probability"], x["change"]), reverse=True)
+      # Zoradíme kandidátov tak, aby najprv išli tie s buy_ready, potom podľa pravdepodobnosti a objemu
+      candidates.sort(key=lambda x: (x["buy_ready"], x["probability"], x["volume"]), reverse=True)
       if candidates:
-        MARKET_RADAR = candidates[:20]
+        MARKET_RADAR = candidates[:20]  # Vždy ukáže Top 20 vyhovujúcich mincí
 
       for cand in candidates:
         if not cand["buy_ready"]:
@@ -371,7 +371,6 @@ async def advanced_risk_monitor_loop():
           trail_dist = float(SETTINGS["trail_pct"]) / 100.0
           be_trigger = float(SETTINGS["be_trigger_pct"])
           ttp_trigger = float(SETTINGS["ttp_trigger_pct"])
-          ttp_callback = float(SETTINGS["ttp_callback_pct"]) / 100.0
 
           if current_price > trade["highest_price"]:
             trade["highest_price"] = current_price
@@ -483,7 +482,6 @@ async def update_settings(request: Request):
 
 @app.get("/api/live-candles/{symbol}")
 async def get_live_candles(symbol: str):
-  """API endpoint pre stiahnutie sviečok a výpočet žltej Fib 0.786 čiary pre graf"""
   try:
     url = f"/api/v5/market/candles?instId={symbol}&bar={CURRENT_TIMEFRAME}&limit=60"
     res = okx_request("GET", url)
@@ -491,13 +489,13 @@ async def get_live_candles(symbol: str):
       return JSONResponse({"status": "error", "candles": [], "fib0786": None})
 
     raw = res["data"]
-    raw.reverse() # Od najstaršej po najnovšiu
+    raw.reverse()
 
     candles = []
     highs = []
     lows = []
     for c in raw:
-      ts = int(c[0]) // 1000 # Čas v sekundách pre Lightweight Charts
+      ts = int(c[0]) // 1000
       o = safe_float(c[1])
       h = safe_float(c[2])
       l = safe_float(c[3])
@@ -506,7 +504,6 @@ async def get_live_candles(symbol: str):
       highs.append(h)
       lows.append(l)
 
-    # Výpočet Fibonacciho hladiny 0.786 z posledných 25 sviečok (presne podľa Pinescriptu)
     recent_high = max(highs[-25:]) if len(highs) >= 25 else max(highs)
     recent_low = min(lows[-25:]) if len(lows) >= 25 else min(lows)
     fib_0786 = recent_high - ((recent_high - recent_low) * 0.786)
@@ -548,8 +545,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.4.5 - CyberHUD s Grafom</title>
-    <!-- TradingView Lightweight Charts knižnica pre živý sviečkový graf -->
+    <title>Apex Scalper v5.4.5 - CyberHUD</title>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -590,10 +586,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .setting-item label { color: #00f0ff; margin-bottom: 3px; font-weight: bold; }
         .setting-item input, .setting-item select { background: rgba(255,255,255,0.1); border: 1px solid rgba(0,255,255,0.3); color: #fff; padding: 5px; border-radius: 5px; font-size: 0.75rem; }
         .save-settings-btn { margin-top: 10px; background: #00f0ff; color: #000; border: none; padding: 7px 15px; font-weight: bold; border-radius: 6px; cursor: pointer; text-transform: uppercase; font-size: 0.72rem; }
-        
-        /* Štýl pre živý sviečkový graf */
         #tvChartContainer { width: 100%; height: 320px; background: rgba(0,0,0,0.6); border: 1px solid rgba(0,255,255,0.3); border-radius: 10px; margin-top: 10px; position: relative; }
-
         table { width: 100%; border-collapse: collapse; margin-top: 4px; }
         th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid rgba(0, 255, 255, 0.20); font-size: 0.75rem; color: #ffffff; }
         th { font-weight: 700; color: #00f0ff; text-transform: uppercase; font-size: 0.68rem; }
@@ -639,7 +632,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <div class="stat-value">{{ total_trades }}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Úspešnosť (Win Rate)</div>
+                <div class="stat-label">Úspešność (Win Rate)</div>
                 <div class="stat-value" style="color: #00ff88;">{{ win_rate }}%</div>
             </div>
             <div class="stat-card">
@@ -652,9 +645,17 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         <!-- 🎛️ PANEL NASTAVENÍ -->
         <div class="section-block">
-            <div class="section-title">⚙️ Nastavenia stratégie v5.4.5</div>
+            <div class="section-title">⚙️ Nastavenia stratégie v5.4.5 & Filtre</div>
             <form id="settingsForm" onsubmit="saveSettings(event)">
                 <div class="settings-grid">
+                    <div class="setting-item">
+                        <label>Min. Objem (USDC)</label>
+                        <input type="number" name="min_vol" value="{{ settings.min_vol }}">
+                    </div>
+                    <div class="setting-item">
+                        <label>Min. Zmena 24h (%)</label>
+                        <input type="number" step="0.1" name="min_change" value="{{ settings.min_change }}">
+                    </div>
                     <div class="setting-item">
                         <label>Rýchla dĺžka (Volume)</label>
                         <input type="number" name="fast_len" value="{{ settings.fast_len }}">
@@ -676,20 +677,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </select>
                     </div>
                     <div class="setting-item">
-                        <label>Trailing Stop vzdialenosť (%)</label>
+                        <label>Trailing Stop (%)</label>
                         <input type="number" step="0.1" name="trail_pct" value="{{ settings.trail_pct }}">
                     </div>
                     <div class="setting-item">
-                        <label>Break-Even aktivačný zisk (%)</label>
+                        <label>Break-Even akt. (%)</label>
                         <input type="number" step="0.1" name="be_trigger_pct" value="{{ settings.be_trigger_pct }}">
-                    </div>
-                    <div class="setting-item">
-                        <label>Trailing TP aktivačný zisk (%)</label>
-                        <input type="number" step="0.1" name="ttp_trigger_pct" value="{{ settings.ttp_trigger_pct }}">
-                    </div>
-                    <div class="setting-item">
-                        <label>Trailing TP Callback (%)</label>
-                        <input type="number" step="0.1" name="ttp_callback_pct" value="{{ settings.ttp_callback_pct }}">
                     </div>
                 </div>
                 <button type="submit" class="save-settings-btn">💾 Uložiť nastavenia</button>
@@ -715,7 +708,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <div id="tvChartContainer"></div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
-                    ✅ Žiadny aktívny obchod. Skenujem Top 20 USDC trh na <strong>{{ current_tf }}</strong> TF... (Graf sa zobratí automaticky pri otvorení obchodu).
+                    ✅ Žiadny aktívny obchod. Skenujem Top 20 USDC trh na <strong>{{ current_tf }}</strong> TF...
                 </div>
             {% endif %}
         </div>
@@ -806,7 +799,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             window.location.reload();
         }
 
-        // Inicializácia živého sviečkového grafu a žltej Fib 0.786 čiary
         async function initLiveChart() {
             const row = document.getElementById('activeTradeRow');
             const container = document.getElementById('tvChartContainer');
@@ -820,7 +812,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 const data = await res.json();
                 if (data.status !== 'success' || !data.candles || data.candles.length === 0) return;
 
-                // Vytvorenie grafu pomocou Lightweight Charts
                 const chart = LightweightCharts.createChart(container, {
                     width: container.clientWidth,
                     height: 320,
@@ -849,21 +840,19 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
                 candlestickSeries.setData(data.candles);
 
-                // Vykreslenie žltej Fibonacci 0.786 čiary ako Price Line
                 if (data.fib0786) {
                     candlestickSeries.createPriceLine({
                         price: data.fib0786,
-                        color: '#ffcc00', // Žltá farba
+                        color: '#ffcc00',
                         lineWidth: 2,
                         lineStyle: LightweightCharts.LineStyle.Solid,
                         axisLabelVisible: true,
-                        title: 'Fib 0.786 (Stop Loss / Zona)',
+                        title: 'Fib 0.786',
                     });
                 }
 
                 chart.timeScale().fitContent();
 
-                // Prispôsobenie veľkosti pri zmene okna
                 window.addEventListener('resize', () => {
                     chart.applyOptions({ width: container.clientWidth });
                 });
