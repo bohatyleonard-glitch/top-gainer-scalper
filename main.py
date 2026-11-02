@@ -3,25 +3,30 @@ import time
 from datetime import datetime
 import requests
 import threading
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
 import uvicorn
 from jinja2 import Template
 
 app = FastAPI()
 
-# --- NASTAVENIA OKX API ---
-API_KEY = os.getenv("OKX_API_KEY", "")
-API_SECRET_KEY = os.getenv("OKX_SECRET_KEY", "")
-API_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "")
-USE_DEMO = os.getenv("OKX_USE_DEMO", "true").lower() == "true"
+# --- NASTAVENIA BOTA ---
+SETTINGS = {
+    "bot_enabled": True,
+    "webhook_secret": "moje_tajne_heslo_123",
+    "max_parallel_trades": 1,
+    "trail_pct": 1.5,
+    "be_trigger_pct": 1.2,
+    "ttp_trigger_pct": 1.2,
+    "ttp_callback_pct": 0.4
+}
 
 # Globálny stav bota pre Dashboard
 bot_state = {
     "status": "online",
-    "bot_type": "Full-Auto Top Gainer Scalper (FastAPI Dashboard)",
-    "last_scan": "Zatiaľ neskenované",
-    "account_balances": {},
+    "bot_type": "Webhook Scalper Dashboard (FastAPI)",
+    "last_scan": "Aktívne (Webhook režim)",
+    "account_balances": {"USDC": {"available_balance": "227.20"}},
     "active_trades": {},
     "logs": []
 }
@@ -34,6 +39,20 @@ def log_message(msg):
     if len(bot_state["logs"]) > 50:
         bot_state["logs"].pop()
 
+# --- TELEGRAM NOTIFIKÁCIE ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+def send_telegram(message):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        log_message(f"Chyba pri odosielaní Telegram správy: {e}")
+
 # --- HTML DASHBOARD ŠABLÓNA ---
 DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
@@ -41,7 +60,7 @@ DASHBOARD_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Top Gainer Scalper Dashboard</title>
+    <title>Top Gainer Scalper - CyberHUD</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
         .container { max-width: 1000px; margin: 0 auto; }
@@ -55,6 +74,8 @@ DASHBOARD_TEMPLATE = """
         th { color: #94a3b8; }
         .logs-box { background: #090d16; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 0.85em; height: 200px; overflow-y: auto; color: #34d399; margin-top: 20px; }
         .refresh-info { text-align: center; color: #64748b; font-size: 0.8em; margin-top: 15px; }
+        button.danger { background: #da3633; color: white; border: none; padding: 10px 15px; cursor: pointer; font-weight: bold; border-radius: 4px; margin-top: 10px; }
+        button.danger:hover { opacity: 0.9; }
     </style>
     <meta http-equiv="refresh" content="10">
 </head>
@@ -62,8 +83,8 @@ DASHBOARD_TEMPLATE = """
     <div class="container">
         <div class="header">
             <div>
-                <h1>🤖 Top Gainer Scalper</h1>
-                <p style="margin: 0; color: #94a3b8;">Autonómny bot na OKX Demo (FastAPI)</p>
+                <h1>🤖 Top Gainer Scalper [CyberHUD]</h1>
+                <p style="margin: 0; color: #94a3b8;">Webhook Režim (FastAPI)</p>
             </div>
             <div>
                 <span class="status-badge">ONLINE</span>
@@ -76,12 +97,10 @@ DASHBOARD_TEMPLATE = """
                 <table>
                     <tr><th>Mena</th><th>Dostupné</th></tr>
                     {% for coin, data in balances.items() %}
-                    {% if data.available_balance | float > 0 %}
                     <tr>
                         <td><strong>{{ coin }}</strong></td>
-                        <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
+                        <td>{{ data.available_balance }}</td>
                     </tr>
-                    {% endif %}
                     {% endfor %}
                 </table>
             </div>
@@ -90,19 +109,26 @@ DASHBOARD_TEMPLATE = """
                 <h2>📈 Aktívne Obchody</h2>
                 {% if trades %}
                     <table>
-                        <tr><th>Pár</th><th>Vstup</th><th>Zisk/Strata</th></tr>
+                        <tr><th>Pár</th><th>Vstup</th><th>Status</th></tr>
                         {% for t, details in trades.items() %}
                         <tr>
                             <td>{{ t }}</td>
                             <td>{{ details.entry_price }}</td>
-                            <td>{{ details.pnl }}</td>
+                            <td>Aktívna pozícia</td>
                         </tr>
                         {% endfor %}
                     </table>
                 {% else %}
-                    <p style="color: #94a3b8; text-align: center; margin-top: 30px;">Žiadny aktívny obchod. Čakám na signál...</p>
+                    <p style="color: #94a3b8; text-align: center; margin-top: 30px;">Žiadny aktívny obchod. Čakám na webhook...</p>
                 {% endif %}
             </div>
+        </div>
+
+        <div class="card" style="margin-top: 20px;">
+            <h2>🚨 Núdzové Ovládanie</h2>
+            <form action="/kill" method="POST">
+                <button type="submit" class="danger">KILL SWITCH (Zavrieť všetko)</button>
+            </form>
         </div>
 
         <div class="card" style="margin-top: 20px;">
@@ -125,46 +151,78 @@ DASHBOARD_TEMPLATE = """
 # --- WEBOVÉ CESTY (ROUTES) ---
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
-    balances = bot_state["account_balances"]
-    if not balances:
-        balances = {"USDC": {"available_balance": "227.20"}}
-    
     template = Template(DASHBOARD_TEMPLATE)
-    rendered_html = template.render(
-        balances=balances,
+    return template.render(
+        balances=bot_state["account_balances"],
         trades=bot_state["active_trades"],
         logs=bot_state["logs"],
         current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     )
-    return rendered_html
+
+@app.post("/api/webhook")
+async def webhook(request: Request):
+    try:
+        data = await request.json()
+        if not data:
+            return JSONResponse({"status": "error", "message": "Invalid JSON"}, status_code=400)
+
+        if not SETTINGS["bot_enabled"]:
+            return {"status": "ignored", "message": "Bot is disabled"}
+
+        # Overenie tajného hesla
+        secret = data.get("secret")
+        if secret != SETTINGS["webhook_secret"]:
+            log_message("Neautorizovaný pokus o webhook (nesprávne heslo).")
+            return JSONResponse({"status": "error", "message": "Unauthorized"}, status_code=401)
+
+        action = data.get("action")
+        ticker = data.get("ticker", "SOL-USDC")
+
+        if action == "buy":
+            # Ochrana proti triešteniu (max parallel trades)
+            if len(bot_state["active_trades"]) >= SETTINGS["max_parallel_trades"]:
+                return {"status": "ignored", "message": "Max parallel trades reached"}
+
+            if ticker in bot_state["active_trades"]:
+                return {"status": "ignored", "message": "Position already open"}
+
+            entry_price = 100.0
+            bot_state["active_trades"][ticker] = {
+                "entry_price": entry_price,
+                "time": time.time()
+            }
+            log_message(f"Nákup úspešný cez webhook: {ticker}")
+            send_telegram(f"🚀 *WEBHOOK NÁKUP*\nTicker: `{ticker}`")
+            return {"status": "success", "action": "buy", "ticker": ticker}
+
+        elif action == "sell":
+            if ticker in bot_state["active_trades"]:
+                del bot_state["active_trades"][ticker]
+                log_message(f"Predaj úspešný cez webhook: {ticker}")
+                send_telegram(f"🔴 *WEBHOOK PREDAJ*\nTicker: `{ticker}`")
+                return {"status": "success", "action": "sell", "ticker": ticker}
+            return {"status": "ignored", "message": "No active position"}
+
+        return JSONResponse({"status": "error", "message": "Unknown action"}, status_code=400)
+    except Exception as e:
+        log_message(f"Chyba vo webhook spracovaní: {e}")
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+@app.post("/kill", response_class=HTMLResponse)
+def kill_switch():
+    bot_state["active_trades"].clear()
+    log_message("🚨 KILL SWITCH AKTIVOVANÝ!")
+    send_telegram("🚨 *KILL SWITCH AKTIVOVANÝ* - Všetky pozície boli zatvorené.")
+    return "<h3>Kill switch úspešný. Všetky pozície boli zatvorené.</h3><a href='/'>Späť na Dashboard</a>"
 
 @app.get("/api/status")
 def api_status():
     return {
         "status": bot_state["status"],
-        "bot_type": bot_state["bot_type"],
-        "account_balances": bot_state["account_balances"],
         "active_trades": bot_state["active_trades"],
-        "sk_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
 
-# --- HLAVNÁ SKENOVACIA SLUČKA (BACKGROUND WORKER) ---
-def background_scanner():
-    log_message("Background skener úspešne naštartovaný.")
-    while True:
-        try:
-            bot_state["last_scan"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            # Tu prebehne skenovanie trhu
-        except Exception as e:
-            log_message(f"Chyba v skeneri: {str(e)}")
-        time.sleep(15)
-
 if __name__ == "__main__":
-    t = threading.Thread(target=background_scanner, daemon=True)
-    t.start()
-    
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-    
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
