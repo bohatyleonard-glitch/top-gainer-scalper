@@ -48,7 +48,7 @@ CURRENT_TIMEFRAME = "15m"
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 EXCLUDED_COINS = ["ZAMA"]
 
-# 🎛️ NASTAVITEĽNÉ PARAMETRE INDIKÁTORA v5.4.5
+# 🎛️ NASTAVITEĽNÉ PARAMETRE INDIKÁTORA v5.4.5 (Vrátane Trailing TP)
 SETTINGS = {
     "fast_len": 5,
     "slow_len": 20,
@@ -125,7 +125,6 @@ def okx_request(method: str, path: str, body: str = ""):
         return {"code": "-1", "msg": str(err)}
 
 def evaluate_strategy_checklist(inst_id: str) -> dict:
-    """Prepočet kompletnej checklist logiky presne podľa Pine Script v5.4.5"""
     result = {
         "volume_status": False,
         "impulse_status": False,
@@ -339,6 +338,7 @@ async def top_gainer_scanner_loop():
                         "current_sl_price": sl_price,
                         "break_even_activated": False,
                         "trailing_tp_active": False,
+                        "trailing_tp_stop_level": 0.0,
                         "amount": coin_amount,
                         "bought_at": get_sk_time_str(),
                         "invested_usdc": safe_budget,
@@ -402,39 +402,46 @@ async def advanced_risk_monitor_loop():
                     trail_dist = float(SETTINGS["trail_pct"]) / 100.0
                     be_trigger = float(SETTINGS["be_trigger_pct"])
                     ttp_trigger = float(SETTINGS["ttp_trigger_pct"])
+                    ttp_callback = float(SETTINGS["ttp_callback_pct"]) / 100.0
 
+                    # 1. Sledovanie najvyššej ceny od nákupu
                     if current_price > trade["highest_price"]:
                         trade["highest_price"] = current_price
+                        # Trailing Stop posun nahor
                         if SETTINGS["use_trailing"] and pnl_pct >= ttp_trigger:
                             new_trailing_sl = trade["highest_price"] * (1 - trail_dist)
                             if new_trailing_sl > trade["current_sl_price"]:
                                 trade["current_sl_price"] = new_trailing_sl
 
+                    # 2. Break-Even aktivácia
                     if SETTINGS["use_breakeven"] and not trade["break_even_activated"] and pnl_pct >= be_trigger:
                         trade["break_even_activated"] = True
                         if trade["entry_price"] > trade["current_sl_price"]:
                             trade["current_sl_price"] = trade["entry_price"]
 
+                    # 3. 🎯 TRAILING TAKE PROFIT (TTP) LOGIKA
                     if SETTINGS["use_trailing_tp"] and not trade["trailing_tp_active"] and pnl_pct >= ttp_trigger:
                         trade["trailing_tp_active"] = True
 
                     if trade["trailing_tp_active"]:
-                        drop_from_peak = ((trade["highest_price"] - current_price) / trade["highest_price"]) * 100
-                        if drop_from_peak >= float(SETTINGS["ttp_callback_pct"]):
+                        trade["trailing_tp_stop_level"] = trade["highest_price"] * (1 - ttp_callback)
+                        # Ak cena klesne pod trailing TP stop hladinu, uzamkneme zisk a predávame
+                        if current_price <= trade["trailing_tp_stop_level"]:
                             try:
                                 okx_request("POST", "/api/v5/trade/order", json.dumps({
                                     "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                                 }))
                                 record_closed_trade(symbol, pnl_pct, pnl_usdc, "Trailing TP v5.4.5")
-                                send_telegram_msg(f"🎯 <b>[TP EXIT v5.4.5]</b>\n<b>Pár:</b> {symbol}\n<b>Zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:.2f}$)")
+                                send_telegram_msg(f"🎯 <b>[TP EXIT v5.4.5 (Trailing TP)]</b>\n<b>Pár:</b> {symbol}\n<b>Zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:.2f}$)")
                             except Exception as err:
-                                print(f"❌ Chyba TP: {err}", flush=True)
+                                print(f"❌ Chyba Trailing TP: {err}", flush=True)
 
                             if coin in ACTIVE_TRADES:
                                 del ACTIVE_TRADES[coin]
-                            CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Zisk úspešne uzamknutý!"
+                            CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Trailing TP úspešne uzamkol zisk!"
                             continue
 
+                    # 4. Overenie červenej kontrolky po zatvorení sviečky
                     candles_res = okx_request("GET", f"/api/v5/market/candles?instId={symbol}&bar={CURRENT_TIMEFRAME}&limit=10")
                     sell_signal_triggered = False
                     if candles_res.get("code") == "0" and candles_res.get("data"):
@@ -444,6 +451,7 @@ async def advanced_risk_monitor_loop():
                         if closes_c[-1] < closes_c[-2] and pnl_pct < -0.3:
                             sell_signal_triggered = True
 
+                    # 5. Klasický Stop-Loss alebo signál predaja
                     if current_price <= trade["current_sl_price"] or sell_signal_triggered:
                         exit_reason = "Stop-Loss / Exit" if current_price <= trade["current_sl_price"] else "Signál predaja (Červená kontrolka)"
                         try:
@@ -623,7 +631,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .section-block { margin-bottom: 22px; }
         .section-title { font-size: 0.85rem; font-weight: 700; color: #00f0ff; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
         
-        /* 📋 ŠTÝL PRE CHECKLIST TABUĽKU (PODĽA TRADINGVIEW) */
         .checklist-table { width: 100%; border-collapse: collapse; background: rgba(19, 23, 34, 0.9); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 10px; overflow: hidden; margin-bottom: 15px; }
         .checklist-table th { background: #1e222d; color: #00f0ff; padding: 8px 12px; font-size: 0.75rem; text-transform: uppercase; border-bottom: 1px solid rgba(0, 255, 255, 0.2); }
         .checklist-table td { padding: 8px 12px; font-size: 0.75rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
@@ -690,7 +697,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         
         <div class="status-banner">{{ current_stage }}</div>
 
-        <!-- 📋 LIVE CHECKLIST PANEL (PRESNE PODĽA TRADINGVIEW) -->
+        <!-- 📋 LIVE CHECKLIST PANEL -->
         <div class="section-block">
             <div class="section-title">📊 Riadiaci Panel (Checklist v5.4.5)</div>
             <table class="checklist-table">
@@ -726,11 +733,11 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </td>
                     </tr>
                     <tr>
-                        <td>5. Trailing Take Profit</td>
+                        <td>5. Trailing Take Profit (TTP)</td>
                         <td style="text-align: right;">
                             {% if trades %}
                                 {% set active_t = trades.values() | list | first %}
-                                <strong style="color: {{ '#ffcc00' if active_t.trailing_tp_active else '#00ff88' }};">{{ '🟡 TRAIL AKTÍVNY' if active_t.trailing_tp_active else '🟢 V TRHU (ČAKÁ)' }}</strong>
+                                <strong style="color: {{ '#ffcc00' if active_t.trailing_tp_active else '#00ff88' }};">{{ '🟡 TRAIL TP AKTÍVNY' if active_t.trailing_tp_active else '🟢 V TRHU (ČAKÁ)' }}</strong>
                             {% else %}
                                 <strong style="color: #888888;">💤 VYPNUTÝ</strong>
                             {% endif %}
@@ -792,6 +799,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <div class="setting-item">
                         <label>Break-Even akt. (%)</label>
                         <input type="number" step="0.1" name="be_trigger_pct" value="{{ settings.be_trigger_pct }}">
+                    </div>
+                    <div class="setting-item">
+                        <label>Trailing TP akt. (%)</label>
+                        <input type="number" step="0.1" name="ttp_trigger_pct" value="{{ settings.ttp_trigger_pct }}">
+                    </div>
+                    <div class="setting-item">
+                        <label>Trailing TP Callback (%)</label>
+                        <input type="number" step="0.1" name="ttp_callback_pct" value="{{ settings.ttp_callback_pct }}">
                     </div>
                 </div>
                 <button type="submit" class="save-settings-btn">💾 Uložiť nastavenia</button>
