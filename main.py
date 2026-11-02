@@ -153,7 +153,6 @@ def check_btc_health() -> bool:
             data = res["data"]
             data.reverse()
             closes = [safe_float(c[4]) for c in data]
-            # Vráti True, ak aktuálna cena BTC neklesá pod priemer posledných sviečok
             avg_btc = sum(closes) / len(closes)
             return closes[-1] >= avg_btc
     except Exception:
@@ -177,7 +176,6 @@ def calculate_volatility_position_size(free_capital: float, current_price: float
             avg_range = sum(ranges) / len(ranges)
             volatility_pct = (avg_range / current_price) * 100.0
             
-            # Vyššia volatilita = o niečo opatrnejší rozpočet
             if volatility_pct > 3.0:
                 return base_budget * 0.75
             elif volatility_pct < 1.0:
@@ -304,7 +302,6 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(3)
                 continue
 
-            # 🕒 Filter 3: Víkendový filter
             if SETTINGS["use_weekend_filter"] and datetime.now(timezone.utc).weekday() in [5, 6]:
                 CURRENT_STAGE = "STAV: ⏸️ VÍKENDOVÝ FILTER AKTÍVNY (Čakám na pondelok)"
                 await asyncio.sleep(10)
@@ -315,7 +312,6 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(4)
                 continue
 
-            # 🛡️ Overenie BTC Guard
             btc_ok = check_btc_health()
             if not btc_ok:
                 CURRENT_STAGE = "STAV: 🛡️ BTC TREND GUARD AKTÍVNY (BTC klesá, pozastavujem nákupy)"
@@ -376,7 +372,6 @@ async def top_gainer_scanner_loop():
                 coin_name = cand["instId"].split("-")[0]
                 now_ts = datetime.now().timestamp()
                 
-                # 🤖 Re-entry Wave Catcher logika (Skrátený kooldown ak ide o silnú vlnu)
                 cooldown_val = int(SETTINGS["reentry_cooldown_sec"])
                 if coin_name in LAST_TRADE_TIME and now_ts - LAST_TRADE_TIME[coin_name] < cooldown_val:
                     continue
@@ -671,56 +666,72 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <style>
         * { box-sizing: border-box; }
         body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
             margin: 0; padding: 25px;
-            background: linear-gradient(rgba(0,0,0,0.4), rgba(0,0,0,0.4)), url('https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=1920&auto=format&fit=crop');
-            background-size: cover; background-position: center; background-attachment: fixed;
-            color: #ffffff; min-height: 100vh;
+            background: radial-gradient(circle at 50% 20%, #111827 0%, #030712 100%);
+            color: #f3f4f6; min-height: 100vh;
         }
         .container { 
-            max-width: 900px; margin: 0; background: rgba(0, 0, 0, 0.84);
-            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 18px; padding: 22px;
-            box-shadow: 0 0 35px rgba(0, 255, 255, 0.25);
+            max-width: 920px; margin: 0 auto; 
+            background: rgba(17, 24, 39, 0.82);
+            backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(0, 240, 255, 0.2); 
+            border-radius: 20px; padding: 24px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
         }
-        .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
-        .brand-title { font-size: 1rem; font-weight: 800; color: #00f0ff; letter-spacing: 2px; text-transform: uppercase; }
-        .controls-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,255,255,0.08); border: 1px solid rgba(0,255,255,0.2); padding: 10px 14px; border-radius: 10px; margin-bottom: 15px; flex-wrap: wrap; gap: 8px; }
-        .mode-buttons a { text-decoration: none; background: rgba(0,0,0,0.5); border: 1px solid #00f0ff; color: #fff; padding: 5px 9px; font-size: 0.68rem; font-weight: bold; border-radius: 6px; display: inline-block; transition: all 0.2s; }
-        .mode-buttons a.active { background: #00f0ff; color: #000; box-shadow: 0 0 10px #00f0ff; }
-        .tf-buttons { display: flex; gap: 4px; flex-wrap: wrap; }
-        .tf-buttons a { text-decoration: none; background: rgba(0,0,0,0.5); border: 1px solid #ff00ff; color: #fff; padding: 5px 8px; font-size: 0.68rem; font-weight: bold; border-radius: 6px; display: inline-block; transition: all 0.2s; }
-        .tf-buttons a.active { background: #ff00ff; color: #000; box-shadow: 0 0 10px #ff00ff; }
-        .bot-state-btn { padding: 5px 10px; border-radius: 6px; font-weight: 800; font-size: 0.68rem; cursor: pointer; text-transform: uppercase; border: 1px solid; }
-        .btn-start { background: rgba(0, 255, 136, 0.2); color: #00ff88; border-color: #00ff88; }
-        .btn-stop { background: rgba(255, 68, 68, 0.2); color: #ff4444; border-color: #ff4444; }
-        .kill-switch-btn { background: linear-gradient(135deg, #ff0055, #990033); color: #fff; border: 1px solid #ff0055; padding: 5px 10px; border-radius: 6px; font-weight: 800; font-size: 0.68rem; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; }
-        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }
-        .stat-card { background: rgba(0,0,0,0.6); border: 1px solid rgba(0,255,255,0.25); border-radius: 10px; padding: 10px; text-align: center; }
-        .stat-label { font-size: 0.65rem; color: #00f0ff; text-transform: uppercase; font-weight: bold; }
-        .stat-value { font-size: 1.0rem; font-weight: bold; margin-top: 4px; }
-        .status-banner { background: rgba(0, 240, 255, 0.15); border: 2px solid #00f0ff; border-radius: 10px; padding: 12px; font-size: 0.85rem; font-weight: 700; color: #ffffff; margin-bottom: 20px; }
-        .section-block { margin-bottom: 22px; }
-        .section-title { font-size: 0.85rem; font-weight: 700; color: #00f0ff; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
+        .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 12px; }
+        .brand-title { font-size: 1.05rem; font-weight: 800; color: #00f0ff; letter-spacing: 1.5px; text-transform: uppercase; }
         
-        .checklist-table { width: 100%; border-collapse: collapse; background: rgba(19, 23, 34, 0.9); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 10px; overflow: hidden; margin-bottom: 15px; }
-        .checklist-table th { background: #1e222d; color: #00f0ff; padding: 8px 12px; font-size: 0.75rem; text-transform: uppercase; border-bottom: 1px solid rgba(0, 255, 255, 0.2); }
-        .checklist-table td { padding: 8px 12px; font-size: 0.75rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+        .controls-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,255,255,0.04); border: 1px solid rgba(0,255,255,0.15); padding: 12px 16px; border-radius: 12px; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+        
+        .mode-buttons a { text-decoration: none; background: rgba(0,0,0,0.4); border: 1px solid rgba(0,240,255,0.4); color: #fff; padding: 6px 12px; font-size: 0.7rem; font-weight: 600; border-radius: 8px; display: inline-block; transition: all 0.2s ease; }
+        .mode-buttons a.active { background: #00f0ff; color: #000; border-color: #00f0ff; box-shadow: 0 0 15px rgba(0,240,255,0.4); font-weight: 700; }
+        
+        .tf-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+        .tf-buttons a { text-decoration: none; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,0,255,0.4); color: #fff; padding: 6px 10px; font-size: 0.7rem; font-weight: 600; border-radius: 8px; display: inline-block; transition: all 0.2s ease; }
+        .tf-buttons a.active { background: #ff00ff; color: #000; border-color: #ff00ff; box-shadow: 0 0 15px rgba(255,0,255,0.4); font-weight: 700; }
+        
+        .bot-state-btn { padding: 6px 12px; border-radius: 8px; font-weight: 700; font-size: 0.7rem; cursor: pointer; text-transform: uppercase; border: 1px solid; transition: transform 0.1s; }
+        .bot-state-btn:active { transform: scale(0.95); }
+        .btn-start { background: rgba(0, 255, 136, 0.15); color: #00ff88; border-color: #00ff88; }
+        .btn-stop { background: rgba(255, 68, 68, 0.15); color: #ff4444; border-color: #ff4444; }
+        
+        .kill-switch-btn { background: linear-gradient(135deg, #ff0055, #990033); color: #fff; border: 1px solid #ff0055; padding: 6px 12px; border-radius: 8px; font-weight: 700; font-size: 0.7rem; cursor: pointer; text-transform: uppercase; }
+        
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+        .stat-card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 14px; text-align: center; transition: border-color 0.2s; }
+        .stat-card:hover { border-color: rgba(0,240,255,0.3); }
+        .stat-label { font-size: 0.65rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; }
+        .stat-value { font-size: 1.1rem; font-weight: 800; margin-top: 6px; color: #fff; }
+        
+        .status-banner { background: rgba(0, 240, 255, 0.08); border: 1px solid rgba(0, 240, 255, 0.3); border-radius: 10px; padding: 12px 16px; font-size: 0.8rem; font-weight: 600; color: #e2e8f0; margin-bottom: 20px; display: flex; align-items: center; }
+        
+        .section-block { margin-bottom: 24px; }
+        .section-title { font-size: 0.8rem; font-weight: 700; color: #00f0ff; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; }
+        
+        .checklist-table, table { width: 100%; border-collapse: collapse; background: rgba(3, 7, 18, 0.6); border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 12px; overflow: hidden; margin-bottom: 15px; }
+        .checklist-table th, table th { background: rgba(255, 255, 255, 0.03); color: #00f0ff; padding: 10px 14px; font-size: 0.7rem; text-transform: uppercase; border-bottom: 1px solid rgba(255, 255, 255, 0.06); letter-spacing: 0.5px; }
+        .checklist-table td, table td { padding: 10px 14px; font-size: 0.75rem; border-bottom: 1px solid rgba(255, 255, 255, 0.04); color: #e2e8f0; }
 
-        .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; background: rgba(0,0,0,0.5); padding: 12px; border-radius: 10px; border: 1px solid rgba(0,255,255,0.2); }
+        .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; background: rgba(0,0,0,0.3); padding: 16px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.06); }
         .setting-item { display: flex; flex-direction: column; font-size: 0.72rem; }
-        .setting-item label { color: #00f0ff; margin-bottom: 3px; font-weight: bold; }
-        .setting-item input, .setting-item select { background: rgba(255,255,255,0.1); border: 1px solid rgba(0,255,255,0.3); color: #fff; padding: 5px; border-radius: 5px; font-size: 0.75rem; }
-        .checkbox-item { display: flex; align-items: center; gap: 8px; font-size: 0.72rem; color: #00f0ff; font-weight: bold; margin-top: 5px; }
-        .save-settings-btn { margin-top: 10px; background: #00f0ff; color: #000; border: none; padding: 7px 15px; font-weight: bold; border-radius: 6px; cursor: pointer; text-transform: uppercase; font-size: 0.72rem; }
-        #tvChartContainer { width: 100%; height: 320px; background: rgba(0,0,0,0.6); border: 1px solid rgba(0,255,255,0.3); border-radius: 10px; margin-top: 10px; position: relative; }
-        table { width: 100%; border-collapse: collapse; margin-top: 4px; }
-        th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid rgba(0, 255, 255, 0.20); font-size: 0.75rem; color: #ffffff; }
-        th { font-weight: 700; color: #00f0ff; text-transform: uppercase; font-size: 0.68rem; }
-        .pnl-green { color: #00ff88; font-weight: bold; }
-        .pnl-red { color: #ff4444; font-weight: bold; }
-        .refresh-info { color: rgba(255, 255, 255, 0.6); font-size: 0.7rem; margin-top: 20px; font-weight: 600; text-align: left; }
-        .manual-refresh { background: rgba(0,255,255,0.1); border: 1px solid #00f0ff; color: #00f0ff; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.7rem; font-weight: bold; text-decoration: none; display: inline-block; }
+        .setting-item label { color: #94a3b8; margin-bottom: 4px; font-weight: 600; }
+        .setting-item input, .setting-item select { background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); color: #fff; padding: 7px 10px; border-radius: 8px; font-size: 0.75rem; transition: border-color 0.2s; }
+        .setting-item input:focus { border-color: #00f0ff; outline: none; }
+        
+        .checkbox-item { display: flex; align-items: center; gap: 10px; font-size: 0.72rem; color: #e2e8f0; font-weight: 600; margin-top: 8px; cursor: pointer; }
+        
+        .save-settings-btn { margin-top: 14px; background: #00f0ff; color: #000; border: none; padding: 9px 18px; font-weight: 800; border-radius: 8px; cursor: pointer; text-transform: uppercase; font-size: 0.72rem; letter-spacing: 0.5px; transition: opacity 0.2s; }
+        .save-settings-btn:hover { opacity: 0.9; }
+        
+        #tvChartContainer { width: 100%; height: 320px; background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; margin-top: 10px; }
+        
+        .pnl-green { color: #00ff88; font-weight: 700; }
+        .pnl-red { color: #ff4444; font-weight: 700; }
+        
+        .refresh-info { color: rgba(255, 255, 255, 0.4); font-size: 0.68rem; margin-top: 24px; font-weight: 500; text-align: left; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 12px; }
+        .manual-refresh { background: rgba(0,255,255,0.08); border: 1px solid rgba(0,240,255,0.3); color: #00f0ff; padding: 5px 12px; border-radius: 8px; cursor: pointer; font-size: 0.7rem; font-weight: 700; text-decoration: none; display: inline-block; transition: background 0.2s; }
+        .manual-refresh:hover { background: rgba(0,255,255,0.15); }
     </style>
 </head>
 <body>
@@ -867,7 +878,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </div>
                 </div>
 
-                <div style="margin-top: 12px; background: rgba(0,255,255,0.05); padding: 10px; border-radius: 8px; border: 1px solid rgba(0,255,255,0.15);">
+                <div style="margin-top: 12px; background: rgba(0,255,255,0.03); padding: 12px; border-radius: 10px; border: 1px solid rgba(0,255,255,0.1); font-size: 0.75rem;">
                     <div style="font-size: 0.72rem; color: #00f0ff; font-weight: bold; margin-bottom: 6px;">🛡️ Bezpečnostné & Inteligentné Filtre:</div>
                     <div class="checkbox-item">
                         <input type="checkbox" name="use_btc_filter" id="use_btc_filter" {{ 'checked' if settings.use_btc_filter else '' }}>
@@ -1027,8 +1038,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         textColor: '#00f0ff',
                     },
                     grid: {
-                        vertLines: { color: 'rgba(255, 255, 255, 0.05)' },
-                        horzLines: { color: 'rgba(255, 255, 255, 0.05)' },
+                        vertLines: { color: 'rgba(255, 255, 255, 0.04)' },
+                        horzLines: { color: 'rgba(255, 255, 255, 0.04)' },
                     },
                     timeScale: {
                         timeVisible: true,
@@ -1073,7 +1084,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         });
     </script>
 </body>
-</html>"""
+</html>
+"""
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
