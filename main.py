@@ -164,7 +164,6 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     slow_ma = calc_ema(vol_directions, min(slow_len, len(vol_directions)))
     oscillator_val = fast_ma - slow_ma
 
-    # Simulácia signálnej čiary MA z oscilátora
     osc_history = [fast_ma - slow_ma for _ in range(signal_len)]
     signal_line = calc_ema(osc_history, signal_len)
 
@@ -482,6 +481,44 @@ async def update_settings(request: Request):
   except Exception as e:
     return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
 
+@app.get("/api/live-candles/{symbol}")
+async def get_live_candles(symbol: str):
+  """API endpoint pre stiahnutie sviečok a výpočet žltej Fib 0.786 čiary pre graf"""
+  try:
+    url = f"/api/v5/market/candles?instId={symbol}&bar={CURRENT_TIMEFRAME}&limit=60"
+    res = okx_request("GET", url)
+    if res.get("code") != "0" or not res.get("data"):
+      return JSONResponse({"status": "error", "candles": [], "fib0786": None})
+
+    raw = res["data"]
+    raw.reverse() # Od najstaršej po najnovšiu
+
+    candles = []
+    highs = []
+    lows = []
+    for c in raw:
+      ts = int(c[0]) // 1000 # Čas v sekundách pre Lightweight Charts
+      o = safe_float(c[1])
+      h = safe_float(c[2])
+      l = safe_float(c[3])
+      cl = safe_float(c[4])
+      candles.append({"time": ts, "open": o, "high": h, "low": l, "close": cl})
+      highs.append(h)
+      lows.append(l)
+
+    # Výpočet Fibonacciho hladiny 0.786 z posledných 25 sviečok (presne podľa Pinescriptu)
+    recent_high = max(highs[-25:]) if len(highs) >= 25 else max(highs)
+    recent_low = min(lows[-25:]) if len(lows) >= 25 else min(lows)
+    fib_0786 = recent_high - ((recent_high - recent_low) * 0.786)
+
+    return JSONResponse({
+        "status": "success",
+        "candles": candles,
+        "fib0786": fib_0786
+    })
+  except Exception as e:
+    return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
 @app.post("/api/emergency-sell")
 async def emergency_sell():
   global ACTIVE_TRADES, CURRENT_STAGE
@@ -511,8 +548,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.4.5 - CyberHUD</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <title>Apex Scalper v5.4.5 - CyberHUD s Grafom</title>
+    <!-- TradingView Lightweight Charts knižnica pre živý sviečkový graf -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         * { box-sizing: border-box; }
         body { 
@@ -523,7 +561,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             color: #ffffff; min-height: 100vh;
         }
         .container { 
-            max-width: 850px; margin: 0; background: rgba(0, 0, 0, 0.82);
+            max-width: 900px; margin: 0; background: rgba(0, 0, 0, 0.84);
             backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 18px; padding: 22px;
             box-shadow: 0 0 35px rgba(0, 255, 255, 0.25);
@@ -552,12 +590,15 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .setting-item label { color: #00f0ff; margin-bottom: 3px; font-weight: bold; }
         .setting-item input, .setting-item select { background: rgba(255,255,255,0.1); border: 1px solid rgba(0,255,255,0.3); color: #fff; padding: 5px; border-radius: 5px; font-size: 0.75rem; }
         .save-settings-btn { margin-top: 10px; background: #00f0ff; color: #000; border: none; padding: 7px 15px; font-weight: bold; border-radius: 6px; cursor: pointer; text-transform: uppercase; font-size: 0.72rem; }
+        
+        /* Štýl pre živý sviečkový graf */
+        #tvChartContainer { width: 100%; height: 320px; background: rgba(0,0,0,0.6); border: 1px solid rgba(0,255,255,0.3); border-radius: 10px; margin-top: 10px; position: relative; }
+
         table { width: 100%; border-collapse: collapse; margin-top: 4px; }
         th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid rgba(0, 255, 255, 0.20); font-size: 0.75rem; color: #ffffff; }
         th { font-weight: 700; color: #00f0ff; text-transform: uppercase; font-size: 0.68rem; }
         .pnl-green { color: #00ff88; font-weight: bold; }
         .pnl-red { color: #ff4444; font-weight: bold; }
-        .chart-container { background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(0, 255, 255, 0.2); border-radius: 10px; padding: 10px; margin-top: 10px; height: 150px; }
         .refresh-info { color: rgba(255, 255, 255, 0.6); font-size: 0.7rem; margin-top: 20px; font-weight: 600; text-align: left; }
         .manual-refresh { background: rgba(0,255,255,0.1); border: 1px solid #00f0ff; color: #00f0ff; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 0.7rem; font-weight: bold; text-decoration: none; display: inline-block; }
     </style>
@@ -609,7 +650,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         
         <div class="status-banner">{{ current_stage }}</div>
 
-        <!-- 🎛️ PANEL NASTAVENÍ PODĽA INDIKÁTORA v5.4.5 -->
+        <!-- 🎛️ PANEL NASTAVENÍ -->
         <div class="section-block">
             <div class="section-title">⚙️ Nastavenia stratégie v5.4.5</div>
             <form id="settingsForm" onsubmit="saveSettings(event)">
@@ -656,12 +697,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div class="section-block">
-            <div class="section-title">🔴 Aktívny Obchod & Živý PnL</div>
+            <div class="section-title">🔴 Aktívny Obchod & Živý Sviečkový Graf (Fib 0.786)</div>
             {% if trades %}
                 <table>
                     <tr><th>Pár</th><th>Vstup</th><th>Investícia</th><th>Cena</th><th>PnL (%)</th><th>PnL ($)</th></tr>
                     {% for t, details in trades.items() %}
-                    <tr>
+                    <tr id="activeTradeRow" data-symbol="{{ details.market_pair }}">
                         <td><strong>{{ details.market_pair }}</strong></td>
                         <td>{{ "%.4f" | format(details.entry_price) }}</td>
                         <td>{{ "%.2f" | format(details.invested_usdc) }} USDC</td>
@@ -671,9 +712,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </tr>
                     {% endfor %}
                 </table>
+                <div id="tvChartContainer"></div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
-                    ✅ Žiadny aktívny obchod. Skenujem Top 20 USDC trh na <strong>{{ current_tf }}</strong> TF...
+                    ✅ Žiadny aktívny obchod. Skenujem Top 20 USDC trh na <strong>{{ current_tf }}</strong> TF... (Graf sa zobratí automaticky pri otvorení obchodu).
                 </div>
             {% endif %}
         </div>
@@ -763,6 +805,76 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             alert(result.message || "Uložené!");
             window.location.reload();
         }
+
+        // Inicializácia živého sviečkového grafu a žltej Fib 0.786 čiary
+        async function initLiveChart() {
+            const row = document.getElementById('activeTradeRow');
+            const container = document.getElementById('tvChartContainer');
+            if (!row || !container) return;
+
+            const symbol = row.getAttribute('data-symbol');
+            if (!symbol) return;
+
+            try {
+                const res = await fetch(`/api/live-candles/${symbol}`);
+                const data = await res.json();
+                if (data.status !== 'success' || !data.candles || data.candles.length === 0) return;
+
+                // Vytvorenie grafu pomocou Lightweight Charts
+                const chart = LightweightCharts.createChart(container, {
+                    width: container.clientWidth,
+                    height: 320,
+                    layout: {
+                        background: { type: 'solid', color: 'transparent' },
+                        textColor: '#00f0ff',
+                    },
+                    grid: {
+                        vertLines: { color: 'rgba(255, 255, 255, 0.05)' },
+                        horzLines: { color: 'rgba(255, 255, 255, 0.05)' },
+                    },
+                    timeScale: {
+                        timeVisible: true,
+                        secondsVisible: false,
+                        borderColor: 'rgba(0, 240, 255, 0.2)'
+                    }
+                });
+
+                const candlestickSeries = chart.addCandlestickSeries({
+                    upColor: '#00ff88',
+                    downColor: '#ff4444',
+                    borderVisible: false,
+                    wickUpColor: '#00ff88',
+                    wickDownColor: '#ff4444',
+                });
+
+                candlestickSeries.setData(data.candles);
+
+                // Vykreslenie žltej Fibonacci 0.786 čiary ako Price Line
+                if (data.fib0786) {
+                    candlestickSeries.createPriceLine({
+                        price: data.fib0786,
+                        color: '#ffcc00', // Žltá farba
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Solid,
+                        axisLabelVisible: true,
+                        title: 'Fib 0.786 (Stop Loss / Zona)',
+                    });
+                }
+
+                chart.timeScale().fitContent();
+
+                // Prispôsobenie veľkosti pri zmene okna
+                window.addEventListener('resize', () => {
+                    chart.applyOptions({ width: container.clientWidth });
+                });
+            } catch (err) {
+                console.error("Chyba načítania živého grafu:", err);
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            initLiveChart();
+        });
     </script>
 </body>
 </html>"""
