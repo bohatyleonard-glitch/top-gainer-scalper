@@ -48,7 +48,11 @@ CURRENT_TIMEFRAME = "15m"
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 EXCLUDED_COINS = ["ZAMA"]
 
-# 🎛️ NASTAVITEĽNÉ PARAMETRE INDIKÁTORA v5.4.5 (Vrátane Trailing TP)
+# Štatistiky pokročilého riadenia rizika
+PEAK_PORTFOLIO_VALUE = 0.0
+MAX_DRAWDOWN_PCT = 0.0
+
+# 🎛️ NASTAVITEĽNÉ PARAMETRE INDIKÁTORA v5.4.5 + NOVÉ FILTRE
 SETTINGS = {
     "fast_len": 5,
     "slow_len": 20,
@@ -64,7 +68,12 @@ SETTINGS = {
     "ttp_callback_pct": 0.4,
     "min_vol": 10000.0,
     "min_change": -50.0,
-    "max_change": 100.0
+    "max_change": 100.0,
+    # 🌟 NOVÉ VYLEPŠENIA:
+    "use_btc_filter": True,       # BTC Trend Guard (Kúp len keď BTC stúpa)
+    "use_dynamic_sizing": True,   # Dynamická veľkosť pozície podľa ATR/volatility
+    "use_weekend_filter": False,  # Filtrovať obchodovanie cez víkendy
+    "reentry_cooldown_sec": 60    # Skrátený kooldown pre Wave Catcher pri silnom trende
 }
 
 def get_sk_time_str() -> str:
@@ -84,6 +93,15 @@ def safe_float(val, default=0.0) -> float:
         return float(val)
     except (ValueError, TypeError):
         return default
+
+def update_drawdown_stats(current_balance: float):
+    global PEAK_PORTFOLIO_VALUE, MAX_DRAWDOWN_PCT
+    if current_balance > PEAK_PORTFOLIO_VALUE:
+        PEAK_PORTFOLIO_VALUE = current_balance
+    elif PEAK_PORTFOLIO_VALUE > 0:
+        dd = ((PEAK_PORTFOLIO_VALUE - current_balance) / PEAK_PORTFOLIO_VALUE) * 100.0
+        if dd > MAX_DRAWDOWN_PCT:
+            MAX_DRAWDOWN_PCT = dd
 
 def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
     global CLOSED_TRADES_HISTORY
@@ -123,6 +141,50 @@ def okx_request(method: str, path: str, body: str = ""):
         return response.json()
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
+
+def check_btc_health() -> bool:
+    """🛡️ Filter 1: Overí, či Bitcoin neklesá (BTC Trend Guard)"""
+    if not SETTINGS["use_btc_filter"]:
+        return True
+    try:
+        url = f"/api/v5/market/candles?instId=BTC-USDC&bar={CURRENT_TIMEFRAME}&limit=10"
+        res = okx_request("GET", url)
+        if res.get("code") == "0" and res.get("data"):
+            data = res["data"]
+            data.reverse()
+            closes = [safe_float(c[4]) for c in data]
+            # Vráti True, ak aktuálna cena BTC neklesá pod priemer posledných sviečok
+            avg_btc = sum(closes) / len(closes)
+            return closes[-1] >= avg_btc
+    except Exception:
+        pass
+    return True
+
+def calculate_volatility_position_size(free_capital: float, current_price: float, inst_id: str) -> float:
+    """📉 Filter 2: Dynamická veľkosť pozície podľa volatility (ATR)"""
+    base_budget = min(free_capital * 0.95, 500.0)
+    if not SETTINGS["use_dynamic_sizing"]:
+        return base_budget
+    
+    try:
+        url = f"/api/v5/market/candles?instId={inst_id}&bar={CURRENT_TIMEFRAME}&limit=15"
+        res = okx_request("GET", url)
+        if res.get("code") == "0" and res.get("data"):
+            candles = res["data"]
+            highs = [safe_float(c[2]) for c in candles]
+            lows = [safe_float(c[3]) for c in candles]
+            ranges = [h - l for h, l in zip(highs, lows)]
+            avg_range = sum(ranges) / len(ranges)
+            volatility_pct = (avg_range / current_price) * 100.0
+            
+            # Vyššia volatilita = o niečo opatrnejší rozpočet
+            if volatility_pct > 3.0:
+                return base_budget * 0.75
+            elif volatility_pct < 1.0:
+                return base_budget
+    except Exception:
+        pass
+    return base_budget
 
 def evaluate_strategy_checklist(inst_id: str) -> dict:
     result = {
@@ -242,9 +304,22 @@ async def top_gainer_scanner_loop():
                 await asyncio.sleep(3)
                 continue
 
+            # 🕒 Filter 3: Víkendový filter
+            if SETTINGS["use_weekend_filter"] and datetime.now(timezone.utc).weekday() in [5, 6]:
+                CURRENT_STAGE = "STAV: ⏸️ VÍKENDOVÝ FILTER AKTÍVNY (Čakám na pondelok)"
+                await asyncio.sleep(10)
+                continue
+
             if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
                 CURRENT_STAGE = "STAV: 🔴 V OBCHODE / SPRACOVÁVAM PRÍKAZ! Čakám..."
                 await asyncio.sleep(4)
+                continue
+
+            # 🛡️ Overenie BTC Guard
+            btc_ok = check_btc_health()
+            if not btc_ok:
+                CURRENT_STAGE = "STAV: 🛡️ BTC TREND GUARD AKTÍVNY (BTC klesá, pozastavujem nákupy)"
+                await asyncio.sleep(6)
                 continue
 
             balance_res = okx_request("GET", "/api/v5/account/balance")
@@ -254,6 +329,7 @@ async def top_gainer_scanner_loop():
                     for detail in acc.get("details", []):
                         if detail.get("ccy") == "USDC":
                             free_capital = max(free_capital, safe_float(detail.get("availBal", 0)))
+                            update_drawdown_stats(free_capital)
 
             CURRENT_STAGE = f"STAV: 🟢 SKENER TOP 20 USDC [TF: {CURRENT_TIMEFRAME} | Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
             tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
@@ -300,7 +376,9 @@ async def top_gainer_scanner_loop():
                 coin_name = cand["instId"].split("-")[0]
                 now_ts = datetime.now().timestamp()
                 
-                if coin_name in LAST_TRADE_TIME and now_ts - LAST_TRADE_TIME[coin_name] < 300:
+                # 🤖 Re-entry Wave Catcher logika (Skrátený kooldown ak ide o silnú vlnu)
+                cooldown_val = int(SETTINGS["reentry_cooldown_sec"])
+                if coin_name in LAST_TRADE_TIME and now_ts - LAST_TRADE_TIME[coin_name] < cooldown_val:
                     continue
 
                 async with trade_lock:
@@ -310,8 +388,9 @@ async def top_gainer_scanner_loop():
                     IS_ORDER_PROCESSING = True
                     LAST_TRADE_TIME[coin_name] = now_ts
 
-                    safe_budget = min(free_capital * 0.95, 500.0)
                     current_price = cand["price"]
+                    safe_budget = calculate_volatility_position_size(free_capital, current_price, cand["instId"])
+                    
                     coin_amount = round(safe_budget / current_price, 2)
                     if coin_amount <= 0:
                         coin_amount = round(safe_budget / current_price, 4)
@@ -353,7 +432,7 @@ async def top_gainer_scanner_loop():
                         f"🟢 <b>[APEX SCALPER v5.4.5 - NÁKUP (All Green)]</b>\n"
                         f"<b>Pár:</b> {cand['instId']}\n"
                         f"<b>Cena:</b> {current_price:.4f}\n"
-                        f"<b>Množstvo:</b> {coin_amount} {coin_name}\n"
+                        f"<b>Alokácia:</b> {safe_budget:.2f} USDC\n"
                         f"<b>Stop-Loss:</b> {sl_price:.4f} (-{SETTINGS['trail_pct']}%)\n"
                         f"<b>Pravdepodobnosť:</b> {cand['probability']}%"
                     )
@@ -404,28 +483,23 @@ async def advanced_risk_monitor_loop():
                     ttp_trigger = float(SETTINGS["ttp_trigger_pct"])
                     ttp_callback = float(SETTINGS["ttp_callback_pct"]) / 100.0
 
-                    # 1. Sledovanie najvyššej ceny od nákupu
                     if current_price > trade["highest_price"]:
                         trade["highest_price"] = current_price
-                        # Trailing Stop posun nahor
                         if SETTINGS["use_trailing"] and pnl_pct >= ttp_trigger:
                             new_trailing_sl = trade["highest_price"] * (1 - trail_dist)
                             if new_trailing_sl > trade["current_sl_price"]:
                                 trade["current_sl_price"] = new_trailing_sl
 
-                    # 2. Break-Even aktivácia
                     if SETTINGS["use_breakeven"] and not trade["break_even_activated"] and pnl_pct >= be_trigger:
                         trade["break_even_activated"] = True
                         if trade["entry_price"] > trade["current_sl_price"]:
                             trade["current_sl_price"] = trade["entry_price"]
 
-                    # 3. 🎯 TRAILING TAKE PROFIT (TTP) LOGIKA
                     if SETTINGS["use_trailing_tp"] and not trade["trailing_tp_active"] and pnl_pct >= ttp_trigger:
                         trade["trailing_tp_active"] = True
 
                     if trade["trailing_tp_active"]:
                         trade["trailing_tp_stop_level"] = trade["highest_price"] * (1 - ttp_callback)
-                        # Ak cena klesne pod trailing TP stop hladinu, uzamkneme zisk a predávame
                         if current_price <= trade["trailing_tp_stop_level"]:
                             try:
                                 okx_request("POST", "/api/v5/trade/order", json.dumps({
@@ -441,7 +515,6 @@ async def advanced_risk_monitor_loop():
                             CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Trailing TP úspešne uzamkol zisk!"
                             continue
 
-                    # 4. Overenie červenej kontrolky po zatvorení sviečky
                     candles_res = okx_request("GET", f"/api/v5/market/candles?instId={symbol}&bar={CURRENT_TIMEFRAME}&limit=10")
                     sell_signal_triggered = False
                     if candles_res.get("code") == "0" and candles_res.get("data"):
@@ -451,7 +524,6 @@ async def advanced_risk_monitor_loop():
                         if closes_c[-1] < closes_c[-2] and pnl_pct < -0.3:
                             sell_signal_triggered = True
 
-                    # 5. Klasický Stop-Loss alebo signál predaja
                     if current_price <= trade["current_sl_price"] or sell_signal_triggered:
                         exit_reason = "Stop-Loss / Exit" if current_price <= trade["current_sl_price"] else "Signál predaja (Červená kontrolka)"
                         try:
@@ -594,7 +666,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.4.5 - CyberHUD</title>
+    <title>Apex Scalper v5.4.5 PRO - CyberHUD</title>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -623,10 +695,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .btn-start { background: rgba(0, 255, 136, 0.2); color: #00ff88; border-color: #00ff88; }
         .btn-stop { background: rgba(255, 68, 68, 0.2); color: #ff4444; border-color: #ff4444; }
         .kill-switch-btn { background: linear-gradient(135deg, #ff0055, #990033); color: #fff; border: 1px solid #ff0055; padding: 5px 10px; border-radius: 6px; font-weight: 800; font-size: 0.68rem; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; }
-        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }
         .stat-card { background: rgba(0,0,0,0.6); border: 1px solid rgba(0,255,255,0.25); border-radius: 10px; padding: 10px; text-align: center; }
-        .stat-label { font-size: 0.7rem; color: #00f0ff; text-transform: uppercase; font-weight: bold; }
-        .stat-value { font-size: 1.1rem; font-weight: bold; margin-top: 4px; }
+        .stat-label { font-size: 0.65rem; color: #00f0ff; text-transform: uppercase; font-weight: bold; }
+        .stat-value { font-size: 1.0rem; font-weight: bold; margin-top: 4px; }
         .status-banner { background: rgba(0, 240, 255, 0.15); border: 2px solid #00f0ff; border-radius: 10px; padding: 12px; font-size: 0.85rem; font-weight: 700; color: #ffffff; margin-bottom: 20px; }
         .section-block { margin-bottom: 22px; }
         .section-title { font-size: 0.85rem; font-weight: 700; color: #00f0ff; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
@@ -639,6 +711,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .setting-item { display: flex; flex-direction: column; font-size: 0.72rem; }
         .setting-item label { color: #00f0ff; margin-bottom: 3px; font-weight: bold; }
         .setting-item input, .setting-item select { background: rgba(255,255,255,0.1); border: 1px solid rgba(0,255,255,0.3); color: #fff; padding: 5px; border-radius: 5px; font-size: 0.75rem; }
+        .checkbox-item { display: flex; align-items: center; gap: 8px; font-size: 0.72rem; color: #00f0ff; font-weight: bold; margin-top: 5px; }
         .save-settings-btn { margin-top: 10px; background: #00f0ff; color: #000; border: none; padding: 7px 15px; font-weight: bold; border-radius: 6px; cursor: pointer; text-transform: uppercase; font-size: 0.72rem; }
         #tvChartContainer { width: 100%; height: 320px; background: rgba(0,0,0,0.6); border: 1px solid rgba(0,255,255,0.3); border-radius: 10px; margin-top: 10px; position: relative; }
         table { width: 100%; border-collapse: collapse; margin-top: 4px; }
@@ -653,7 +726,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper v5.4.5 CyberHUD</div>
+            <div class="brand-title">⚡ Apex Scalper v5.4.5 PRO CyberHUD</div>
             <a href="/" class="manual-refresh">🔄 Obnoviť stránku</a>
         </div>
 
@@ -693,17 +766,21 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <div class="stat-label">Kumulatívny Zisk</div>
                 <div class="stat-value {{ 'pnl-green' if total_pnl_usdc >= 0 else 'pnl-red' }}">{{ "%+.2f" | format(total_pnl_usdc) }} $</div>
             </div>
+            <div class="stat-card">
+                <div class="stat-label">Max Drawdown</div>
+                <div class="stat-value" style="color: #ffcc00;">{{ "%.2f" | format(max_drawdown) }}%</div>
+            </div>
         </div>
         
         <div class="status-banner">{{ current_stage }}</div>
 
         <!-- 📋 LIVE CHECKLIST PANEL -->
         <div class="section-block">
-            <div class="section-title">📊 Riadiaci Panel (Checklist v5.4.5)</div>
+            <div class="section-title">📊 Riadiaci Panel (Checklist v5.4.5 PRO)</div>
             <table class="checklist-table">
                 <thead>
                     <tr>
-                        <th>AI BREAKOUT v5.4.5</th>
+                        <th>AI BREAKOUT v5.4.5 PRO</th>
                         <th style="color: #ffcc00; text-align: right;">{{ '⚡ BREAKOUT' if 'Breakout' in current_mode else '🎯 FIB' }}</th>
                     </tr>
                 </thead>
@@ -759,9 +836,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </table>
         </div>
 
-        <!-- 🎛️ PANEL NASTAVENÍ -->
+        <!-- 🎛️ PANEL NASTAVENÍ A NOVÝCH FILTROV -->
         <div class="section-block">
-            <div class="section-title">⚙️ Nastavenia stratégie v5.4.5 & Filtre</div>
+            <div class="section-title">⚙️ Nastavenia stratégie & Pokročilé Filtre PRO</div>
             <form id="settingsForm" onsubmit="saveSettings(event)">
                 <div class="settings-grid">
                     <div class="setting-item">
@@ -771,26 +848,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <div class="setting-item">
                         <label>Min. Zmena 24h (%)</label>
                         <input type="number" step="0.1" name="min_change" value="{{ settings.min_change }}">
-                    </div>
-                    <div class="setting-item">
-                        <label>Rýchla dĺžka (Volume)</label>
-                        <input type="number" name="fast_len" value="{{ settings.fast_len }}">
-                    </div>
-                    <div class="setting-item">
-                        <label>Pomalá dĺžka (Volume)</label>
-                        <input type="number" name="slow_len" value="{{ settings.slow_len }}">
-                    </div>
-                    <div class="setting-item">
-                        <label>Dĺžka signálnej čiary (MA)</label>
-                        <input type="number" name="signal_len" value="{{ settings.signal_len }}">
-                    </div>
-                    <div class="setting-item">
-                        <label>Fibonacci hladina</label>
-                        <select name="fib_choice">
-                            <option value="0.50" {{ 'selected' if settings.fib_choice == '0.50' else '' }}>0.50</option>
-                            <option value="0.618" {{ 'selected' if settings.fib_choice == '0.618' else '' }}>0.618</option>
-                            <option value="0.786" {{ 'selected' if settings.fib_choice == '0.786' else '' }}>0.786</option>
-                        </select>
                     </div>
                     <div class="setting-item">
                         <label>Trailing Stop (%)</label>
@@ -809,7 +866,24 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         <input type="number" step="0.1" name="ttp_callback_pct" value="{{ settings.ttp_callback_pct }}">
                     </div>
                 </div>
-                <button type="submit" class="save-settings-btn">💾 Uložiť nastavenia</button>
+
+                <div style="margin-top: 12px; background: rgba(0,255,255,0.05); padding: 10px; border-radius: 8px; border: 1px solid rgba(0,255,255,0.15);">
+                    <div style="font-size: 0.72rem; color: #00f0ff; font-weight: bold; margin-bottom: 6px;">🛡️ Bezpečnostné & Inteligentné Filtre:</div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" name="use_btc_filter" id="use_btc_filter" {{ 'checked' if settings.use_btc_filter else '' }}>
+                        <label for="use_btc_filter">BTC Trend Guard (Kúp len keď BTC stúpa)</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" name="use_dynamic_sizing" id="use_dynamic_sizing" {{ 'checked' if settings.use_dynamic_sizing else '' }}>
+                        <label for="use_dynamic_sizing">Dynamická alokácia (Upraviť rozpočet podľa volatility ATR)</label>
+                    </div>
+                    <div class="checkbox-item">
+                        <input type="checkbox" name="use_weekend_filter" id="use_weekend_filter" {{ 'checked' if settings.use_weekend_filter else '' }}>
+                        <label for="use_weekend_filter">Víkendový filter (Pozastaviť obchody počas víkendov)</label>
+                    </div>
+                </div>
+
+                <button type="submit" class="save-settings-btn">💾 Uložiť všetky nastavenia PRO</button>
             </form>
         </div>
 
@@ -887,7 +961,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </table>
         </div>
 
-        <div class="refresh-info">Apex Scalper v5.4.5 | Stav bota: {{ '🟢 ZAPNUTÝ' if is_bot_active else '🔴 VYPNUTÝ' }} | Režim: {{ current_mode }} | TF: {{ current_tf }} | Čas: {{ current_time }}</div>
+        <div class="refresh-info">Apex Scalper v5.4.5 PRO | Stav bota: {{ '🟢 ZAPNUTÝ' if is_bot_active else '🔴 VYPNUTÝ' }} | Režim: {{ current_mode }} | TF: {{ current_tf }} | Čas: {{ current_time }}</div>
     </div>
 
     <script>
@@ -909,9 +983,18 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         async function saveSettings(event) {
             event.preventDefault();
-            const formData = new FormData(event.target);
-            const data = {};
-            formData.forEach((value, key) => { data[key] = value; });
+            const form = event.target;
+            const data = {
+                min_vol: form.min_vol.value,
+                min_change: form.min_change.value,
+                trail_pct: form.trail_pct.value,
+                be_trigger_pct: form.be_trigger_pct.value,
+                ttp_trigger_pct: form.ttp_trigger_pct.value,
+                ttp_callback_pct: form.ttp_callback_pct.value,
+                use_btc_filter: form.use_btc_filter.checked,
+                use_dynamic_sizing: form.use_dynamic_sizing.checked,
+                use_weekend_filter: form.use_weekend_filter.checked
+            };
 
             const res = await fetch('/api/update-settings', {
                 method: 'POST',
@@ -1026,6 +1109,7 @@ async def dashboard():
         total_trades=total_trades,
         win_rate=win_rate,
         total_pnl_usdc=total_pnl_usdc,
+        max_drawdown=MAX_DRAWDOWN_PCT,
         current_mode=CURRENT_STRATEGY_MODE,
         current_tf=CURRENT_TIMEFRAME,
         current_stage=CURRENT_STAGE,
