@@ -52,7 +52,7 @@ EXCLUDED_COINS = ["ZAMA"]
 PEAK_PORTFOLIO_VALUE = 0.0
 MAX_DRAWDOWN_PCT = 0.0
 
-# 🎛️ NASTAVITEĽNÉ PARAMETRE INDIKÁTORA v5.4.5 + NOVÉ FILTRE
+# 🎛️ NASTAVITEĽNÉ PARAMETRE INDIKÁTORA v5.4.5 + TV ZLADENIE
 SETTINGS = {
     "fast_len": 5,
     "slow_len": 20,
@@ -69,11 +69,10 @@ SETTINGS = {
     "min_vol": 10000.0,
     "min_change": -50.0,
     "max_change": 100.0,
-    # 🌟 NOVÉ VYLEPŠENIA:
     "use_btc_filter": True,       # BTC Trend Guard (Kúp len keď BTC stúpa)
-    "use_dynamic_sizing": True,   # Dynamická veľkosť pozície podľa ATR/volatility
+    "use_dynamic_sizing": True,   # Dynamická veľkość pozície podľa ATR/volatility
     "use_weekend_filter": False,  # Filtrovať obchodovanie cez víkendy
-    "reentry_cooldown_sec": 60    # Skrátený kooldown pre Wave Catcher pri silnom trende
+    "reentry_cooldown_sec": 60    # Kooldown pre opätovný vstup
 }
 
 def get_sk_time_str() -> str:
@@ -424,7 +423,7 @@ async def top_gainer_scanner_loop():
                     CURRENT_STAGE = f"STAV: 🔴 V OBCHODE [{cand['instId']}] (TF: {CURRENT_TIMEFRAME})..."
 
                     send_telegram_msg(
-                        f"🟢 <b>[APEX SCALPER v5.4.5 - NÁKUP (All Green)]</b>\n"
+                        f"🟢 <b>[APEX SCALPER v5.4.5 - NÁKUP]</b>\n"
                         f"<b>Pár:</b> {cand['instId']}\n"
                         f"<b>Cena:</b> {current_price:.4f}\n"
                         f"<b>Alokácia:</b> {safe_budget:.2f} USDC\n"
@@ -501,7 +500,7 @@ async def advanced_risk_monitor_loop():
                                     "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                                 }))
                                 record_closed_trade(symbol, pnl_pct, pnl_usdc, "Trailing TP v5.4.5")
-                                send_telegram_msg(f"🎯 <b>[TP EXIT v5.4.5 (Trailing TP)]</b>\n<b>Pár:</b> {symbol}\n<b>Zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:.2f}$)")
+                                send_telegram_msg(f"🎯 <b>[TP EXIT v5.4.5]</b>\n<b>Pár:</b> {symbol}\n<b>Zisk:</b> +{pnl_pct:.2f}% (+{pnl_usdc:.2f}$)")
                             except Exception as err:
                                 print(f"❌ Chyba Trailing TP: {err}", flush=True)
 
@@ -520,7 +519,7 @@ async def advanced_risk_monitor_loop():
                             sell_signal_triggered = True
 
                     if current_price <= trade["current_sl_price"] or sell_signal_triggered:
-                        exit_reason = "Stop-Loss / Exit" if current_price <= trade["current_sl_price"] else "Signál predaja (Červená kontrolka)"
+                        exit_reason = "Stop-Loss / Exit" if current_price <= trade["current_sl_price"] else "Signál predaja"
                         try:
                             okx_request("POST", "/api/v5/trade/order", json.dumps({
                                 "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
@@ -770,7 +769,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <div class="stat-value">{{ total_trades }}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Úspešnosť (Win Rate)</div>
+                <div class="stat-label">Úspešność (Win Rate)</div>
                 <div class="stat-value" style="color: #00ff88;">{{ win_rate }}%</div>
             </div>
             <div class="stat-card">
@@ -847,11 +846,23 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </table>
         </div>
 
-        <!-- 🎛️ PANEL NASTAVENÍ A NOVÝCH FILTROV -->
+        <!-- 🎛️ PANEL NASTAVENÍ A POKROČILÝCH FILTROV -->
         <div class="section-block">
             <div class="section-title">⚙️ Nastavenia stratégie & Pokročilé Filtre PRO</div>
             <form id="settingsForm" onsubmit="saveSettings(event)">
                 <div class="settings-grid">
+                    <div class="setting-item">
+                        <label>Fast Len (Rýchla dĺžka)</label>
+                        <input type="number" name="fast_len" value="{{ settings.fast_len }}">
+                    </div>
+                    <div class="setting-item">
+                        <label>Slow Len (Pomalá dĺžka)</label>
+                        <input type="number" name="slow_len" value="{{ settings.slow_len }}">
+                    </div>
+                    <div class="setting-item">
+                        <label>Signal Len (Signálna dĺžka)</label>
+                        <input type="number" name="signal_len" value="{{ settings.signal_len }}">
+                    </div>
                     <div class="setting-item">
                         <label>Min. Objem (USDC)</label>
                         <input type="number" name="min_vol" value="{{ settings.min_vol }}">
@@ -996,6 +1007,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             event.preventDefault();
             const form = event.target;
             const data = {
+                fast_len: parseInt(form.fast_len.value),
+                slow_len: parseInt(form.slow_len.value),
+                signal_len: parseInt(form.signal_len.value),
                 min_vol: form.min_vol.value,
                 min_change: form.min_change.value,
                 trail_pct: form.trail_pct.value,
