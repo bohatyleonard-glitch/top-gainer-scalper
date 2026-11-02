@@ -20,7 +20,6 @@ OKX_PASSPHRASE = "Australia111/"
 TELEGRAM_BOT_TOKEN = "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8"
 TELEGRAM_CHAT_ID = "9130979784"
 
-
 def send_telegram_msg(message: str):
   if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("DOPLŇ"):
     return
@@ -31,8 +30,7 @@ def send_telegram_msg(message: str):
   except Exception as err:
     print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
-
-# --- STAV BOT-A & PROFILY ---
+# --- STAV BOT-A & PREPÍNAČE ---
 ACTIVE_TRADES = {}
 MARKET_RADAR = []
 DAILY_PNL_CALENDAR = {}
@@ -44,21 +42,21 @@ MAX_PARALLEL_TRADES = 1
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
+# 🟢 GLOBÁLNY SPÍNAČ BOTA (Zapnuté / Vypnuté cez HUD)
+IS_BOT_ACTIVE = True
+
 CURRENT_STRATEGY_MODE = "Agresívny Momentum (Breakout)"
 CURRENT_TIMEFRAME = "15m"
 ALLOWED_CURRENCIES = ["USDC", "USDT", "EUR"]
 EXCLUDED_COINS = ["ZAMA"]
 
-
 def get_sk_time_str() -> str:
   sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
   return sk_time.strftime("%Y-%m-%d %H:%M:%S")
 
-
 def get_sk_date_str() -> str:
   sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
   return sk_time.strftime("%Y-%m-%d")
-
 
 def safe_float(val, default=0.0) -> float:
   if val is None:
@@ -70,7 +68,6 @@ def safe_float(val, default=0.0) -> float:
   except (ValueError, TypeError):
     return default
 
-
 def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
   global CLOSED_TRADES_HISTORY
   day_str = get_sk_date_str()
@@ -79,28 +76,16 @@ def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
   DAILY_PNL_CALENDAR[day_str]["pnl"] += pnl_usdc
   DAILY_PNL_CALENDAR[day_str]["trades"] += 1
 
-  CLOSED_TRADES_HISTORY.insert(
-      0,
-      {
-          "pair": pair,
-          "pnl_pct": pnl_pct,
-          "pnl_usdc": pnl_usdc,
-          "reason": reason,
-          "time": get_sk_time_str(),
-      },
-  )
+  CLOSED_TRADES_HISTORY.insert(0, {
+      "pair": pair, "pnl_pct": pnl_pct, "pnl_usdc": pnl_usdc, "reason": reason, "time": get_sk_time_str(),
+  })
   if len(CLOSED_TRADES_HISTORY) > 20:
     CLOSED_TRADES_HISTORY.pop()
 
-
 def okx_request(method: str, path: str, body: str = ""):
-  timestamp = (
-      datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-  )
+  timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
   message = timestamp + method.upper() + path + body
-  mac = hmac.new(
-      OKX_SECRET.encode("utf-8"), message.encode("utf-8"), digestmod="sha256"
-  )
+  mac = hmac.new(OKX_SECRET.encode("utf-8"), message.encode("utf-8"), digestmod="sha256")
   signature = base64.b64encode(mac.digest()).decode("utf-8")
 
   headers = {
@@ -122,7 +107,6 @@ def okx_request(method: str, path: str, body: str = ""):
   except Exception as err:
     return {"code": "-1", "msg": str(err)}
 
-
 def evaluate_strategy_checklist(inst_id: str) -> dict:
   result = {
       "volume_status": False,
@@ -132,7 +116,7 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
       "probability": 0,
   }
   try:
-    url = f"/api/v5/market/candles?instId={inst_id}&bar={CURRENT_TIMEFRAME}&limit=30"
+    url = f"/api/v5/market/candles?instId={inst_id}&bar={CURRENT_TIMEFRAME}&limit=40"
     res = okx_request("GET", url)
     if res.get("code") != "0" or not res.get("data"):
       return result
@@ -140,7 +124,7 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     raw_candles = res["data"]
     raw_candles.reverse()
 
-    if len(raw_candles) < 15:
+    if len(raw_candles) < 25:
       return result
 
     closes = [safe_float(c[4]) for c in raw_candles]
@@ -149,9 +133,7 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     volumes = [safe_float(c[5]) for c in raw_candles]
     opens = [safe_float(c[1]) for c in raw_candles]
 
-    vol_directions = [
-        v if closes[i] > opens[i] else -v for i, v in enumerate(volumes)
-    ]
+    vol_directions = [v if closes[i] > opens[i] else -v for i, v in enumerate(volumes)]
 
     def calc_ema(data, length):
       alpha = 2 / (length + 1)
@@ -167,21 +149,19 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     volume_bullish = oscillator_val > 0
     result["volume_status"] = volume_bullish
 
-    recent_high = max(highs[-15:])
-    recent_low = min(lows[-15:])
+    recent_high = max(highs[-25:])
+    recent_low = min(lows[-25:])
     range_size = recent_high - recent_low
     fib_target = recent_high - (range_size * 0.786)
     fib_touch = lows[-1] <= fib_target
     result["fib_status"] = fib_touch
 
     if CURRENT_STRATEGY_MODE == "Agresívny Momentum (Breakout)":
-      price_breakout = closes[-1] > closes[-2]
+      price_breakout = closes[-1] > closes[-3]
       buy_trigger = volume_bullish and price_breakout
       result["impulse_status"] = price_breakout
       result["buy_ready"] = buy_trigger
-      result["probability"] = (
-          85 if buy_trigger else (55 if volume_bullish else 30)
-      )
+      result["probability"] = 85 if buy_trigger else (55 if volume_bullish else 30)
     else:
       fib_buy = volume_bullish and fib_touch
       result["impulse_status"] = fib_touch
@@ -193,23 +173,21 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
 
   return result
 
-
 async def top_gainer_scanner_loop():
-  global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING
+  global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING, IS_BOT_ACTIVE
   await asyncio.sleep(2)
 
-  print(
-      f"[{get_sk_time_str()}] ⚡ APEX SCALPER SKENER SPUSTENÝ [Top 20 USDC | TF:"
-      f" {CURRENT_TIMEFRAME}]",
-      flush=True,
-  )
-  send_telegram_msg(
-      f"🚀 <b>[APEX SCALPER PRO]</b> Bot spustený! Skenujem Top 20 USDC na"
-      f" {CURRENT_TIMEFRAME}."
-  )
+  print(f"[{get_sk_time_str()}] ⚡ APEX SCALPER SKENER SPUSTENÝ [Top 20 USDC | TF: {CURRENT_TIMEFRAME}]", flush=True)
+  send_telegram_msg(f"🚀 <b>[APEX SCALPER PRO]</b> Bot spustený! Skenujem Top 20 USDC na {CURRENT_TIMEFRAME}.")
 
   while True:
     try:
+      # Ak je bot vypnutý cez HUD, pozastavíme skenovanie
+      if not IS_BOT_ACTIVE:
+        CURRENT_STAGE = "STAV: ⏸️ BOT JE VYPNUTÝ (Pozastavené cez HUD)"
+        await asyncio.sleep(3)
+        continue
+
       if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
         CURRENT_STAGE = "STAV: 🔴 V OBCHODE / SPRACOVÁVAM PRÍKAZ! Čakám..."
         await asyncio.sleep(4)
@@ -221,9 +199,7 @@ async def top_gainer_scanner_loop():
         for acc in balance_res.get("data", []):
           for detail in acc.get("details", []):
             if detail.get("ccy") == "USDC":
-              free_capital = max(
-                  free_capital, safe_float(detail.get("availBal", 0))
-              )
+              free_capital = max(free_capital, safe_float(detail.get("availBal", 0)))
 
       CURRENT_STAGE = f"STAV: 🟢 SKENER TOP 20 USDC [TF: {CURRENT_TIMEFRAME} | Režim: {CURRENT_STRATEGY_MODE}]. Skenujem..."
       tickers_res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
@@ -249,9 +225,7 @@ async def top_gainer_scanner_loop():
         try:
           open24h = safe_float(item.get("open24h", 0))
           last_p = safe_float(item.get("last", 0))
-          vol24h = safe_float(
-              item.get("volCcy24h", 0) or item.get("vol24h", 0) or 0
-          )
+          vol24h = safe_float(item.get("volCcy24h", 0) or item.get("vol24h", 0) or 0)
 
           if open24h > 0 and last_p > 0 and vol24h >= min_vol:
             change_pct = ((last_p - open24h) / open24h) * 100
@@ -270,43 +244,14 @@ async def top_gainer_scanner_loop():
                   "probability": chk["probability"],
               })
               count += 1
-              if count >= 15:  # Znížené na 15 pre maximálnu plynulosť bez zákysov
+              if count >= 15:
                 break
         except Exception:
           continue
 
-      candidates.sort(
-          key=lambda x: (x["buy_ready"], x["probability"], x["change"]),
-          reverse=True,
-      )
+      candidates.sort(key=lambda x: (x["buy_ready"], x["probability"], x["change"]), reverse=True)
       if candidates:
         MARKET_RADAR = candidates[:20]
-      else:
-        fallback_list = []
-        for item in tickers_res["data"][:10]:
-          iid = item.get("instId", "")
-          if iid.endswith("-USDC") and iid not in [
-              "USDC-USDC",
-              "USDT-USDC",
-              "BTC-USDC",
-              "ETH-USDC",
-          ]:
-            lp = safe_float(item.get("last", 0))
-            op = safe_float(item.get("open24h", 0))
-            ch = ((lp - op) / op * 100) if op > 0 else 0.0
-            fallback_list.append({
-                "instId": iid,
-                "price": lp,
-                "change": ch,
-                "volume": safe_float(item.get("volCcy24h", 0)),
-                "volume_status": True,
-                "impulse_status": False,
-                "fib_status": False,
-                "buy_ready": False,
-                "probability": 45,
-            })
-        if fallback_list and not MARKET_RADAR:
-          MARKET_RADAR = fallback_list
 
       for cand in candidates:
         if not cand["buy_ready"]:
@@ -314,17 +259,19 @@ async def top_gainer_scanner_loop():
 
         coin_name = cand["instId"].split("-")[0]
         now_ts = datetime.now().timestamp()
-        if (
-            coin_name in LAST_TRADE_TIME
-            and now_ts - LAST_TRADE_TIME[coin_name] < 300
-        ):
+        
+        # 🛡️ Ochrana proti opakovaniu nákupu (300s / 5 minút)
+        if coin_name in LAST_TRADE_TIME and now_ts - LAST_TRADE_TIME[coin_name] < 300:
           continue
 
         async with trade_lock:
           if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or IS_ORDER_PROCESSING:
             break
 
+          # 🛑 OKAMŽITÝ ZÁMOK PROTI TRIEŠTENIU OBJEDNÁVOK
           IS_ORDER_PROCESSING = True
+          LAST_TRADE_TIME[coin_name] = now_ts  # Hneď nastaviť časovač pred volaním API
+
           safe_budget = min(free_capital * 0.95, 500.0)
           current_price = cand["price"]
 
@@ -345,10 +292,10 @@ async def top_gainer_scanner_loop():
 
           order_res = okx_request("POST", "/api/v5/trade/order", order_body)
           if order_res.get("code") != "0":
+            print(f"❌ Chyba nákupu na OKX: {order_res}", flush=True)
             IS_ORDER_PROCESSING = False
             break
 
-          LAST_TRADE_TIME[coin_name] = datetime.now().timestamp()
           tp_price = current_price * 1.012
           sl_price = current_price * 0.99
           PRICE_HISTORY = [current_price]
@@ -390,7 +337,6 @@ async def top_gainer_scanner_loop():
 
     await asyncio.sleep(10)
 
-
 async def advanced_risk_monitor_loop():
   global ACTIVE_TRADES, CURRENT_STAGE, PRICE_HISTORY
   await asyncio.sleep(3)
@@ -418,9 +364,7 @@ async def advanced_risk_monitor_loop():
           if len(PRICE_HISTORY) > 30:
             PRICE_HISTORY.pop(0)
 
-          pnl_pct = (
-              (current_price - trade["entry_price"]) / trade["entry_price"]
-          ) * 100
+          pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
           pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
 
           trade["current_price"] = current_price
@@ -443,10 +387,7 @@ async def advanced_risk_monitor_loop():
             trade["trailing_tp_activated"] = True
 
           if trade["trailing_tp_activated"]:
-            drop_from_peak = (
-                (trade["highest_price"] - current_price)
-                / trade["highest_price"]
-            ) * 100
+            drop_from_peak = ((trade["highest_price"] - current_price) / trade["highest_price"]) * 100
             if drop_from_peak >= 0.3:
               try:
                 order_body = json.dumps({
@@ -485,9 +426,7 @@ async def advanced_risk_monitor_loop():
                   "sz": str(trade["amount"]),
               })
               okx_request("POST", "/api/v5/trade/order", order_body)
-              record_closed_trade(
-                  symbol, pnl_pct, pnl_usdc, "Stop-Loss / Ochrana"
-              )
+              record_closed_trade(symbol, pnl_pct, pnl_usdc, "Stop-Loss / Ochrana")
 
               emoji_res = "🟢" if pnl_usdc >= 0 else "🔴"
               send_telegram_msg(
@@ -511,7 +450,6 @@ async def advanced_risk_monitor_loop():
 
     await asyncio.sleep(2)
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
   scanner_task = asyncio.create_task(top_gainer_scanner_loop())
@@ -520,21 +458,14 @@ async def lifespan(app: FastAPI):
   scanner_task.cancel()
   monitor_task.cancel()
 
-
 app = FastAPI(lifespan=lifespan)
-
 
 @app.get("/api/set-strategy/{mode}")
 async def set_strategy(mode: str):
   global CURRENT_STRATEGY_MODE
-  decoded_mode = (
-      "Agresívny Momentum (Breakout)"
-      if "Breakout" in mode
-      else "Korekcia (Fibonacci Touch)"
-  )
+  decoded_mode = "Agresívny Momentum (Breakout)" if "Breakout" in mode else "Korekcia (Fibonacci Touch)"
   CURRENT_STRATEGY_MODE = decoded_mode
   return JSONResponse({"status": "success", "mode": CURRENT_STRATEGY_MODE})
-
 
 @app.get("/api/set-tf/{tf}")
 async def set_timeframe(tf: str):
@@ -544,16 +475,27 @@ async def set_timeframe(tf: str):
     CURRENT_TIMEFRAME = tf
   return JSONResponse({"status": "success", "timeframe": CURRENT_TIMEFRAME})
 
+# 🟢 API ENDPOINTY PRE ZAPNUTIE / VYPNUTIE BOTA
+@app.get("/api/bot/start")
+async def bot_start():
+  global IS_BOT_ACTIVE
+  IS_BOT_ACTIVE = True
+  send_telegram_msg("🟢 <b>[CYBERHUD]</b> Bot bol manuálne <b>ZAPNUTÝ</b>.")
+  return JSONResponse({"status": "success", "message": "Bot bol zapnutý."})
+
+@app.get("/api/bot/stop")
+async def bot_stop():
+  global IS_BOT_ACTIVE
+  IS_BOT_ACTIVE = False
+  send_telegram_msg("🔴 <b>[CYBERHUD]</b> Bot bol manuálne <b>VYPNUTÝ</b>.")
+  return JSONResponse({"status": "success", "message": "Bot bol pozastavený."})
 
 @app.post("/api/emergency-sell")
 async def emergency_sell():
   global ACTIVE_TRADES, CURRENT_STAGE
   async with trade_lock:
     if not ACTIVE_TRADES:
-      return JSONResponse({
-          "status": "warning",
-          "message": "Žiadny aktívny obchod na predaj.",
-      })
+      return JSONResponse({"status": "warning", "message": "Žiadny aktívny obchod na predaj."})
 
     sold_summary = []
     for coin in list(ACTIVE_TRADES.keys()):
@@ -573,11 +515,7 @@ async def emergency_sell():
         pnl_usdc = trade.get("live_pnl_usdc", 0.0)
         record_closed_trade(symbol, pnl_pct, pnl_usdc, "Manuálny Kill Switch")
 
-        send_telegram_msg(
-            f"🚨 <b>[NÚDZOVÝ PREDAJ / KILL SWITCH]</b>\n"
-            f"<b>Pár:</b> {symbol}\n"
-            f"<b>Výsledok:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} USDC)"
-        )
+        send_telegram_msg(f"🚨 <b>[NÚDZOVÝ PREDAJ / KILL SWITCH]</b>\n<b>Pár:</b> {symbol}\n<b>Výsledok:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} USDC)")
         sold_summary.append(symbol)
       except Exception as e:
         print(f"Chyba pri emergency sell: {e}", flush=True)
@@ -585,12 +523,7 @@ async def emergency_sell():
       del ACTIVE_TRADES[coin]
 
     CURRENT_STAGE = "STAV: 🟢 Mimo obchodu (Ručný výstup). Skenujem..."
-    return JSONResponse({
-        "status": "success",
-        "message": "Pozícia úspešne predaná cez Kill Switch",
-        "sold": sold_summary,
-    })
-
+    return JSONResponse({"status": "success", "message": "Pozícia úspešne predaná cez Kill Switch", "sold": sold_summary})
 
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
@@ -622,6 +555,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .tf-buttons { display: flex; gap: 4px; flex-wrap: wrap; }
         .tf-buttons a { text-decoration: none; background: rgba(0,0,0,0.5); border: 1px solid #ff00ff; color: #fff; padding: 5px 8px; font-size: 0.68rem; font-weight: bold; border-radius: 6px; display: inline-block; transition: all 0.2s; }
         .tf-buttons a.active { background: #ff00ff; color: #000; box-shadow: 0 0 10px #ff00ff; }
+        .bot-state-btn { padding: 5px 10px; border-radius: 6px; font-weight: 800; font-size: 0.68rem; cursor: pointer; text-transform: uppercase; border: 1px solid; }
+        .btn-start { background: rgba(0, 255, 136, 0.2); color: #00ff88; border-color: #00ff88; }
+        .btn-stop { background: rgba(255, 68, 68, 0.2); color: #ff4444; border-color: #ff4444; }
         .kill-switch-btn { background: linear-gradient(135deg, #ff0055, #990033); color: #fff; border: 1px solid #ff0055; padding: 5px 10px; border-radius: 6px; font-weight: 800; font-size: 0.68rem; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; box-shadow: 0 0 10px rgba(255, 0, 85, 0.4); }
         .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
         .stat-card { background: rgba(0,0,0,0.6); border: 1px solid rgba(0,255,255,0.25); border-radius: 10px; padding: 10px; text-align: center; }
@@ -660,7 +596,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <a href="/api/set-tf/1h" class="{{ 'active' if current_tf == '1h' else '' }}">1h</a>
                 <a href="/api/set-tf/4h" class="{{ 'active' if current_tf == '4h' else '' }}">4h</a>
             </div>
-            <button class="kill-switch-btn" onclick="triggerKillSwitch()">🚨 KILL</button>
+            <div>
+                {% if is_bot_active %}
+                    <button class="bot-state-btn btn-stop" onclick="toggleBot('/api/bot/stop')">🔴 Vypnúť</button>
+                {% else %}
+                    <button class="bot-state-btn btn-start" onclick="toggleBot('/api/bot/start')">🟢 Zapnúť</button>
+                {% endif %}
+                <button class="kill-switch-btn" onclick="triggerKillSwitch()">🚨 KILL</button>
+            </div>
         </div>
 
         <div class="stats-grid">
@@ -696,9 +639,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </tr>
                     {% endfor %}
                 </table>
-                <div class="chart-container">
-                    <canvas id="livePriceChart"></canvas>
-                </div>
             {% else %}
                 <div style="font-size: 0.8rem; color: rgba(255, 255, 255, 0.8); background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(0,255,255,0.3);">
                     ✅ Žiadny aktívny obchod. Skenujem Top 20 USDC trh na <strong>{{ current_tf }}</strong> TF...
@@ -756,10 +696,17 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </table>
         </div>
 
-        <div class="refresh-info">APEX HUD 4.1 | Režim: {{ current_mode }} | TF: {{ current_tf }} | SK Čas: {{ current_time }}</div>
+        <div class="refresh-info">APEX HUD 4.1 | Stav Bota: {{ '🟢 ZAPNUTÝ' if is_bot_active else '🔴 VYPNUTÝ' }} | Režim: {{ current_mode }} | TF: {{ current_tf }} | SK Čas: {{ current_time }}</div>
     </div>
 
     <script>
+        async function toggleBot(endpoint) {
+            const res = await fetch(endpoint);
+            const data = await res.json();
+            alert(data.message || "Stav bota zmenený!");
+            window.location.reload();
+        }
+
         async function triggerKillSwitch() {
             if (confirm("⚠️ Naozaj chceš okamžite predajom zatvoriť aktívnu pozíciu?")) {
                 const res = await fetch('/api/emergency-sell', { method: 'POST' });
@@ -768,49 +715,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 window.location.reload();
             }
         }
-
-        const rawHistory = {{ price_history | tojson }};
-        if (rawHistory && rawHistory.length > 0 && document.getElementById('livePriceChart')) {
-            const ctxChart = document.getElementById('livePriceChart').getContext('2d');
-            new Chart(ctxChart, {
-                type: 'line',
-                data: {
-                    labels: rawHistory.map((_, i) => i + 1),
-                    datasets: [{
-                        label: 'Cena',
-                        data: rawHistory,
-                        borderColor: '#00f0ff',
-                        backgroundColor: 'rgba(0, 240, 255, 0.1)',
-                        fill: true,
-                        borderWidth: 2,
-                        tension: 0.3,
-                        pointRadius: 2
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
-                    scales: {
-                        x: { display: false },
-                        y: { 
-                            ticks: { color: '#00f0ff', font: { size: 10 } },
-                            grid: { color: 'rgba(255,255,255,0.05)' }
-                        }
-                    }
-                }
-            });
-        }
     </script>
 </body>
 </html>"""
 
-
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-  account_balances = {
-      curr: {"available_balance": 0.0} for curr in ALLOWED_CURRENCIES
-  }
+  account_balances = {curr: {"available_balance": 0.0} for curr in ALLOWED_CURRENCIES}
   try:
     balance_res = okx_request("GET", "/api/v5/account/balance")
     if balance_res.get("code") == "0":
@@ -831,14 +742,8 @@ async def dashboard():
 
   total_trades = len(CLOSED_TRADES_HISTORY)
   winning_trades = sum(1 for t in CLOSED_TRADES_HISTORY if t["pnl_pct"] > 0)
-  win_rate = round(
-      (winning_trades / total_trades * 100) if total_trades > 0 else 0.0, 1
-  )
-  total_pnl_usdc = (
-      sum(t["pnl_usdc"] for t in CLOSED_TRADES_HISTORY)
-      if "CLOSED_TRADES_HISTORY" in globals()
-      else 0.0
-  )
+  win_rate = round((winning_trades / total_trades * 100) if total_trades > 0 else 0.0, 1)
+  total_pnl_usdc = sum(t["pnl_usdc"] for t in CLOSED_TRADES_HISTORY) if "CLOSED_TRADES_HISTORY" in globals() else 0.0
 
   template = Template(HTML_TEMPLATE_CONTENT)
   return template.render(
@@ -854,14 +759,15 @@ async def dashboard():
       current_tf=CURRENT_TIMEFRAME,
       current_stage=CURRENT_STAGE,
       price_history=PRICE_HISTORY,
+      is_bot_active=IS_BOT_ACTIVE,
       current_time=get_sk_time_str(),
   )
-
 
 @app.get("/api/status")
 async def api_status():
   return {
       "status": "online",
+      "bot_active": IS_BOT_ACTIVE,
       "bot_type": "Apex Scalper Pro 4.1 (Top 20 USDC Radar)",
       "mode": CURRENT_STRATEGY_MODE,
       "timeframe": CURRENT_TIMEFRAME,
@@ -871,7 +777,6 @@ async def api_status():
       "history": CLOSED_TRADES_HISTORY,
       "sk_time": get_sk_time_str(),
   }
-
 
 if __name__ == "__main__":
   port = int(os.environ.get("PORT", 10000))
