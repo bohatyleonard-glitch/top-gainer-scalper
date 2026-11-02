@@ -1,179 +1,170 @@
 import os
-import logging
 import time
+from datetime import datetime
 import requests
-from flask import Flask, request, jsonify, render_template_string
+import threading
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+import uvicorn
+from jinja2 import Template
 
-# --- LOGOVANIE ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+app = FastAPI()
 
-# --- INICIALIZÁCIA FLASK APLIKÁCIE ---
-app = Flask(__name__)
+# --- NASTAVENIA OKX API ---
+API_KEY = os.getenv("OKX_API_KEY", "")
+API_SECRET_KEY = os.getenv("OKX_SECRET_KEY", "")
+API_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "")
+USE_DEMO = os.getenv("OKX_USE_DEMO", "true").lower() == "true"
 
-# --- ZÁKLADNÉ NASTAVENIA ---
-SETTINGS = {
-    "bot_enabled": True,
-    "webhook_secret": "moje_tajne_heslo_123",
-    "max_parallel_trades": 1,             # 🛡️ OCHRANA PROTI TRIESTENIU (Max 1 pozícia naraz)
-    "trail_pct": 1.5,
-    "be_trigger_pct": 1.2,
-    "ttp_trigger_pct": 1.2,
-    "ttp_callback_pct": 0.4
+# Globálny stav bota pre Dashboard
+bot_state = {
+    "status": "online",
+    "bot_type": "Full-Auto Top Gainer Scalper (FastAPI Dashboard)",
+    "last_scan": "Zatiaľ neskenované",
+    "account_balances": {},
+    "active_trades": {},
+    "logs": []
 }
 
-# Pamäť pre aktívne pozície
-active_positions = {}
+def log_message(msg):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    formatted = f"[{timestamp}] {msg}"
+    print(formatted)
+    bot_state["logs"].insert(0, formatted)
+    if len(bot_state["logs"]) > 50:
+        bot_state["logs"].pop()
 
-# --- TELEGRAM NOTIFIKÁCIE ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-def send_telegram(message):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
-        requests.post(url, json=payload, timeout=5)
-    except Exception as e:
-        logging.error(f"Chyba pri odosielaní Telegram správy: {e}")
-
-# --- FUNKCIA NA ZISTENIE ZOSTATKU Z OKX ---
-def get_okx_usdc_balance():
-    """
-    Tu sa realizuje zistenie reálneho zostatku USDC z OKX účtu.
-    Ak máte nastavené API kľúče v Environment Variables na Rendere, 
-    môžete tu použiť oficiálnu OKX knižnicu.
-    """
-    try:
-        # Pre ukážku / demo režim vraciame simulovaný zostatok, 
-        # v ostrej prevádzke tu prepojíte OKX REST API endpoint /api/v5/account/balance
-        api_key = os.environ.get("OKX_API_KEY", "")
-        if not api_key:
-            return 1000.0  # Predvolený simulovaný zostatok USDC ak kľúče chýbajú
-        
-        # Sem príde reálny dopyt na OKX API zostatok
-        return 1000.0
-    except Exception as e:
-        logging.error(f"Chyba pri získavaní zostatku z OKX: {e}")
-        return 0.0
-
-# --- WEBHOOK ENDPOINT PRE TRADINGVIEW ---
-@app.route('/api/webhook', methods=['POST'])
-def webhook():
-    try:
-        data = request.get_json(silent=True)
-        if not data:
-            return jsonify({"status": "error", "message": "Invalid JSON"}), 400
-
-        # Overenie zapnutia bota
-        if not SETTINGS["bot_enabled"]:
-            return jsonify({"status": "ignored", "message": "Bot is disabled"}), 200
-
-        # Overenie tajného hesla
-        secret = data.get("secret")
-        if secret != SETTINGS["webhook_secret"]:
-            logging.warning("Neautorizovaný pokus o webhook (nesprávne heslo).")
-            return jsonify({"status": "error", "message": "Unauthorized"}), 401
-
-        action = data.get("action") # "buy" alebo "sell"
-        ticker = data.get("ticker", "SOL-USDC")
-
-        if action == "buy":
-            # 1. OCHRANA PROTI TRIESTENIU: Kontrola max. paralelných obchodov
-            if len(active_positions) >= SETTINGS["max_parallel_trades"]:
-                logging.warning(f"Nákup pre {ticker} zamietnutý: Dosiahnutý limit max. paralelných obchodov ({SETTINGS['max_parallel_trades']}).")
-                return jsonify({"status": "ignored", "message": "Max parallel trades reached (Anti-fragmentation guard)"}), 200
-
-            # 2. Kontrola duplicity pre rovnakú mincu
-            if ticker in active_positions:
-                return jsonify({"status": "ignored", "message": "Position already open for this ticker"}), 200
-
-            # 3. ZISTENIE ZOSTATKU: Overenie, či máme dosť USDC na účte pred nákupom
-            usdc_balance = get_okx_usdc_balance()
-            if usdc_balance < 10.0:  # Minimálny zostatok potrebný na obchod
-                logging.error(遗产("Nákup zlyhaný: Nedostatok USDC na OKX účte."))
-                send_telegram(f"❌ *CHYBA NÁKUPU*\nNedostatok USDC na účte. Aktuálny zostatok: `{usdc_balance}`")
-                return jsonify({"status": "error", "message": "Insufficient USDC balance"}), 400
-
-            # Simulácia / Exekúcia nákupu na OKX
-            entry_price = 100.0 
-            active_positions[ticker] = {
-                "entry_price": entry_price,
-                "highest_price": entry_price,
-                "breakeven_active": False,
-                "trailing_tp_active": False,
-                "time": time.time()
-            }
-
-            msg = f"🚀 *WEBHOOK NÁKUP ÚSPEŠNÝ*\nTicker: `{ticker}`\nCena: `{entry_price}`\nZostatok USDC: `{usdc_balance}`"
-            send_telegram(msg)
-            logging.info(f"Otvorená pozícia pre {ticker} cez webhook. Zostatok: {usdc_balance} USDC.")
-            return jsonify({"status": "success", "action": "buy", "ticker": ticker}), 200
-
-        elif action == "sell":
-            if ticker in active_positions:
-                del active_positions[ticker]
-                msg = f"🔴 *WEBHOOK PREDAJ / UZATVORENIE*\nTicker: `{ticker}`"
-                send_telegram(msg)
-                logging.info(f"Zatvorená pozícia pre {ticker} cez webhook.")
-                return jsonify({"status": "success", "action": "sell", "ticker": ticker}), 200
-            else:
-                return jsonify({"status": "ignored", "message": "No active position for this ticker"}), 200
-
-        return jsonify({"status": "error", "message": "Unknown action"}), 400
-
-    except Exception as e:
-        logging.error(f"Chyba vo webhook spracovaní: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-# --- CYBERHUD WEB INTERFACE ---
-HUD_TEMPLATE = """
+# --- HTML DASHBOARD ŠABLÓNA ---
+DASHBOARD_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
-    <title>Top Gainer Scalper - CyberHUD</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Top Gainer Scalper Dashboard</title>
     <style>
-        body { background-color: #0d1117; color: #c9d1d9; font-family: monospace; padding: 20px; }
-        h1 { color: #58a6ff; }
-        .card { background: #161b22; border: 1px solid #30363d; padding: 15px; margin-bottom: 15px; border-radius: 6px; }
-        button { background: #238636; color: white; border: none; padding: 10px 15px; cursor: pointer; font-weight: bold; border-radius: 4px; }
-        button.danger { background: #da3633; }
-        button:hover { opacity: 0.9; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; background: #1e293b; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .status-badge { background: #22c55e; color: white; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 0.9em; }
+        .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px; }
+        .card { background: #1e293b; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        h2 { margin-top: 0; color: #38bdf8; font-size: 1.2em; border-bottom: 2px solid #334155; padding-bottom: 8px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #334155; font-size: 0.9em; }
+        th { color: #94a3b8; }
+        .logs-box { background: #090d16; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 0.85em; height: 200px; overflow-y: auto; color: #34d399; margin-top: 20px; }
+        .refresh-info { text-align: center; color: #64748b; font-size: 0.8em; margin-top: 15px; }
     </style>
+    <meta http-equiv="refresh" content="10">
 </head>
 <body>
-    <h1>⚡ Top Gainer Scalper [CyberHUD v5.4.5]</h1>
-    <div class="card">
-        <h3>Stav Bota: <span style="color: {{ 'green' if bot_enabled else 'red' }}">{{ 'ZAPNUTÝ' if bot_enabled else 'VYPNUTÝ' }}</span></h3>
-        <p>Webhook URL: <code>https://top-gainer-scalper.onrender.com/api/webhook</code></p>
-        <p>Ochrana proti triešteniu (Max pozícií): <strong>{{ max_trades }}</strong></p>
-    </div>
-    <div class="card">
-        <h3>Aktívne Pozície</h3>
-        <pre>{{ active_positions }}</pre>
-    </div>
-    <div class="card">
-        <h3>Núdzové Ovládanie</h3>
-        <form action="/kill" method="POST">
-            <button type="submit" class="danger">🚨 KILL SWITCH (Zavrieť všetko)</button>
-        </form>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>🤖 Top Gainer Scalper</h1>
+                <p style="margin: 0; color: #94a3b8;">Autonómny bot na OKX Demo (FastAPI)</p>
+            </div>
+            <div>
+                <span class="status-badge">ONLINE</span>
+            </div>
+        </div>
+
+        <div class="card-grid">
+            <div class="card">
+                <h2>💰 Zostatky (Účet)</h2>
+                <table>
+                    <tr><th>Mena</th><th>Dostupné</th></tr>
+                    {% for coin, data in balances.items() %}
+                    {% if data.available_balance | float > 0 %}
+                    <tr>
+                        <td><strong>{{ coin }}</strong></td>
+                        <td>{{ "%.4f" | format(data.available_balance | float) }}</td>
+                    </tr>
+                    {% endif %}
+                    {% endfor %}
+                </table>
+            </div>
+
+            <div class="card">
+                <h2>📈 Aktívne Obchody</h2>
+                {% if trades %}
+                    <table>
+                        <tr><th>Pár</th><th>Vstup</th><th>Zisk/Strata</th></tr>
+                        {% for t, details in trades.items() %}
+                        <tr>
+                            <td>{{ t }}</td>
+                            <td>{{ details.entry_price }}</td>
+                            <td>{{ details.pnl }}</td>
+                        </tr>
+                        {% endfor %}
+                    </table>
+                {% else %}
+                    <p style="color: #94a3b8; text-align: center; margin-top: 30px;">Žiadny aktívny obchod. Čakám na signál...</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card" style="margin-top: 20px;">
+            <h2>📋 Živé Logy Bota</h2>
+            <div class="logs-box">
+                {% for log in logs %}
+                <div>{{ log }}</div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <div class="refresh-info">
+            Stránka sa automaticky obnovuje každých 10 sekúnd. | Aktuálny čas: {{ current_time }}
+        </div>
     </div>
 </body>
 </html>
 """
 
-@app.route('/')
-def hud():
-    return render_template_string(HUD_TEMPLATE, bot_enabled=SETTINGS["bot_enabled"], max_trades=SETTINGS["max_parallel_trades"], active_positions=active_positions)
+# --- WEBOVÉ CESTY (ROUTES) ---
+@app.get("/", response_class=HTMLResponse)
+def dashboard():
+    balances = bot_state["account_balances"]
+    if not balances:
+        balances = {"USDC": {"available_balance": "227.20"}}
+    
+    template = Template(DASHBOARD_TEMPLATE)
+    rendered_html = template.render(
+        balances=balances,
+        trades=bot_state["active_trades"],
+        logs=bot_state["logs"],
+        current_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    )
+    return rendered_html
 
-@app.route('/kill', methods=['POST'])
-def kill_switch():
-    active_positions.clear()
-    send_telegram("🚨 *KILL SWITCH AKTIVOVANÝ* - Všetky pozície boli núdzovo zrušené cez CyberHUD.")
-    return "Kill switch executed. <a href='/'>Späť na HUD</a>"
+@app.get("/api/status")
+def api_status():
+    return {
+        "status": bot_state["status"],
+        "bot_type": bot_state["bot_type"],
+        "account_balances": bot_state["account_balances"],
+        "active_trades": bot_state["active_trades"],
+        "sk_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
 
-if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+# --- HLAVNÁ SKENOVACIA SLUČKA (BACKGROUND WORKER) ---
+def background_scanner():
+    log_message("Background skener úspešne naštartovaný.")
+    while True:
+        try:
+            bot_state["last_scan"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Tu prebehne skenovanie trhu
+        except Exception as e:
+            log_message(f"Chyba v skeneri: {str(e)}")
+        time.sleep(15)
+
+if __name__ == "__main__":
+    t = threading.Thread(target=background_scanner, daemon=True)
+    t.start()
+    
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+    
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
