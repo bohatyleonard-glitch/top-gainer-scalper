@@ -12,18 +12,17 @@ app = Flask(__name__)
 
 # --- ZÁKLADNÉ NASTAVENIA ---
 SETTINGS = {
-    "bot_enabled": True,                 // 🟢 Hlavný vypínač bota
-    "webhook_secret": "moje_tajne_heslo_123", // 🔒 Heslo pre ochranu webhooku
-    "max_parallel_trades": 1,             // 🛡️ Max. súbežné obchody
-    "trail_pct": 1.5,                     // Odstup Trailing Stopu v %
-    "be_trigger_pct": 1.2,                // Aktivácia Break-Even v %
-    "ttp_trigger_pct": 1.2,               // Aktivácia Trailing TP v %
-    "ttp_callback_pct": 0.4               // Odstup Trailing TP v %
+    "bot_enabled": True,
+    "webhook_secret": "moje_tajne_heslo_123",
+    "max_parallel_trades": 1,             # 🛡️ OCHRANA PROTI TRIESTENIU (Max 1 pozícia naraz)
+    "trail_pct": 1.5,
+    "be_trigger_pct": 1.2,
+    "ttp_trigger_pct": 1.2,
+    "ttp_callback_pct": 0.4
 }
 
-# Pamäť pre aktívne pozície a históriu
+# Pamäť pre aktívne pozície
 active_positions = {}
-trade_history = []
 
 # --- TELEGRAM NOTIFIKÁCIE ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
@@ -38,6 +37,26 @@ def send_telegram(message):
         requests.post(url, json=payload, timeout=5)
     except Exception as e:
         logging.error(f"Chyba pri odosielaní Telegram správy: {e}")
+
+# --- FUNKCIA NA ZISTENIE ZOSTATKU Z OKX ---
+def get_okx_usdc_balance():
+    """
+    Tu sa realizuje zistenie reálneho zostatku USDC z OKX účtu.
+    Ak máte nastavené API kľúče v Environment Variables na Rendere, 
+    môžete tu použiť oficiálnu OKX knižnicu.
+    """
+    try:
+        # Pre ukážku / demo režim vraciame simulovaný zostatok, 
+        # v ostrej prevádzke tu prepojíte OKX REST API endpoint /api/v5/account/balance
+        api_key = os.environ.get("OKX_API_KEY", "")
+        if not api_key:
+            return 1000.0  # Predvolený simulovaný zostatok USDC ak kľúče chýbajú
+        
+        # Sem príde reálny dopyt na OKX API zostatok
+        return 1000.0
+    except Exception as e:
+        logging.error(f"Chyba pri získavaní zostatku z OKX: {e}")
+        return 0.0
 
 # --- WEBHOOK ENDPOINT PRE TRADINGVIEW ---
 @app.route('/api/webhook', methods=['POST'])
@@ -61,15 +80,24 @@ def webhook():
         ticker = data.get("ticker", "SOL-USDC")
 
         if action == "buy":
-            # Kontrola paralelnej kapacity
+            # 1. OCHRANA PROTI TRIESTENIU: Kontrola max. paralelných obchodov
             if len(active_positions) >= SETTINGS["max_parallel_trades"]:
-                return jsonify({"status": "ignored", "message": "Max parallel trades reached"}), 200
+                logging.warning(f"Nákup pre {ticker} zamietnutý: Dosiahnutý limit max. paralelných obchodov ({SETTINGS['max_parallel_trades']}).")
+                return jsonify({"status": "ignored", "message": "Max parallel trades reached (Anti-fragmentation guard)"}), 200
 
+            # 2. Kontrola duplicity pre rovnakú mincu
             if ticker in active_positions:
                 return jsonify({"status": "ignored", "message": "Position already open for this ticker"}), 200
 
-            # Simulácia / Výkon nákupu na OKX (v reálnom kóde tu voláte OKX API)
-            entry_price = 100.0 # Sem priradíte aktuálnu cenu z burzy
+            # 3. ZISTENIE ZOSTATKU: Overenie, či máme dosť USDC na účte pred nákupom
+            usdc_balance = get_okx_usdc_balance()
+            if usdc_balance < 10.0:  # Minimálny zostatok potrebný na obchod
+                logging.error(遗产("Nákup zlyhaný: Nedostatok USDC na OKX účte."))
+                send_telegram(f"❌ *CHYBA NÁKUPU*\nNedostatok USDC na účte. Aktuálny zostatok: `{usdc_balance}`")
+                return jsonify({"status": "error", "message": "Insufficient USDC balance"}), 400
+
+            # Simulácia / Exekúcia nákupu na OKX
+            entry_price = 100.0 
             active_positions[ticker] = {
                 "entry_price": entry_price,
                 "highest_price": entry_price,
@@ -78,9 +106,9 @@ def webhook():
                 "time": time.time()
             }
 
-            msg = f"🚀 *WEBHOOK NÁKUP ÚSPEŠNÝ*\nTicker: `{ticker}`\nCena: `{entry_price}`"
+            msg = f"🚀 *WEBHOOK NÁKUP ÚSPEŠNÝ*\nTicker: `{ticker}`\nCena: `{entry_price}`\nZostatok USDC: `{usdc_balance}`"
             send_telegram(msg)
-            logging.info(f"Otvorená pozícia pre {ticker} cez webhook.")
+            logging.info(f"Otvorená pozícia pre {ticker} cez webhook. Zostatok: {usdc_balance} USDC.")
             return jsonify({"status": "success", "action": "buy", "ticker": ticker}), 200
 
         elif action == "sell":
@@ -120,6 +148,7 @@ HUD_TEMPLATE = """
     <div class="card">
         <h3>Stav Bota: <span style="color: {{ 'green' if bot_enabled else 'red' }}">{{ 'ZAPNUTÝ' if bot_enabled else 'VYPNUTÝ' }}</span></h3>
         <p>Webhook URL: <code>https://top-gainer-scalper.onrender.com/api/webhook</code></p>
+        <p>Ochrana proti triešteniu (Max pozícií): <strong>{{ max_trades }}</strong></p>
     </div>
     <div class="card">
         <h3>Aktívne Pozície</h3>
@@ -137,7 +166,7 @@ HUD_TEMPLATE = """
 
 @app.route('/')
 def hud():
-    return render_template_string(HUD_TEMPLATE, bot_enabled=SETTINGS["bot_enabled"], active_positions=active_positions)
+    return render_template_string(HUD_TEMPLATE, bot_enabled=SETTINGS["bot_enabled"], max_trades=SETTINGS["max_parallel_trades"], active_positions=active_positions)
 
 @app.route('/kill', methods=['POST'])
 def kill_switch():
