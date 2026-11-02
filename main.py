@@ -238,7 +238,15 @@ async def tradingview_webhook(request: Request):
 
             IS_ORDER_PROCESSING = False
             CURRENT_STAGE = f"STAV: 🔴 V OBCHODE [Webhook: {ticker}]"
-            send_telegram_msg(f"🟢 <b>[TRADINGVIEW WEBHOOK - NÁKUP]</b>\n<b>Pár:</b> {ticker}\n<b>Cena:</b> {current_price:.4f}")
+            
+            # 📱 TELEGRAM NOTIFIKÁCIA PRE NÁKUP
+            send_telegram_msg(
+                f"🟢 <b>[TRADINGVIEW WEBHOOK - NÁKUP]</b>\n"
+                f"<b>Pár:</b> {ticker}\n"
+                f"<b>Cena:</b> {current_price:.4f}\n"
+                f"<b>Alokácia:</b> {safe_budget:.2f} USDC\n"
+                f"<b>Stop-Loss:</b> {sl_price:.4f} (-{SETTINGS['trail_pct']}%)"
+            )
 
         return JSONResponse({"status": "success", "message": f"Nakúpené {ticker}!"})
 
@@ -284,7 +292,13 @@ async def advanced_risk_monitor_loop():
                                 "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                             }))
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, "Stop-Loss")
-                            send_telegram_msg(f"🚨 <b>[STOP-LOSS]</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                            
+                            # 📱 TELEGRAM NOTIFIKÁCIA PRE PREDAJ (STOP-LOSS)
+                            send_telegram_msg(
+                                f"🚨 <b>[STOP-LOSS / PREDAJ]</b>\n"
+                                f"<b>Pár:</b> {symbol}\n"
+                                f"<b>Výsledok:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
+                            )
                         except Exception as err:
                             print(f"Chyba SL: {err}", flush=True)
                         del ACTIVE_TRADES[coin]
@@ -305,12 +319,14 @@ app.router.lifespan_context = lifespan
 async def bot_start():
     global IS_BOT_ACTIVE
     IS_BOT_ACTIVE = True
+    send_telegram_msg("🟢 <b>[CYBERHUD]</b> Prijímanie signálov bolo <b>ZAPNUTÉ</b>.")
     return JSONResponse({"status": "success", "message": "Bot bol zapnutý."})
 
 @app.get("/api/bot/stop")
 async def bot_stop():
     global IS_BOT_ACTIVE
     IS_BOT_ACTIVE = False
+    send_telegram_msg("🔴 <b>[CYBERHUD]</b> Prijímanie signálov bolo <b>VYPNUTÉ</b>.")
     return JSONResponse({"status": "success", "message": "Bot bol pozastavený."})
 
 @app.post("/api/emergency-sell")
@@ -327,8 +343,17 @@ async def emergency_sell():
                 okx_request("POST", "/api/v5/trade/order", json.dumps({
                     "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"])
                 }))
-                record_closed_trade(symbol, trade.get("live_pnl_pct", 0.0), trade.get("live_pnl_usdc", 0.0), "Kill Switch")
+                pnl_pct = trade.get("live_pnl_pct", 0.0)
+                pnl_usdc = trade.get("live_pnl_usdc", 0.0)
+                record_closed_trade(symbol, pnl_pct, pnl_usdc, "Kill Switch")
                 sold.append(symbol)
+                
+                # 📱 TELEGRAM NOTIFIKÁCIA PRE KILL SWITCH
+                send_telegram_msg(
+                    f"🚨 <b>[KILL SWITCH - NÚDZOVÝ PREDAJ]</b>\n"
+                    f"<b>Pár:</b> {symbol}\n"
+                    f"<b>Výsledok:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
+                )
             except Exception as e:
                 print(f"Chyba kill switch: {e}", flush=True)
             del ACTIVE_TRADES[coin]
@@ -357,7 +382,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; border-bottom: 1px solid rgba(255,255,255,0.06); padding-bottom: 12px; }
         .brand-title { font-size: 1.1rem; font-weight: 800; color: #00f0ff; letter-spacing: 1px; text-transform: uppercase; }
         .controls-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,255,255,0.04); border: 1px solid rgba(0,255,255,0.15); padding: 12px 16px; border-radius: 12px; margin-bottom: 20px; }
-        .bot-state-btn { padding: 8px 16px; border-radius: 8px; font-weight: 700; font-size: 0.75rem; cursor: uppercase; border: 1px solid; }
+        .bot-state-btn { padding: 8px 16px; border-radius: 8px; font-weight: 700; font-size: 0.75rem; cursor: pointer; border: 1px solid; }
         .btn-start { background: rgba(0, 255, 136, 0.15); color: #00ff88; border-color: #00ff88; }
         .btn-stop { background: rgba(255, 68, 68, 0.15); color: #ff4444; border-color: #ff4444; }
         .kill-switch-btn { background: linear-gradient(135deg, #ff0055, #990033); color: #fff; border: 1px solid #ff0055; padding: 8px 16px; border-radius: 8px; font-weight: 700; font-size: 0.75rem; cursor: pointer; text-transform: uppercase; }
@@ -379,7 +404,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ Apex Scalper PRO - TradingView Webhook HUD</div>
+            <div class="brand-title">⚡ Apex Scalper PRO - Webhook CyberHUD</div>
             <a href="/" style="color: #00f0ff; font-size: 0.75rem; text-decoration: none;">🔄 Obnoviť</a>
         </div>
 
