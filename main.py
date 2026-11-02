@@ -63,7 +63,7 @@ SETTINGS = {
     "ttp_trigger_pct": 1.2,
     "ttp_callback_pct": 0.4,
     "min_vol": 10000.0,
-    "min_change": -50.0, # Uvoľnené, aby ukazovalo aj mince v miernej korekcii
+    "min_change": -50.0,
     "max_change": 100.0
 }
 
@@ -133,7 +133,7 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
       "probability": 35,
   }
   try:
-    url = f"/api/v5/market/candles?instId={inst_id}&bar={CURRENT_TIMEFRAME}&limit=40"
+    url = f"/api/v5/market/candles?instId={inst_id}&bar={CURRENT_TIMEFRAME}&limit=45"
     res = okx_request("GET", url)
     if res.get("code") != "0" or not res.get("data"):
       return result
@@ -141,7 +141,7 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     raw_candles = res["data"]
     raw_candles.reverse()
 
-    if len(raw_candles) < 25:
+    if len(raw_candles) < 30:
       return result
 
     closes = [safe_float(c[4]) for c in raw_candles]
@@ -167,10 +167,16 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     slow_ma = calc_ema(vol_directions, min(slow_len, len(vol_directions)))
     oscillator_val = fast_ma - slow_ma
 
-    osc_history = [fast_ma - slow_ma for _ in range(signal_len)]
+    # Simulácia histórie oscilátora pre výpočet signálnej čiary MA a jej preťatí (crossover)
+    osc_history = [fast_ma - slow_ma for _ in range(signal_len + 5)]
     signal_line = calc_ema(osc_history, signal_len)
+    prev_signal_line = calc_ema(osc_history[:-1], signal_len) if len(osc_history) > 1 else signal_line
 
-    volume_bullish = oscillator_val > 0
+    # 🟢 Podmienka: Biela signálna čiara MA je NAD nulovou líniou a pretína stĺpce / rastie (All Green logika)
+    signal_above_zero = signal_line > 0
+    signal_crossover = signal_line > prev_signal_line and oscillator_val >= signal_line
+    volume_bullish = oscillator_val > 0 and signal_above_zero and signal_crossover
+
     result["volume_status"] = volume_bullish
 
     recent_high = max(highs[-25:])
@@ -183,16 +189,16 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     result["fib_status"] = fib_touch
 
     if CURRENT_STRATEGY_MODE == "Agresívny Momentum (Breakout)":
-      price_breakout = closes[-1] > closes[-3]
-      buy_trigger = volume_bullish and price_breakout
-      result["impulse_status"] = price_breakout
+      price_action_ok = closes[-1] > closes[-2]  # Uzavretie po close sviečky
+      buy_trigger = volume_bullish and price_action_ok
+      result["impulse_status"] = price_action_ok
       result["buy_ready"] = buy_trigger
-      result["probability"] = 85 if buy_trigger else (55 if volume_bullish else 35)
+      result["probability"] = 90 if buy_trigger else (60 if volume_bullish else 35)
     else:
       fib_buy = volume_bullish and fib_touch
       result["impulse_status"] = fib_touch
       result["buy_ready"] = fib_buy
-      result["probability"] = 90 if fib_buy else (50 if volume_bullish else 30)
+      result["probability"] = 95 if fib_buy else (55 if volume_bullish else 30)
 
   except Exception as e:
     print(f"❌ Chyba checklistu pre {inst_id}: {e}", flush=True)
@@ -258,10 +264,9 @@ async def top_gainer_scanner_loop():
         except Exception:
           continue
 
-      # Zoradíme kandidátov tak, aby najprv išli tie s buy_ready, potom podľa pravdepodobnosti a objemu
       candidates.sort(key=lambda x: (x["buy_ready"], x["probability"], x["volume"]), reverse=True)
       if candidates:
-        MARKET_RADAR = candidates[:20]  # Vždy ukáže Top 20 vyhovujúcich mincí
+        MARKET_RADAR = candidates[:20]
 
       for cand in candidates:
         if not cand["buy_ready"]:
@@ -319,7 +324,7 @@ async def top_gainer_scanner_loop():
           CURRENT_STAGE = f"STAV: 🔴 V OBCHODE [{cand['instId']}] (TF: {CURRENT_TIMEFRAME})..."
 
           send_telegram_msg(
-              f"🟢 <b>[APEX SCALPER v5.4.5 - NÁKUP]</b>\n"
+              f"🟢 <b>[APEX SCALPER v5.4.5 - NÁKUP (All Green)]</b>\n"
               f"<b>Pár:</b> {cand['instId']}\n"
               f"<b>Cena:</b> {current_price:.4f}\n"
               f"<b>Množstvo:</b> {coin_amount} {coin_name}\n"
@@ -404,19 +409,31 @@ async def advanced_risk_monitor_loop():
               CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Zisk úspešne uzamknutý!"
               continue
 
-          if current_price <= trade["current_sl_price"]:
+          # 🔴 Podmienka predaja po zatvoreti sviečky / červená kontrolka / Stop-Loss
+          candles_res = okx_request("GET", f"/api/v5/market/candles?instId={symbol}&bar={CURRENT_TIMEFRAME}&limit=10")
+          sell_signal_triggered = False
+          if candles_res.get("code") == "0" and candles_res.get("data"):
+            c_list = candles_res["data"]
+            c_list.reverse()
+            # Overenie červenej kontrolky po uzavretí sviečky
+            closes_c = [safe_float(c[4]) for c in c_list]
+            if closes_c[-1] < closes_c[-2] and pnl_pct < -0.3:
+              sell_signal_triggered = True
+
+          if current_price <= trade["current_sl_price"] or sell_signal_triggered:
+            exit_reason = "Stop-Loss / Exit" if current_price <= trade["current_sl_price"] else "Signál predaja (Červená kontrolka)"
             try:
               okx_request("POST", "/api/v5/trade/order", json.dumps({
                   "instId": symbol, "tdMode": "cash", "side": "sell", "ordType": "market", "sz": str(trade["amount"]),
               }))
-              record_closed_trade(symbol, pnl_pct, pnl_usdc, "Stop-Loss / Exit")
-              send_telegram_msg(f"🚨 <b>[SL EXIT v5.4.5]</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+              record_closed_trade(symbol, pnl_pct, pnl_usdc, exit_reason)
+              send_telegram_msg(f"🚨 <b>[{exit_reason.upper()}]</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
             except Exception as err:
-              print(f"❌ Chyba SL: {err}", flush=True)
+              print(f"❌ Chyba SL/Sell: {err}", flush=True)
 
             if coin in ACTIVE_TRADES:
               del ACTIVE_TRADES[coin]
-            CURRENT_STAGE = "STAV: 🟢 Mimo obchodu. Pozícia zatvorená."
+            CURRENT_STAGE = f"STAV: 🟢 Mimo obchodu. Pozícia zatvorená ({exit_reason})."
             continue
 
     except Exception as main_err:
@@ -632,7 +649,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <div class="stat-value">{{ total_trades }}</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Úspešność (Win Rate)</div>
+                <div class="stat-label">Úspešnosť (Win Rate)</div>
                 <div class="stat-value" style="color: #00ff88;">{{ win_rate }}%</div>
             </div>
             <div class="stat-card">
