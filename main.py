@@ -31,7 +31,7 @@ def send_telegram_msg(message: str):
     except Exception as err:
         print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
-# --- 🟢 1. POVOLENÝ WATCHLIST (TOP 20/30 PROFILY & USDC PÁRY) ---
+# --- 🟢 1. POVOLENÝ WATCHLIST ---
 WATCHLIST_SOL = ["SOL"]
 ALLOWED_STABLES = ["USDC", "USDT"]
 
@@ -41,13 +41,13 @@ MARKET_RADAR = []
 DAILY_PNL_CALENDAR = {}
 CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
-CURRENT_STAGE = "STAV: Mimo obchodu. Skenujem trh a čakám na webhooky..."
-LAST_TRADE_TIME = {}  # 🛡️ 5. 120s Zámok proti zacykleniu
-MAX_PARALLEL_TRADES = 1  # 🛡️ 2. Kapacitný limit paralelných obchodov
-trade_lock = asyncio.Lock()  # 🛡️ Ochrana proti súbehu
+CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na signál..."
+LAST_TRADE_TIME = {}
+MAX_PARALLEL_TRADES = 1
+trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
-# 🔘 HLAVNÝ PREPÍNAČ BOTA (ZAPNUTÝ / VYPNUTÝ)
+# 🔘 HLAVNÝ PREPÍNAČ BOTA
 IS_BOT_ACTIVE = True
 
 CURRENT_STRATEGY_MODE = "Agresívny Momentum (Breakout)"
@@ -151,7 +151,7 @@ def okx_request(method: str, path: str, body: str = ""):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 11. ZISŤOVANIE REÁLNEHO ZOSTATKU CEZ API ---
+# --- 11. ZISŤOVANIE REÁLNEHO ZOSTATKU ---
 def fetch_account_capital(stable_ccy="USDC") -> float:
     try:
         balance_res = okx_request("GET", "/api/v5/account/balance")
@@ -187,24 +187,20 @@ def calculate_position_budget(free_capital: float, current_price: float, inst_id
         base_budget = free_capital * 0.98
     else:
         base_budget = free_capital * 0.25
-
     if base_budget < 5.0:
         return 0.0
-
     return base_budget
 
-# --- 10. NEPRETRŽITÝ MONITOROVACÍ CYKLUS (RISK MANAGEMENT & HLADINY) ---
+# --- 10. NEPRETRŽITÝ MONITOROVACÍ CYKLUS ---
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
     await asyncio.sleep(3)
-    print(f"[{get_sk_time_str()}] 🛡️ Risk Management Monitor spustený...", flush=True)
-
     while True:
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
-                CURRENT_STAGE = "STAV: Bot ZAPNUTÝ. Skenujem trh a čakám na webhooky..."
+                CURRENT_STAGE = "STAV: Bot aktívny. Skenujem trh (15m)..."
             else:
-                CURRENT_STAGE = "STAV: Bot VYPNUTÝ (Pozastavený). Ignoruje nákupné webhooky."
+                CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
             continue
 
@@ -219,7 +215,6 @@ async def advanced_risk_monitor_loop():
                 # GTC Expirácia 48h
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
                 if now_time - bought_time > timedelta(hours=48):
-                    print(f"⏳ [GTC EXSPIRÁCIA 48H] Zatváram {symbol}", flush=True)
                     try:
                         ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={symbol}")
                         curr_p = safe_float(ticker_res['data'][0]['last']) if ticker_res.get('code') == '0' and ticker_res.get('data') else trade["entry_price"]
@@ -233,8 +228,8 @@ async def advanced_risk_monitor_loop():
                         pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
                         pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
                         record_closed_trade(symbol, pnl_pct, pnl_usdc, "GTC Expirácia 48h")
-                    except Exception as err:
-                        print(f"❌ Chyba GTC: {err}", flush=True)
+                    except Exception:
+                        pass
                     del ACTIVE_TRADES[coin]
                     continue
 
@@ -244,22 +239,21 @@ async def advanced_risk_monitor_loop():
                     if current_price <= 0:
                         continue
 
-                    # Aktualizácia najvyššej dosiahnutej ceny (Peak Price)
                     if current_price > trade["highest_price"]:
                         trade["highest_price"] = current_price
 
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
                     pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
 
-                    # 🎯 VÝPOČET ŽIVÝCH HLADÍN DYNAMICKY PRE CYBERHUD
+                    # Výpočet dynamických hladín
                     be_price = trade["entry_price"] * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
                     trail_stop_price = trade["highest_price"] * (1 - (SETTINGS["trail_pct"] / 100.0))
                     
                     if pnl_pct >= SETTINGS["be_trigger_pct"]:
                         trade["break_even_activated"] = True
-                        effective_sl = math.max(trail_stop_price, trade["entry_price"])
+                        effective_sl = max(trail_stop_price, trade["entry_price"])
                     else:
-                        effective_sl = trade["entry_price"] * 0.97  # Pevný SL -3%
+                        effective_sl = trade["entry_price"] * 0.97
 
                     ttp_activation_price = trade["entry_price"] * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0))
                     if current_price >= ttp_activation_price:
@@ -267,7 +261,6 @@ async def advanced_risk_monitor_loop():
 
                     ttp_stop_level = trade["highest_price"] * (1 - (SETTINGS["ttp_callback_pct"] / 100.0)) if trade.get("ttp_activated") else ttp_activation_price
 
-                    # Uloženie dynamických hladín pre zobrazenie v UI
                     trade["current_price"] = current_price
                     trade["live_pnl_pct"] = pnl_pct
                     trade["live_pnl_usdc"] = pnl_usdc
@@ -275,11 +268,11 @@ async def advanced_risk_monitor_loop():
                     trade["current_sl_price"] = effective_sl
                     trade["ttp_target_price"] = ttp_stop_level
 
-                    CURRENT_STAGE = f"STAV: 🟢 Aktívny obchod {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
+                    CURRENT_STAGE = f"STAV: Pozícia {symbol} aktívna | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
 
-                    # Vyhodnotenie Stop-Loss / Break-Even exekúcie
+                    # Stop-Loss / Break-Even exekúcia
                     if current_price <= effective_sl:
-                        reason = "[BREAK-EVEN OCHRANA]" if effective_sl >= trade["entry_price"] else "[STOP-LOSS -3%]"
+                        reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else "Stop-Loss (-3%)"
                         try:
                             limit_exit_price = current_price * 0.998
                             order_body = json.dumps({
@@ -289,15 +282,15 @@ async def advanced_risk_monitor_loop():
                             })
                             okx_request("POST", "/api/v5/trade/order", order_body)
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                            send_telegram_msg(f"🚨 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                        except Exception as err:
-                            print(f"❌ Chyba SL: {err}", flush=True)
+                            send_telegram_msg(f"🚨 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                        except Exception:
+                            pass
                         del ACTIVE_TRADES[coin]
                         continue
 
-                    # Vyhodnotenie Trailing Take Profit Exitu
+                    # Trailing Take Profit Exitu
                     if trade.get("ttp_activated") and current_price <= ttp_stop_level:
-                        reason = "[TRAILING TAKE PROFIT EXIT]"
+                        reason = "Trailing Take Profit"
                         try:
                             limit_exit_price = current_price * 0.998
                             order_body = json.dumps({
@@ -307,43 +300,34 @@ async def advanced_risk_monitor_loop():
                             })
                             okx_request("POST", "/api/v5/trade/order", order_body)
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                            send_telegram_msg(f"🎯 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                        except Exception as err:
-                            print(f"❌ Chyba TTP: {err}", flush=True)
+                            send_telegram_msg(f"🎯 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                        except Exception:
+                            pass
                         del ACTIVE_TRADES[coin]
                         continue
-
-        except Exception as main_err:
-            print(f"❌ Chyba v monitorovaní: {main_err}", flush=True)
+        except Exception:
+            pass
 
         await asyncio.sleep(2)
 
-# --- WEBHOOK SPRACUJÚCI SIGNÁLY Z TRADINGVIEW ---
+# --- WEBHOOK SPRACOVANIE ---
 async def execute_trade_in_background(data: dict):
-    global ACTIVE_TRADES, LAST_TRADE_TIME, IS_ORDER_PROCESSING
+    global ACTIVE_TRADES, LAST_TRADE_TIME
     async with trade_lock:
         try:
             action = str(data.get("action", "")).lower().strip()
             tv_ticker = str(data.get("symbol", data.get("ticker", ""))).upper().strip()
             coin_name, okx_symbol = format_tv_ticker(tv_ticker)
-
             now_ts = datetime.now().timestamp()
 
             if action == "buy":
                 if not IS_BOT_ACTIVE:
-                    print("⚠️ IGNOROVANÝ NÁKUP: Bot je momentálne VYPNUTÝ v ovládacom paneli.", flush=True)
                     return
-
                 if coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"]):
-                    print(f"⚠️ IGNOROVANÝ NÁKUP: Pre {coin_name} prebehol nákup pred menej ako 120s.", flush=True)
                     return
-
                 if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or coin_name in ACTIVE_TRADES:
-                    print(f"⚠️ NÁKUP PRESKOČENÝ: Dosiahnutý limit pozícií ({len(ACTIVE_TRADES)}/{MAX_PARALLEL_TRADES}).", flush=True)
                     return
-
                 if not check_btc_health():
-                    print("⚠️ NÁKUP BLOKOVANÝ: BTC Trend Guard detegoval pokles.", flush=True)
                     return
 
                 LAST_TRADE_TIME[coin_name] = now_ts
@@ -352,12 +336,10 @@ async def execute_trade_in_background(data: dict):
                 free_capital = fetch_account_capital(stable_ccy)
                 safe_budget = calculate_position_budget(free_capital, 0.0, okx_symbol)
                 if safe_budget <= 0:
-                    print(f"❌ Nedostatok prostriedkov: {free_capital} {stable_ccy}", flush=True)
                     return
 
                 ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={okx_symbol}")
                 if ticker_res.get("code") != "0" or not ticker_res.get("data"):
-                    print(f"❌ Chyba ceny: {ticker_res}", flush=True)
                     return
 
                 current_price = safe_float(ticker_res["data"][0]["last"])
@@ -372,7 +354,6 @@ async def execute_trade_in_background(data: dict):
 
                 order_res = okx_request("POST", "/api/v5/trade/order", order_body)
                 if order_res.get("code") != "0":
-                    print(f"❌ Chyba nákupu: {order_res}", flush=True)
                     return
 
                 sl_price = current_price * 0.97
@@ -397,12 +378,10 @@ async def execute_trade_in_background(data: dict):
                 }
 
                 send_telegram_msg(
-                    f"🟢 <b>OTVORENÝ NOVÝ OBCHOD (BUY)</b>\n"
+                    f"🟢 <b>NOVÝ OBCHOD (BUY)</b>\n"
                     f"<b>Pár:</b> {okx_symbol}\n"
-                    f"<b>Vstupná cena:</b> {current_price:.4f}\n"
-                    f"<b>Investícia:</b> {safe_budget:.2f} {stable_ccy}\n"
-                    f"🎯 <b>Break-Even (+0.6%):</b> {be_price:.4f}\n"
-                    f"🎯 <b>Trailing TP (+0.8%):</b> {ttp_price:.4f}"
+                    f"<b>Vstup:</b> {current_price:.4f}\n"
+                    f"<b>Investícia:</b> {safe_budget:.2f} USDC"
                 )
 
             elif action == "sell":
@@ -430,16 +409,16 @@ async def execute_trade_in_background(data: dict):
                     if order_res.get("code") == "0":
                         pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
                         pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
-                        record_closed_trade(pair_to_sell, pnl_pct, pnl_usdc, "Predaj z Webhooku")
-                        send_telegram_msg(f"🔴 <b>UZAVRETÝ OBCHOD (WEBHOOK PREDAJ)</b>\n<b>Pár:</b> {pair_to_sell}\n<b>Výsledok:</b> {pnl_pct:+.2f}%")
+                        record_closed_trade(pair_to_sell, pnl_pct, pnl_usdc, "Webhook Predaj")
+                        send_telegram_msg(f"🔴 <b>PREDAJ (WEBHOOK)</b>\n<b>Pár:</b> {pair_to_sell}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                         del ACTIVE_TRADES[target_coin]
-        except Exception as e:
-            print(f"❌ CHYBA WEBHOOKU: {e}", flush=True)
+        except Exception:
+            pass
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.5 spustený s novým ovládaním!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.5 spustený v minimalistickom režime.</b>")
     yield
     monitor_task.cancel()
 
@@ -450,7 +429,6 @@ app = FastAPI(lifespan=lifespan)
 async def tradingview_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         data = await request.json()
-        print(f"📥 PRIJATÝ WEBHOOK: {data}", flush=True)
         action = str(data.get("action", "")).lower().strip()
         tv_ticker = str(data.get("symbol", data.get("ticker", ""))).upper().strip()
         coin_name, okx_symbol = format_tv_ticker(tv_ticker)
@@ -463,23 +441,21 @@ async def tradingview_webhook(request: Request, background_tasks: BackgroundTask
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-# 🔘 1. NOVÝ ENDPOINT PRE PREPÍNANIE ZAPNUTÉ / VYPNUTÉ
 @app.post("/api/toggle-bot")
 async def toggle_bot():
     global IS_BOT_ACTIVE, CURRENT_STAGE
     IS_BOT_ACTIVE = not IS_BOT_ACTIVE
-    status_str = "ZAPNUTÝ" if IS_BOT_ACTIVE else "VYPNUTÝ"
-    CURRENT_STAGE = f"STAV: Bot je teraz {status_str}."
-    send_telegram_msg(f"⚙️ <b>ZMENA STAVU BOTA:</b> Bot bol ručne {status_str}.")
+    status_str = "aktívny" if IS_BOT_ACTIVE else "pozastavený"
+    CURRENT_STAGE = f"STAV: Bot je {status_str}."
+    send_telegram_msg(f"⚙️ Bot bol ručne prepnutý: {status_str.upper()}")
     return JSONResponse({"status": "success", "is_bot_active": IS_BOT_ACTIVE})
 
-# 🔘 2. NOVÝ ENDPOINT PRE OKAMŽITÝ RUČNÝ PREDAJ (SELL BUTTON)
 @app.post("/api/sell-now")
 async def sell_now():
     global ACTIVE_TRADES
     async with trade_lock:
         if not ACTIVE_TRADES:
-            return JSONResponse({"status": "error", "message": "Žiadny aktívny obchod na predaj."})
+            return JSONResponse({"status": "error", "message": "Žiadna aktívna pozícia."})
         
         sold = []
         for coin in list(ACTIVE_TRADES.keys()):
@@ -499,137 +475,152 @@ async def sell_now():
                 
                 pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
                 pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
-                record_closed_trade(symbol, pnl_pct, pnl_usdc, "Ručný okamžitý predaj (UI SELL)")
+                record_closed_trade(symbol, pnl_pct, pnl_usdc, "Ručný predaj (UI)")
                 
-                send_telegram_msg(
-                    f"⚡ <b>OKAMŽITÝ RUČNÝ PREDAJ (UI BUTTON)</b>\n"
-                    f"<b>Pár:</b> {symbol}\n"
-                    f"<b>Predané pri cene:</b> {curr_p:.4f}\n"
-                    f"<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
-                )
+                send_telegram_msg(f"⚡ <b>OKAMŽITÝ RUČNÝ PREDAJ</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                 sold.append(symbol)
-            except Exception as e:
-                print(f"Chyba pri ručnom predaji: {e}", flush=True)
+            except Exception:
+                pass
             del ACTIVE_TRADES[coin]
 
         return JSONResponse({"status": "success", "sold": sold})
 
+# --- MINIMALISTICKÝ DESIGN (ČIERNA, BIELA, TRADING TERMINAL STYLE) ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.4.5 PRO - Command Center</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <title>Apex Scalper v5.4.5 PRO — Terminal</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: 'Inter', sans-serif; background: #070a12; color: #e5e7eb; padding: 24px; min-height: 100vh; }
-        .container { max-width: 1100px; margin: 0 auto; }
-        
-        .header-card { 
-            background: linear-gradient(135deg, rgba(17,24,39,0.95), rgba(15,23,42,0.8)); 
-            border: 1px solid rgba(0,240,255,0.25); 
-            border-radius: 20px; padding: 24px; 
-            margin-bottom: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-            display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;
-        }
-        .title-area h1 { color: #00f0ff; font-weight: 800; font-size: 1.6rem; letter-spacing: -0.5px; }
-        .title-area p { color: #9ca3af; font-size: 0.9rem; margin-top: 4px; }
-        
-        .controls-group { display: flex; gap: 12px; align-items: center; }
-        
-        .btn { 
-            border: none; border-radius: 12px; padding: 12px 24px; font-weight: 700; 
-            font-size: 0.95rem; cursor: pointer; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 8px;
-        }
-        .btn-toggle-on { background: #10b981; color: #ffffff; box-shadow: 0 0 15px rgba(16,185,129,0.4); }
-        .btn-toggle-on:hover { background: #059669; }
-        .btn-toggle-off { background: #6b7280; color: #ffffff; }
-        .btn-toggle-off:hover { background: #4b5563; }
-        
-        .btn-sell-now { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; box-shadow: 0 0 15px rgba(239,68,68,0.4); }
-        .btn-sell-now:hover { background: #b91c1c; transform: translateY(-1px); }
-        .btn-sell-now:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; transform: none; }
-        
-        .status-banner {
-            background: rgba(17, 24, 39, 0.7); border-left: 4px solid #00f0ff;
-            padding: 14px 20px; border-radius: 8px; margin-bottom: 24px; font-weight: 600; color: #38bdf8;
+        :root {
+            --bg-color: #000000;
+            --card-bg: #0a0a0c;
+            --border-color: #1a1a1e;
+            --border-hover: #33333b;
+            --text-main: #f4f4f5;
+            --text-muted: #71717a;
+            --accent-white: #ffffff;
+            --green: #22c55e;
+            --red: #ef4444;
+            --yellow: #f59e0b;
         }
 
-        .card { 
-            background: rgba(17,24,39,0.8); border: 1px solid rgba(255,255,255,0.08); 
-            border-radius: 16px; padding: 20px; margin-bottom: 24px; 
-        }
-        .card-header { font-size: 1.1rem; font-weight: 700; color: #f3f4f6; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; }
+        body { background-color: var(--bg-color); color: var(--text-main); padding: 32px 16px; min-height: 100vh; }
         
-        table { width: 100%; border-collapse: collapse; text-align: left; }
-        th { color: #9ca3af; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.1); }
-        td { padding: 14px 12px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.95rem; }
-        
-        .badge { padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: 700; }
-        .badge-sol { background: rgba(168,85,247,0.2); color: #c084fc; border: 1px solid rgba(168,85,247,0.4); }
-        
-        .level-highlight { font-weight: 600; color: #fbbf24; }
-        .sl-highlight { color: #f87171; font-weight: 600; }
-        .tp-highlight { color: #34d399; font-weight: 600; }
+        .container { max-width: 1000px; margin: 0 auto; }
 
-        .pnl-green { color: #34d399; font-weight: 800; } 
-        .pnl-red { color: #f87171; font-weight: 800; }
+        /* Top Bar */
+        .top-bar {
+            display: flex; justify-content: space-between; align-items: center;
+            border-bottom: 1px solid var(--border-color); padding-bottom: 24px; margin-bottom: 24px;
+            flex-wrap: wrap; gap: 16px;
+        }
+        .brand h1 { font-size: 1.15rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
+        .brand p { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
+
+        .actions { display: flex; gap: 10px; align-items: center; }
+
+        /* Minimalist Buttons */
+        .btn {
+            background: transparent; border: 1px solid var(--border-hover); color: var(--text-main);
+            padding: 8px 16px; font-size: 0.8rem; font-weight: 500; cursor: pointer; border-radius: 4px;
+            transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .btn:hover { border-color: var(--text-muted); background: rgba(255,255,255,0.02); }
         
-        .empty-state { text-align: center; color: #6b7280; padding: 30px; font-style: italic; }
+        .btn-on { border-color: var(--green); color: var(--green); }
+        .btn-off { border-color: var(--text-muted); color: var(--text-muted); }
+        
+        .btn-sell { background: var(--accent-white); color: var(--bg-color); font-weight: 700; border-color: var(--accent-white); }
+        .btn-sell:hover { background: #e4e4e7; }
+        .btn-sell:disabled { opacity: 0.2; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
+
+        /* Status Line */
+        .status-ticker {
+            font-size: 0.8rem; color: var(--text-muted); background: var(--card-bg);
+            border: 1px solid var(--border-color); padding: 10px 16px; border-radius: 4px;
+            margin-bottom: 24px; display: flex; align-items: center; gap: 8px;
+        }
+        .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
+
+        /* Sections */
+        .section-title { font-size: 0.85rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-bottom: 12px; }
+        
+        .terminal-card {
+            background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px;
+            overflow: hidden; margin-bottom: 24px;
+        }
+
+        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.85rem; }
+        th { color: var(--text-muted); font-weight: 400; padding: 12px 16px; border-bottom: 1px solid var(--border-color); font-size: 0.75rem; text-transform: uppercase; }
+        td { padding: 14px 16px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
+        tr:last-child td { border-bottom: none; }
+
+        .tag { font-size: 0.75rem; padding: 2px 6px; border: 1px solid var(--border-hover); border-radius: 3px; color: var(--accent-white); }
+        
+        .val-price { color: var(--accent-white); font-weight: 500; }
+        .val-be { color: var(--yellow); }
+        .val-sl { color: var(--red); }
+        .val-tp { color: var(--green); }
+
+        .pnl-green { color: var(--green); font-weight: 700; }
+        .pnl-red { color: var(--red); font-weight: 700; }
+
+        .empty { padding: 32px; text-align: center; color: var(--text-muted); font-size: 0.85rem; }
     </style>
 </head>
 <body>
     <div class="container">
-        <!-- HEADER -->
-        <div class="header-card">
-            <div class="title-area">
-                <h1>⚡ APEX SCALPER v5.4.5 PRO</h1>
-                <p>SOL-USDC 15m Scalping System | OKX Demo Mode</p>
+        <!-- TOP BAR -->
+        <div class="top-bar">
+            <div class="brand">
+                <h1>APEX SCALPER // PRO v5.4.5</h1>
+                <p>SOL-USDC · 15m Timeframe · OKX Demo</p>
             </div>
-            <div class="controls-group">
-                <!-- 🔘 1. ZAPNÚŤ / VYPNUTÚŤ BOTA -->
-                <button id="toggleBtn" onclick="toggleBot()" class="btn {{ 'btn-toggle-on' if is_bot_active else 'btn-toggle-off' }}">
-                    {{ '🟢 BOT AKTÍVNY' if is_bot_active else '🔴 BOT VYPNUTÝ' }}
+            <div class="actions">
+                <button id="toggleBtn" onclick="toggleBot()" class="btn {{ 'btn-on' if is_bot_active else 'btn-off' }}">
+                    {{ '● SYSTEM ACTIVE' if is_bot_active else '○ SYSTEM PAUSED' }}
                 </button>
-                
-                <!-- 🔘 2. OKAMŽITÝ PREDAJ (SELL NOW) -->
-                <button id="sellBtn" onclick="sellNow()" class="btn btn-sell-now" {{ '' if trades else 'disabled' }}>
-                    ⚡ SELL NOW (PREDAŤ)
+                <button id="sellBtn" onclick="sellNow()" class="btn btn-sell" {{ '' if trades else 'disabled' }}>
+                    ⚡ EMERGENCY SELL
                 </button>
             </div>
         </div>
 
-        <!-- STAV BANNER -->
-        <div class="status-banner">
-            {{ current_stage }}
+        <!-- STATUS TICKER -->
+        <div class="status-ticker">
+            <div class="status-dot"></div>
+            <span>{{ current_stage }}</span>
         </div>
 
-        <!-- AKTÍVNE OBCHODY & ŽIVÉ HLADINY -->
-        <div class="card">
-            <div class="card-header">🔴 Aktívny Obchod & Živé Hladiny (15m Wave Tracking)</div>
+        <!-- ACTIVE TRADES -->
+        <div class="section-title">Active Position & Dynamic Levels</div>
+        <div class="terminal-card">
             {% if trades %}
                 <table>
                     <thead>
                         <tr>
-                            <th>Pár</th>
-                            <th>Vstupná cena</th>
-                            <th>Aktuálna cena</th>
-                            <th>Break-Even (+0.6%)</th>
-                            <th>Trailing Stop (0.7%)</th>
-                            <th>Trailing TP (+0.8%)</th>
-                            <th>Živý PnL</th>
+                            <th>Pair</th>
+                            <th>Entry</th>
+                            <th>Current</th>
+                            <th>Break-Even</th>
+                            <th>Trailing SL</th>
+                            <th>Trailing TP</th>
+                            <th>Live PnL</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for t, d in trades.items() %}
                         <tr>
-                            <td><span class="badge badge-sol">{{ d.market_pair }}</span></td>
-                            <td><b>{{ "%.4f"|format(d.entry_price) }} $</b></td>
-                            <td><b style="color:#00f0ff;">{{ "%.4f"|format(d.current_price) }} $</b></td>
-                            <td class="level-highlight">{{ "%.4f"|format(d.be_target_price) }} $</td>
-                            <td class="sl-highlight">{{ "%.4f"|format(d.current_sl_price) }} $</td>
-                            <td class="tp-highlight">{{ "%.4f"|format(d.ttp_target_price) }} $</td>
+                            <td><span class="tag">{{ d.market_pair }}</span></td>
+                            <td>{{ "%.4f"|format(d.entry_price) }}</td>
+                            <td class="val-price">{{ "%.4f"|format(d.current_price) }}</td>
+                            <td class="val-be">{{ "%.4f"|format(d.be_target_price) }}</td>
+                            <td class="val-sl">{{ "%.4f"|format(d.current_sl_price) }}</td>
+                            <td class="val-tp">{{ "%.4f"|format(d.ttp_target_price) }}</td>
                             <td class="{{ 'pnl-green' if d.live_pnl_pct >= 0 else 'pnl-red' }}">
                                 {{ "%+.2f"|format(d.live_pnl_pct) }}% ({{ "%+.2f"|format(d.live_pnl_usdc) }} $)
                             </td>
@@ -638,29 +629,29 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </tbody>
                 </table>
             {% else %}
-                <div class="empty-state">Momentálne nie je otvorená žiadna pozícia. Bot čaká na breakout signál.</div>
+                <div class="empty">No active positions. Scanning orderbook for breakout triggers...</div>
             {% endif %}
         </div>
 
-        <!-- HISTÓRIA OBCHODOV -->
-        <div class="card">
-            <div class="card-header">📜 História Uzavretých Obchodov</div>
+        <!-- HISTORY -->
+        <div class="section-title">Execution History</div>
+        <div class="terminal-card">
             {% if history %}
                 <table>
                     <thead>
                         <tr>
-                            <th>Čas exekúcie</th>
-                            <th>Pár</th>
-                            <th>Dôvod ukončenia</th>
-                            <th>Čistý PnL ($)</th>
+                            <th>Timestamp</th>
+                            <th>Pair</th>
+                            <th>Trigger Reason</th>
+                            <th>Net PnL</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for h in history %}
                         <tr>
-                            <td style="color:#9ca3af;">{{ h.time }}</td>
+                            <td style="color: var(--text-muted); font-size: 0.75rem;">{{ h.time }}</td>
                             <td><b>{{ h.pair }}</b></td>
-                            <td><span class="badge" style="background:rgba(255,255,255,0.05); color:#d1d5db;">{{ h.reason }}</span></td>
+                            <td style="color: var(--text-muted);">{{ h.reason }}</td>
                             <td class="{{ 'pnl-green' if h.pnl_usdc >= 0 else 'pnl-red' }}">
                                 {{ "%+.2f"|format(h.pnl_usdc) }} $ ({{ "%+.2f"|format(h.pnl_pct) }}%)
                             </td>
@@ -669,7 +660,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </tbody>
                 </table>
             {% else %}
-                <div class="empty-state">Žiadne uzavreté obchody v histórii.</div>
+                <div class="empty">No closed trades recorded yet.</div>
             {% endif %}
         </div>
     </div>
@@ -679,42 +670,25 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             try {
                 const res = await fetch('/api/toggle-bot', { method: 'POST' });
                 const data = await res.json();
-                if(data.status === 'success') {
-                    location.reload();
-                }
-            } catch(e) { alert('Chyba pri zmene stavu bota: ' + e); }
+                if(data.status === 'success') location.reload();
+            } catch(e) { alert('Error: ' + e); }
         }
 
         async function sellNow() {
-            if(!confirm("Naozaj chceš okamžite predaj aktívny obchod za aktuálnu trhovú cenu?")) return;
+            if(!confirm("Execute immediate market exit for active position?")) return;
             try {
                 const res = await fetch('/api/sell-now', { method: 'POST' });
                 const data = await res.json();
                 if(data.status === 'success') {
-                    alert('Obchod bol okamžite uzavretý!');
                     location.reload();
                 } else {
-                    alert('Chyba: ' + data.message);
+                    alert('Error: ' + data.message);
                 }
-            } catch(e) { alert('Chyba pri okamžitom predaji: ' + e); }
+            } catch(e) { alert('Error: ' + e); }
         }
 
-        // Automatické obnovovanie panela každé 3 sekundy
+        // Auto-refresh every 3 seconds for live tracking
         setTimeout(() => { location.reload(); }, 3000);
     </script>
 </body>
-</html>"""
-
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    template = Template(HTML_TEMPLATE_CONTENT)
-    return template.render(
-        trades=ACTIVE_TRADES,
-        history=CLOSED_TRADES_HISTORY,
-        current_stage=CURRENT_STAGE,
-        is_bot_active=IS_BOT_ACTIVE
-    )
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+</html>
