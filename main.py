@@ -2,6 +2,7 @@ import os
 import hmac
 import base64
 import json
+import math
 import asyncio
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
@@ -16,59 +17,57 @@ OKX_API_KEY = os.getenv("OKX_API_KEY", "638848ca-e65c-4074-bcfd-20cf4d292f2c")
 OKX_SECRET = os.getenv("OKX_SECRET", "885934366C54F33B276E9E49E8EF87CF")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Australia111/")
 
-# --- 📱 TELEGRAM NOTIFIKÁCIE ---
+# --- 📱 TELEGRAM NOTIFIKÁCIE & INTERAKTÍVNE BOT OVLÁDANIE ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-def send_telegram_msg(message: str):
-    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("DOPLŇ"):
-        return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-        requests.post(url, json=payload, timeout=5)
-    except Exception as err:
-        print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
-
-WATCHLIST_SOL = ["SOL"]
-ALLOWED_STABLES = ["USDC", "USDT"]
-
+# --- GLOBAL STAV BOTA & LIMITOV ---
 ACTIVE_TRADES = {}
-MARKET_RADAR = []
 DAILY_PNL_CALENDAR = []
 CLOSED_TRADES_HISTORY = []
-PRICE_HISTORY = []
+SYSTEM_LOGS = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na signál..."
 LAST_TRADE_TIME = {}
 MAX_PARALLEL_TRADES = 1
 trade_lock = asyncio.Lock()
-IS_ORDER_PROCESSING = False
 
 IS_BOT_ACTIVE = True
 CURRENT_TIMEFRAME = "15m"
-
-PEAK_PORTFOLIO_VALUE = 0.0
-MAX_DRAWDOWN_PCT = 0.0
 STORAGE_FILE = "trades_history.json"
+ALLOWED_STABLES = ["USDC", "USDT"]
 
 SETTINGS = {
-    "fast_len": 3,
-    "slow_len": 20,
-    "signal_len": 9,
     "trail_pct": 0.7,
     "use_breakeven": True,
     "be_trigger_pct": 0.6,
     "use_trailing_tp": True,
     "ttp_trigger_pct": 0.8,
     "ttp_callback_pct": 0.2,
-    "min_vol": 10000.0,
-    "min_change": -50.0,
-    "max_change": 100.0,
     "use_btc_filter": True,
-    "use_dynamic_sizing": True,
     "reentry_cooldown_sec": 120,
-    "webhook_secret": "moje_tajne_heslo_123"
 }
+
+def log_event(message: str):
+    """Zápis udalostí do živých systémových logov pre UI"""
+    timestamp = datetime.now(timezone.utc) + timedelta(hours=1)
+    time_str = timestamp.strftime("%H:%M:%S")
+    entry = f"[{time_str}] {message}"
+    SYSTEM_LOGS.insert(0, entry)
+    if len(SYSTEM_LOGS) > 30:
+        SYSTEM_LOGS.pop()
+    print(entry, flush=True)
+
+def send_telegram_msg(message: str, reply_markup=None):
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("DOPLŇ"):
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        requests.post(url, json=payload, timeout=5)
+    except Exception as err:
+        print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
 # --- PERSISTENTNÉ ÚLOŽISKO (3 MESIACE / 90 DNÍ) ---
 def load_persistent_data():
@@ -79,9 +78,9 @@ def load_persistent_data():
                 data = json.load(f)
                 CLOSED_TRADES_HISTORY = data.get("history", [])
                 DAILY_PNL_CALENDAR = data.get("calendar", [])
-                print(f"📂 Načítaných {len(CLOSED_TRADES_HISTORY)} histórie obchodov z disku.", flush=True)
+                log_event(f"📂 Načítaných {len(CLOSED_TRADES_HISTORY)} histórie obchodov z disku.")
         except Exception as e:
-            print(f"⚠️ Chyba pri načítaní úložiska: {e}", flush=True)
+            log_event(f"⚠️ Chyba pri načítaní úložiska: {e}")
 
 def save_persistent_data():
     try:
@@ -95,7 +94,7 @@ def save_persistent_data():
         with open(STORAGE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"⚠️ Chyba pri ukladaní údajov na disk: {e}", flush=True)
+        log_event(f"⚠️ Chyba pri ukladaní údajov na disk: {e}")
 
 def get_sk_time_str() -> str:
     sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -122,6 +121,25 @@ def format_tv_ticker(raw_ticker: str):
             coin = clean[:-len(stable)]
             return coin, f"{coin}-{stable}"
     return clean, f"{clean}-USDC"
+
+def calculate_stats():
+    """Výpočet štatistík: Win Rate, Celkový PnL a počet výhier/strát"""
+    total = len(CLOSED_TRADES_HISTORY)
+    if total == 0:
+        return {"win_rate": 0.0, "total_trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
+    
+    wins = sum(1 for h in CLOSED_TRADES_HISTORY if h.get("pnl_usdc", 0) > 0)
+    losses = sum(1 for h in CLOSED_TRADES_HISTORY if h.get("pnl_usdc", 0) <= 0)
+    win_rate = (wins / total) * 100.0
+    total_pnl = sum(h.get("pnl_usdc", 0) for h in CLOSED_TRADES_HISTORY)
+    
+    return {
+        "win_rate": round(win_rate, 1),
+        "total_trades": total,
+        "wins": wins,
+        "losses": losses,
+        "total_pnl": round(total_pnl, 2)
+    }
 
 def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
     global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR
@@ -178,7 +196,7 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
                         avail = safe_float(detail.get("availBal", 0))
                         return avail
     except Exception as err:
-        print(f"⚠️ Chyba pri načítaní zostatku: {err}", flush=True)
+        log_event(f"⚠️ Chyba pri načítaní zostatku: {err}")
     return 3000.0
 
 def check_btc_health() -> bool:
@@ -241,6 +259,7 @@ async def advanced_risk_monitor_loop():
                         pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
                         pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
                         record_closed_trade(symbol, pnl_pct, pnl_usdc, "GTC Expirácia 48h")
+                        log_event(f"⏳ Expirácia 48h pre {symbol} | PnL: {pnl_pct:+.2f}%")
                     except Exception:
                         pass
                     del ACTIVE_TRADES[coin]
@@ -293,7 +312,8 @@ async def advanced_risk_monitor_loop():
                             })
                             okx_request("POST", "/api/v5/trade/order", order_body)
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                            send_telegram_msg(f"🚨 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                            log_event(f"🚨 Uzavretý obchod ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}%")
+                            send_telegram_msg(f"🚨 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
                         except Exception:
                             pass
                         del ACTIVE_TRADES[coin]
@@ -310,7 +330,8 @@ async def advanced_risk_monitor_loop():
                             })
                             okx_request("POST", "/api/v5/trade/order", order_body)
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                            send_telegram_msg(f"🎯 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                            log_event(f"🎯 Uzavretý obchod (Trailing TP) pre {symbol} | PnL: {pnl_pct:+.2f}%")
+                            send_telegram_msg(f"🎯 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
                         except Exception:
                             pass
                         del ACTIVE_TRADES[coin]
@@ -331,12 +352,16 @@ async def execute_trade_in_background(data: dict):
 
             if action == "buy":
                 if not IS_BOT_ACTIVE:
+                    log_event("⚠️ Ignorovaný buy signal: Bot je pozastavený.")
                     return
                 if coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"]):
+                    log_event(f"⚠️ Ignorovaný buy pre {coin_name}: 120s zamedzenie zacyklenia.")
                     return
                 if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or coin_name in ACTIVE_TRADES:
+                    log_event(f"⚠️ Preskočený buy: Dosiahnutý limit 1 pozície.")
                     return
                 if not check_btc_health():
+                    log_event("⚠️ Nákup blokovaný: BTC Trend Guard detegoval pokles.")
                     return
 
                 LAST_TRADE_TIME[coin_name] = now_ts
@@ -345,6 +370,7 @@ async def execute_trade_in_background(data: dict):
                 free_capital = fetch_account_capital(stable_ccy)
                 safe_budget = calculate_position_budget(free_capital, 0.0, okx_symbol)
                 if safe_budget <= 0:
+                    log_event(f"❌ Nedostatok prostriedkov pre nákup: {free_capital} {stable_ccy}")
                     return
 
                 ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={okx_symbol}")
@@ -363,6 +389,7 @@ async def execute_trade_in_background(data: dict):
 
                 order_res = okx_request("POST", "/api/v5/trade/order", order_body)
                 if order_res.get("code") != "0":
+                    log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
                     return
 
                 sl_price = current_price * 0.97
@@ -386,11 +413,24 @@ async def execute_trade_in_background(data: dict):
                     "live_pnl_usdc": 0.0
                 }
 
+                log_event(f"🛒 Nová pozícia: Nákup {okx_symbol} za {current_price:.4f} USDC")
+
+                # TELEGRAM INTERAKTÍVNE TLAČIDLÁ
+                inline_keyboard = {
+                    "inline_keyboard": [
+                        [
+                            {"text": "🛑 ZATVORIŤ POZÍCIU", "callback_data": "sell_now"},
+                            {"text": "⏸️ PAUZA BOTA", "callback_data": "toggle_bot"}
+                        ]
+                    ]
+                }
                 send_telegram_msg(
                     f"🟢 <b>NOVÝ OBCHOD (BUY)</b>\n"
                     f"<b>Pár:</b> {okx_symbol}\n"
                     f"<b>Vstup:</b> {current_price:.4f}\n"
-                    f"<b>Investícia:</b> {safe_budget:.2f} USDC"
+                    f"<b>Investícia:</b> {safe_budget:.2f} USDC\n"
+                    f"🎯 <b>BE (+0.6%):</b> {be_price:.4f} | <b>Trail TP (+0.8%):</b> {ttp_price:.4f}",
+                    reply_markup=inline_keyboard
                 )
 
             elif action == "sell":
@@ -419,16 +459,18 @@ async def execute_trade_in_background(data: dict):
                         pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
                         pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
                         record_closed_trade(pair_to_sell, pnl_pct, pnl_usdc, "Webhook Predaj")
+                        log_event(f"🔴 Predaj z Webhooku pre {pair_to_sell} | PnL: {pnl_pct:+.2f}%")
                         send_telegram_msg(f"🔴 <b>PREDAJ (WEBHOOK)</b>\n<b>Pár:</b> {pair_to_sell}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                         del ACTIVE_TRADES[target_coin]
-        except Exception:
-            pass
+        except Exception as e:
+            log_event(f"❌ Chyba webhooku: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
+    log_event("🚀 Apex Scalper PRO v5.4.5 spustený s Win Rate štatistikami a Telegram botom.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.5 spustený s 3-mesačnou pamäťou a USDC zostatkom.</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.5 plne spustený a pripravený na obchody!</b>")
     yield
     monitor_task.cancel()
 
@@ -439,6 +481,7 @@ app = FastAPI(lifespan=lifespan)
 async def tradingview_webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         data = await request.json()
+        log_event(f"📥 Prijatý webhook: {data}")
         action = str(data.get("action", "")).lower().strip()
         tv_ticker = str(data.get("symbol", data.get("ticker", ""))).upper().strip()
         coin_name, okx_symbol = format_tv_ticker(tv_ticker)
@@ -451,13 +494,31 @@ async def tradingview_webhook(request: Request, background_tasks: BackgroundTask
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.post("/api/telegram-webhook")
+async def telegram_webhook(request: Request):
+    """Spracovanie stlačení interaktívnych tlačidiel z Telegramu"""
+    try:
+        data = await request.json()
+        if "callback_query" in data:
+            cb = data["callback_query"]
+            cb_data = cb.get("data", "")
+            if cb_data == "sell_now":
+                await sell_now()
+                send_telegram_msg("⚡ <b>Ručný predaj aktivovaný z Telegramu!</b>")
+            elif cb_data == "toggle_bot":
+                await toggle_bot()
+    except Exception:
+        pass
+    return {"status": "ok"}
+
 @app.post("/api/toggle-bot")
 async def toggle_bot():
     global IS_BOT_ACTIVE, CURRENT_STAGE
     IS_BOT_ACTIVE = not IS_BOT_ACTIVE
     status_str = "aktívny" if IS_BOT_ACTIVE else "pozastavený"
     CURRENT_STAGE = f"STAV: Bot je {status_str}."
-    send_telegram_msg(f"⚙️ Bot bol ručne prepnutý: {status_str.upper()}")
+    log_event(f"⚙️ Prepínač bota: {status_str.upper()}")
+    send_telegram_msg(f"⚙️ <b>Zmena stavu:</b> Bot je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "is_bot_active": IS_BOT_ACTIVE})
 
 @app.post("/api/sell-now")
@@ -485,8 +546,9 @@ async def sell_now():
                 
                 pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
                 pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
-                record_closed_trade(symbol, pnl_pct, pnl_usdc, "Ručný predaj (UI)")
+                record_closed_trade(symbol, pnl_pct, pnl_usdc, "Ručný okamžitý predaj (UI)")
                 
+                log_event(f"⚡ Okamžitý ručný predaj pre {symbol} | PnL: {pnl_pct:+.2f}%")
                 send_telegram_msg(f"⚡ <b>OKAMŽITÝ RUČNÝ PREDAJ</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                 sold.append(symbol)
             except Exception:
@@ -553,6 +615,16 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
         .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
 
+        /* WIN RATE STATS GRID */
+        .stats-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 24px;
+        }
+        .stat-card {
+            background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 16px;
+        }
+        .stat-title { font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-value { font-size: 1.3rem; font-weight: 700; margin-top: 6px; color: var(--accent-white); }
+
         .section-title { font-size: 0.85rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-bottom: 12px; }
         
         .terminal-card {
@@ -575,12 +647,16 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .pnl-green { color: var(--green); font-weight: 700; }
         .pnl-red { color: var(--red); font-weight: 700; }
 
+        .logs-box {
+            padding: 16px; font-size: 0.75rem; color: var(--text-muted); max-height: 180px; overflow-y: auto; line-height: 1.6;
+        }
+
         .empty { padding: 32px; text-align: center; color: var(--text-muted); font-size: 0.85rem; }
     </style>
 </head>
 <body>
     <div class="container">
-        <!-- TOP BAR S USDC ZOSTATKOM -->
+        <!-- TOP BAR -->
         <div class="top-bar">
             <div class="brand">
                 <h1>APEX SCALPER // PRO v5.4.5</h1>
@@ -602,6 +678,26 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         <div class="status-ticker">
             <div class="status-dot"></div>
             <span>{{ current_stage }}</span>
+        </div>
+
+        <!-- WIN RATE STATS -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-title">Win Rate</div>
+                <div class="stat-value" style="color: var(--green);">{{ stats.win_rate }}%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-title">Total Trades</div>
+                <div class="stat-value">{{ stats.total_trades }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-title">Win / Loss Ratio</div>
+                <div class="stat-value"><span style="color: var(--green);">{{ stats.wins }}W</span> / <span style="color: var(--red);">{{ stats.losses }}L</span></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-title">Total Net PnL</div>
+                <div class="stat-value {{ 'pnl-green' if stats.total_pnl >= 0 else 'pnl-red' }}">{{ "%+.2f"|format(stats.total_pnl) }} $</div>
+            </div>
         </div>
 
         <!-- ACTIVE POSITION -->
@@ -670,7 +766,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% endif %}
         </div>
 
-        <!-- HISTÓRIA (3 MESIACE) -->
+        <!-- HISTÓRIA -->
         <div class="section-title">Execution History (3-Month Persistent Storage)</div>
         <div class="terminal-card">
             {% if history %}
@@ -699,6 +795,16 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% else %}
                 <div class="empty">No closed trades recorded yet.</div>
             {% endif %}
+        </div>
+
+        <!-- SYSTÉMOVÉ LOGY (LIVE SYSTEM LOGS) -->
+        <div class="section-title">System Execution Logs</div>
+        <div class="terminal-card">
+            <div class="logs-box">
+                {% for log in logs %}
+                    <div>{{ log }}</div>
+                {% endfor %}
+            </div>
         </div>
     </div>
 
@@ -732,6 +838,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     usdc_balance = fetch_account_capital("USDC")
+    stats = calculate_stats()
     template = Template(HTML_TEMPLATE_CONTENT)
     return template.render(
         trades=ACTIVE_TRADES,
@@ -739,7 +846,9 @@ async def dashboard():
         calendar=DAILY_PNL_CALENDAR,
         current_stage=CURRENT_STAGE,
         is_bot_active=IS_BOT_ACTIVE,
-        usdc_balance=usdc_balance
+        usdc_balance=usdc_balance,
+        stats=stats,
+        logs=SYSTEM_LOGS
     )
 
 if __name__ == "__main__":
