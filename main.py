@@ -36,7 +36,12 @@ def send_telegram_msg(message: str):
 
 # --- STAV BOTA ---
 ACTIVE_TRADES = {}
-MARKET_RADAR = []
+CURRENT_CHECKLIST = {
+    "volume_status": False, "volume_text": "🔴 SLABÉ",
+    "impulse_status": False, "impuls_text": "⚪ ČAKÁ", "impuls_color": "gray",
+    "fib_status": False, "buy_ready": False,
+    "probability": 35, "pokyn_text": "⚪ ČAKAJ", "pokyn_color": "silver"
+}
 DAILY_PNL_CALENDAR = {}
 CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
@@ -258,11 +263,11 @@ def evaluate_strategy_checklist(inst_id: str) -> dict:
     return result
 
 async def sol_trader_loop():
-    global ACTIVE_TRADES, LAST_TRADE_TIME, MARKET_RADAR, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING, IS_BOT_ACTIVE
+    global ACTIVE_TRADES, CURRENT_CHECKLIST, LAST_TRADE_TIME, CURRENT_STAGE, PRICE_HISTORY, IS_ORDER_PROCESSING, IS_BOT_ACTIVE
     await asyncio.sleep(2)
 
-    print(f"[{get_sk_time_str()}] ⚡ SOL-USDC BOT SPUSTENÝ (Obchodovanie s CELÝM zostatkom | TF: {CURRENT_TIMEFRAME})", flush=True)
-    send_telegram_msg(f"🚀 <b>[SOL-USDC BOT]</b> Spustený. Obchoduje výhradne <b>SOL-USDC</b> s celým zostatkom USDC.")
+    print(f"[{get_sk_time_str()}] ⚡ SOL-USDC BOT SPUSTENÝ (Plný zostatok | TF: {CURRENT_TIMEFRAME})", flush=True)
+    send_telegram_msg(f"🚀 <b>[SOL-USDC BOT]</b> Spustený. Sleduje checklist a obchoduje s celým zostatkom USDC.")
 
     while True:
         try:
@@ -277,11 +282,10 @@ async def sol_trader_loop():
                 continue
 
             if not check_btc_health():
-                CURRENT_STAGE = "STAV: 🛡️ BTC TREND GUARD AKTÍVNY (BTC klesá, nákup pozastavený)"
+                CURRENT_STAGE = "STAV: 🛡️ BTC TREND GUARD AKTÍVNY (BTC klesá)"
                 await asyncio.sleep(6)
                 continue
 
-            # Načítanie CELÉHO dostupného zostatku USDC
             balance_res = okx_request("GET", "/api/v5/account/balance")
             free_usdc = 0.0
             if balance_res.get("code") == "0":
@@ -292,28 +296,14 @@ async def sol_trader_loop():
                             update_drawdown_stats(free_usdc)
 
             if free_usdc < 5.0:
-                CURRENT_STAGE = f"STAV: ⚠️ NEDOSTATOK USDC (Dostupné: {free_usdc:.2f} USDC). Čakám na doplnenie..."
+                CURRENT_STAGE = f"STAV: ⚠️ NEDOSTATOK USDC (Dostupné: {free_usdc:.2f} USDC)."
                 await asyncio.sleep(10)
                 continue
 
-            CURRENT_STAGE = f"STAV: 🟢 SKENUM {TARGET_PAIR} [TF: {CURRENT_TIMEFRAME}]. Dostupné USDC: {free_usdc:.2f} $"
+            CURRENT_STAGE = f"STAV: 🟢 KONTROLA CHECKLISTU [{TARGET_PAIR} | TF: {CURRENT_TIMEFRAME}]..."
             
-            # Analýza SOL-USDC
-            ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={TARGET_PAIR}")
-            if ticker_res.get("code") != "0" or not ticker_res.get("data"):
-                await asyncio.sleep(5)
-                continue
-
-            current_price = safe_float(ticker_res["data"][0].get("last", 0))
             chk = evaluate_strategy_checklist(TARGET_PAIR)
-
-            MARKET_RADAR = [{
-                "instId": TARGET_PAIR, "price": current_price, "change": 0.0, "volume": 0.0,
-                "volume_status": chk["volume_status"], "impulse_status": chk["impulse_status"],
-                "fib_status": chk["fib_status"], "buy_ready": chk["buy_ready"], "probability": chk["probability"],
-                "volume_text": chk["volume_text"], "impuls_text": chk["impuls_text"],
-                "pokyn_text": chk["pokyn_text"], "pokyn_color": chk["pokyn_color"]
-            }]
+            CURRENT_CHECKLIST = chk
 
             if chk["buy_ready"]:
                 now_ts = datetime.now().timestamp()
@@ -329,10 +319,14 @@ async def sol_trader_loop():
                     IS_ORDER_PROCESSING = True
                     LAST_TRADE_TIME = now_ts
 
-                    # Použitie 98% celkového zostatku pre bezpečnú exekúciu
+                    ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={TARGET_PAIR}")
+                    current_price = safe_float(ticker_res["data"][0]["last"]) if ticker_res.get("code") == "0" else 0.0
+                    if current_price <= 0:
+                        IS_ORDER_PROCESSING = False
+                        continue
+
                     trade_budget = free_usdc * 0.98
                     sol_amount = round(trade_budget / current_price, 2)
-                    
                     if sol_amount <= 0:
                         sol_amount = round(trade_budget / current_price, 4)
 
@@ -343,7 +337,6 @@ async def sol_trader_loop():
 
                     order_res = okx_request("POST", "/api/v5/trade/order", order_body)
                     if order_res.get("code") != "0":
-                        print(f"❌ Chyba nákupnej objednávky: {order_res}", flush=True)
                         IS_ORDER_PROCESSING = False
                         continue
 
@@ -386,7 +379,7 @@ async def sol_trader_loop():
         await asyncio.sleep(5)
 
 async def risk_monitor_loop():
-    global ACTIVE_TRADES, CURRENT_STAGE, PRICE_HISTORY
+    global ACTIVE_TRADES, CURRENT_STAGE
     await asyncio.sleep(3)
 
     while True:
@@ -531,14 +524,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SOL-USDC Scalper Bot</title>
+    <title>SOL-USDC Scalper Bot PRO</title>
     <style>
         * { box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, sans-serif; margin: 0; padding: 20px; background: #0b0e14; color: #fff; }
-        .container { max-width: 800px; margin: 0 auto; background: #131722; border: 1px solid rgba(0,255,255,0.2); border-radius: 12px; padding: 20px; }
+        .container { max-width: 850px; margin: 0 auto; background: #131722; border: 1px solid rgba(0,255,255,0.2); border-radius: 12px; padding: 20px; box-shadow: 0 0 20px rgba(0,255,255,0.1); }
         .header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
         .brand-title { font-size: 1.1rem; font-weight: 800; color: #00f0ff; }
-        .controls-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,255,255,0.05); padding: 10px; border-radius: 8px; margin-bottom: 15px; }
+        .controls-row { display: flex; justify-content: space-between; align-items: center; background: rgba(0,255,255,0.05); padding: 10px; border-radius: 8px; margin-bottom: 15px; flex-wrap: wrap; gap: 8px; }
         .mode-buttons a, .tf-buttons a { text-decoration: none; background: #1e222d; border: 1px solid #00f0ff; color: #fff; padding: 5px 10px; font-size: 0.75rem; font-weight: bold; border-radius: 5px; }
         .mode-buttons a.active, .tf-buttons a.active { background: #00f0ff; color: #000; }
         .bot-state-btn { padding: 5px 10px; border-radius: 5px; font-weight: bold; font-size: 0.75rem; cursor: pointer; border: 1px solid; }
@@ -546,9 +539,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .btn-stop { background: rgba(255,68,68,0.2); color: #ff4444; border-color: #ff4444; }
         .kill-switch-btn { background: #ff0055; color: #fff; border: none; padding: 5px 10px; border-radius: 5px; font-weight: bold; font-size: 0.75rem; cursor: pointer; }
         .status-banner { background: rgba(0,240,255,0.1); border: 1px solid #00f0ff; border-radius: 8px; padding: 10px; font-size: 0.85rem; font-weight: bold; margin-bottom: 15px; }
+        
+        .checklist-table { width: 100%; border-collapse: collapse; background: rgba(19, 23, 34, 0.9); border: 1px solid rgba(0, 255, 255, 0.3); border-radius: 10px; overflow: hidden; margin-bottom: 15px; }
+        .checklist-table th { background: #1e222d; color: #00f0ff; padding: 8px 12px; font-size: 0.75rem; text-transform: uppercase; border-bottom: 1px solid rgba(0, 255, 255, 0.2); }
+        .checklist-table td { padding: 8px 12px; font-size: 0.75rem; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+
         table { width: 100%; border-collapse: collapse; margin-top: 5px; }
         th, td { text-align: left; padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 0.8rem; }
-        th { color: #00f0ff; }
+        th { color: #00f0ff; text-transform: uppercase; font-size: 0.7rem; }
         .pnl-green { color: #00ff88; font-weight: bold; }
         .pnl-red { color: #ff4444; font-weight: bold; }
     </style>
@@ -556,7 +554,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <body>
     <div class="container">
         <div class="header-bar">
-            <div class="brand-title">⚡ SOL-USDC Scalper Bot (Plný zostatok)</div>
+            <div class="brand-title">⚡ SOL-USDC Scalper Bot + Checklist PRO</div>
             <a href="/" style="color: #00f0ff; font-size: 0.75rem; text-decoration: none;">🔄 Obnoviť</a>
         </div>
 
@@ -569,6 +567,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <a href="/api/set-tf/3m" class="{{ 'active' if current_tf == '3m' else '' }}">3m</a>
                 <a href="/api/set-tf/5m" class="{{ 'active' if current_tf == '5m' else '' }}">5m</a>
                 <a href="/api/set-tf/15m" class="{{ 'active' if current_tf == '15m' else '' }}">15m</a>
+                <a href="/api/set-tf/30m" class="{{ 'active' if current_tf == '30m' else '' }}">30m</a>
+                <a href="/api/set-tf/1h" class="{{ 'active' if current_tf == '1h' else '' }}">1h</a>
             </div>
             <div>
                 {% if is_bot_active %}
@@ -582,11 +582,72 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         
         <div class="status-banner">{{ current_stage }}</div>
 
+        <!-- 📋 LIVE CHECKLIST PANEL -->
         <div style="margin-bottom: 20px;">
-            <h3 style="color: #00f0ff; font-size: 0.9rem;">🔴 Aktívny Obchod (SOL-USDC)</h3>
+            <div style="font-size: 0.85rem; font-weight: bold; color: #00f0ff; margin-bottom: 8px; text-transform: uppercase;">📊 Riadiaci Panel (Checklist SOL-USDC)</div>
+            <table class="checklist-table">
+                <thead>
+                    <tr>
+                        <th>SOL-USDC ANALÝZA INDIKÁTORA</th>
+                        <th style="color: #ffcc00; text-align: right;">{{ '⚡ BREAKOUT' if 'Breakout' in current_mode else '🎯 FIB' }}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>1. Objemový Momentum</td>
+                        <td style="text-align: right;"><strong style="color: {{ '#00ff88' if checklist.volume_status else '#ff4444' }};">{{ checklist.volume_text }}</strong></td>
+                    </tr>
+                    <tr>
+                        <td>2. Nákupný Impulz / Podmienka</td>
+                        <td style="text-align: right;"><strong style="color: {{ '#00ff88' if trades else checklist.impuls_color }};">{{ '🟢 AKTÍVNY (V TRHU)' if trades else checklist.impuls_text }}</strong></td>
+                    </tr>
+                    <tr>
+                        <td>3. Stav Obchodu</td>
+                        <td style="text-align: right;"><strong style="color: {{ '#00ff88' if trades else '#ff4444' }};">{{ '🟢 NAKÚPENÉ (SOL)' if trades else '🔴 MIMO OBCHODU' }}</strong></td>
+                    </tr>
+                    <tr>
+                        <td>4. Break-Even Ochrana</td>
+                        <td style="text-align: right;">
+                            {% if trades %}
+                                {% set active_t = trades.values() | list | first %}
+                                <strong style="color: {{ '#00f0ff' if active_t.break_even_activated else '#888888' }};">{{ '🛡️ AKTÍVNY' if active_t.break_even_activated else '⏳ ČAKÁ' }}</strong>
+                            {% else %}
+                                <strong style="color: #888888;">💤 VYPNUTÝ</strong>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>5. Trailing Take Profit (TTP)</td>
+                        <td style="text-align: right;">
+                            {% if trades %}
+                                {% set active_t = trades.values() | list | first %}
+                                <strong style="color: {{ '#ffcc00' if active_t.trailing_tp_active else '#00ff88' }};">{{ '🟡 TRAIL TP AKTÍVNY' if active_t.trailing_tp_active else '🟢 V TRHU (ČAKÁ)' }}</strong>
+                            {% else %}
+                                <strong style="color: #888888;">💤 VYPNUTÝ</strong>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr style="background: rgba(25, 29, 39, 0.9);">
+                        <td><strong>EXEKUČNÝ POKYN</strong></td>
+                        <td style="text-align: right;">
+                            {% if trades %}
+                                <strong style="color: #ff9900;">🔥 DRŽAŤ</strong>
+                            {% elif checklist.buy_ready %}
+                                <strong style="color: #00ff88;">🚀 NAKÚPIŤ</strong>
+                            {% else %}
+                                <strong style="color: #cccccc;">⚪ ČAKAJ</strong>
+                            {% endif %}
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div style="margin-bottom: 20px;">
+            <div style="font-size: 0.85rem; font-weight: bold; color: #00f0ff; margin-bottom: 8px; text-transform: uppercase;">🔴 Aktívny Obchod (SOL-USDC)</div>
             {% if trades %}
                 <table>
-                    <tr><th>Pár</th><th>Vstup</th><th>Investované</th><th>Cena</th><th>PnL (%)</th><th>PnL ($)</th></tr>
+                    <tr><th>Pár</th><th>Vstup</th><th>Investované (Plný zostatok)</th><th>Cena</th><th>PnL (%)</th><th>PnL ($)</th></tr>
                     {% for t, details in trades.items() %}
                     <tr>
                         <td><strong>{{ details.market_pair }}</strong></td>
@@ -600,13 +661,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </table>
             {% else %}
                 <div style="font-size: 0.8rem; color: #888; background: #1e222d; padding: 10px; border-radius: 6px;">
-                    ✅ Žiadny aktívny obchod. Bot skenuje SOL-USDC...
+                    ✅ Žiadny aktívny obchod. Bot skenuje SOL-USDC a čaká na signál z checklistu...
                 </div>
             {% endif %}
         </div>
 
         <div>
-            <h3 style="color: #00f0ff; font-size: 0.9rem;">📜 História Obchodov</h3>
+            <div style="font-size: 0.85rem; font-weight: bold; color: #00f0ff; margin-bottom: 8px; text-transform: uppercase;">📜 História Obchodov</div>
             {% if history %}
                 <table>
                     <tr><th>Čas</th><th>Pár</th><th>Dôvod</th><th>Výsledok (%)</th><th>Výsledok ($)</th></tr>
@@ -656,6 +717,7 @@ async def dashboard():
     template = Template(HTML_TEMPLATE_CONTENT)
     return template.render(
         trades=ACTIVE_TRADES,
+        checklist=CURRENT_CHECKLIST,
         history=CLOSED_TRADES_HISTORY,
         total_trades=total_trades,
         win_rate=win_rate,
