@@ -45,12 +45,11 @@ trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
 IS_BOT_ACTIVE = True
-
-CURRENT_STRATEGY_MODE = "Agresívny Momentum (Breakout)"
 CURRENT_TIMEFRAME = "15m"
 
 PEAK_PORTFOLIO_VALUE = 0.0
 MAX_DRAWDOWN_PCT = 0.0
+STORAGE_FILE = "trades_history.json"
 
 SETTINGS = {
     "fast_len": 3,
@@ -67,10 +66,37 @@ SETTINGS = {
     "max_change": 100.0,
     "use_btc_filter": True,
     "use_dynamic_sizing": True,
-    "use_weekend_filter": False,
     "reentry_cooldown_sec": 120,
     "webhook_secret": "moje_tajne_heslo_123"
 }
+
+# --- PERSISTENTNÉ ÚLOŽISKO (3 MESIACE / 90 DNÍ) ---
+def load_persistent_data():
+    global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR
+    if os.path.exists(STORAGE_FILE):
+        try:
+            with open(STORAGE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                CLOSED_TRADES_HISTORY = data.get("history", [])
+                DAILY_PNL_CALENDAR = data.get("calendar", [])
+                print(📂 Načítaných {len(CLOSED_TRADES_HISTORY)} histórie obchodov z disku., flush=True)
+        except Exception as e:
+            print(f"⚠️ Chyba pri načítaní úložiska: {e}", flush=True)
+
+def save_persistent_data():
+    try:
+        # Orezanie histórie na posledné 3 mesiace (cca 90 dní)
+        cutoff_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        filtered_history = [h for h in CLOSED_TRADES_HISTORY if h.get("time", "") >= cutoff_date]
+        
+        data = {
+            "history": filtered_history,
+            "calendar": DAILY_PNL_CALENDAR
+        }
+        with open(STORAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ Chyba pri ukladaní údajov na disk: {e}", flush=True)
 
 def get_sk_time_str() -> str:
     sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -98,28 +124,28 @@ def format_tv_ticker(raw_ticker: str):
             return coin, f"{coin}-{stable}"
     return clean, f"{clean}-USDC"
 
-def update_drawdown_stats(current_balance: float):
-    global PEAK_PORTFOLIO_VALUE, MAX_DRAWDOWN_PCT
-    if current_balance > PEAK_PORTFOLIO_VALUE:
-        PEAK_PORTFOLIO_VALUE = current_balance
-    elif PEAK_PORTFOLIO_VALUE > 0:
-        dd = ((PEAK_PORTFOLIO_VALUE - current_balance) / PEAK_PORTFOLIO_VALUE) * 100.0
-        if dd > MAX_DRAWDOWN_PCT:
-            MAX_DRAWDOWN_PCT = dd
-
 def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
-    global CLOSED_TRADES_HISTORY
+    global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR
     day_str = get_sk_date_str()
-    if day_str not in DAILY_PNL_CALENDAR:
-        DAILY_PNL_CALENDAR[day_str] = {"pnl": 0.0, "trades": 0}
-    DAILY_PNL_CALENDAR[day_str]["pnl"] += pnl_usdc
-    DAILY_PNL_CALENDAR[day_str]["trades"] += 1
-
+    
+    # Aktualizácia denného kalendára
+    day_found = False
+    for item in DAILY_PNL_CALENDAR:
+        if item["date"] == day_str:
+            item["pnl"] += pnl_usdc
+            item["trades"] += 1
+            day_found = True
+            break
+    if not day_found:
+        DAILY_PNL_CALENDAR.insert(0, {"date": day_str, "pnl": pnl_usdc, "trades": 1})
+    
+    # Uloženie obchodu do histórie
     CLOSED_TRADES_HISTORY.insert(0, {
         "pair": pair, "pnl_pct": pnl_pct, "pnl_usdc": pnl_usdc, "reason": reason, "time": get_sk_time_str()
     })
-    if len(CLOSED_TRADES_HISTORY) > 30:
-        CLOSED_TRADES_HISTORY.pop()
+    
+    # Uložiť trvalo na disk
+    save_persistent_data()
 
 def okx_request(method: str, path: str, body: str = ""):
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -154,7 +180,6 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
                 for detail in acc.get("details", []):
                     if detail.get("ccy") == stable_ccy:
                         avail = safe_float(detail.get("availBal", 0))
-                        update_drawdown_stats(avail)
                         return avail
     except Exception as err:
         print(f"⚠️ Chyba pri načítaní zostatku: {err}", flush=True)
@@ -405,8 +430,9 @@ async def execute_trade_in_background(data: dict):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    load_persistent_data()
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.5 spustený v minimalistickom režime.</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.5 spustený s 3-mesačnou pamäťou a USDC zostatkom.</b>")
     yield
     monitor_task.cancel()
 
@@ -473,6 +499,7 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
+# --- MINIMALISTICKÝ DESIGN V2 (S USDC ZOSTATKOM A KALENDÁROM) ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -505,7 +532,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             flex-wrap: wrap; gap: 16px;
         }
         .brand h1 { font-size: 1.15rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
-        .brand p { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
+        .brand p { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; display: flex; gap: 12px; flex-wrap: wrap; }
+        .balance-tag { color: var(--yellow); font-weight: 700; }
 
         .actions { display: flex; gap: 10px; align-items: center; }
 
@@ -557,10 +585,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
+        <!-- TOP BAR S USDC ZOSTATKOM -->
         <div class="top-bar">
             <div class="brand">
                 <h1>APEX SCALPER // PRO v5.4.5</h1>
-                <p>SOL-USDC · 15m Timeframe · OKX Demo</p>
+                <p>
+                    <span>SOL-USDC · 15m · OKX Demo</span>
+                    <span>Zostatok: <b class="balance-tag">{{ "%.2f"|format(usdc_balance) }} USDC</b></span>
+                </p>
             </div>
             <div class="actions">
                 <button id="toggleBtn" onclick="toggleBot()" class="btn {{ 'btn-on' if is_bot_active else 'btn-off' }}">
@@ -577,6 +609,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <span>{{ current_stage }}</span>
         </div>
 
+        <!-- ACTIVE POSITION -->
         <div class="section-title">Active Position & Dynamic Levels</div>
         <div class="terminal-card">
             {% if trades %}
@@ -613,7 +646,37 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% endif %}
         </div>
 
-        <div class="section-title">Execution History</div>
+        <!-- DENNÝ PNL KALENDÁR -->
+        <div class="section-title">Daily Performance Calendar (PnL)</div>
+        <div class="terminal-card">
+            {% if calendar %}
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Total Trades</th>
+                            <th>Net Daily PnL</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for day in calendar %}
+                        <tr>
+                            <td><b>{{ day.date }}</b></td>
+                            <td>{{ day.trades }} trades</td>
+                            <td class="{{ 'pnl-green' if day.pnl >= 0 else 'pnl-red' }}">
+                                {{ "%+.2f"|format(day.pnl) }} $
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% else %}
+                <div class="empty">No daily performance records yet.</div>
+            {% endif %}
+        </div>
+
+        <!-- HISTÓRIA (3 MESIACE) -->
+        <div class="section-title">Execution History (3-Month Persistent Storage)</div>
         <div class="terminal-card">
             {% if history %}
                 <table>
@@ -673,12 +736,15 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
+    usdc_balance = fetch_account_capital("USDC")
     template = Template(HTML_TEMPLATE_CONTENT)
     return template.render(
         trades=ACTIVE_TRADES,
         history=CLOSED_TRADES_HISTORY,
+        calendar=DAILY_PNL_CALENDAR,
         current_stage=CURRENT_STAGE,
-        is_bot_active=IS_BOT_ACTIVE
+        is_bot_active=IS_BOT_ACTIVE,
+        usdc_balance=usdc_balance
     )
 
 if __name__ == "__main__":
