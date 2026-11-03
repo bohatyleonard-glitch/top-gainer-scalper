@@ -35,7 +35,7 @@ ALLOWED_STABLES = ["USDC", "USDT"]
 
 ACTIVE_TRADES = {}
 MARKET_RADAR = []
-DAILY_PNL_CALENDAR = {}
+DAILY_PNL_CALENDAR = []
 CLOSED_TRADES_HISTORY = []
 PRICE_HISTORY = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na signál..."
@@ -79,13 +79,12 @@ def load_persistent_data():
                 data = json.load(f)
                 CLOSED_TRADES_HISTORY = data.get("history", [])
                 DAILY_PNL_CALENDAR = data.get("calendar", [])
-                print(📂 Načítaných {len(CLOSED_TRADES_HISTORY)} histórie obchodov z disku., flush=True)
+                print(f"📂 Načítaných {len(CLOSED_TRADES_HISTORY)} histórie obchodov z disku.", flush=True)
         except Exception as e:
             print(f"⚠️ Chyba pri načítaní úložiska: {e}", flush=True)
 
 def save_persistent_data():
     try:
-        # Orezanie histórie na posledné 3 mesiace (cca 90 dní)
         cutoff_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
         filtered_history = [h for h in CLOSED_TRADES_HISTORY if h.get("time", "") >= cutoff_date]
         
@@ -128,7 +127,6 @@ def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
     global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR
     day_str = get_sk_date_str()
     
-    # Aktualizácia denného kalendára
     day_found = False
     for item in DAILY_PNL_CALENDAR:
         if item["date"] == day_str:
@@ -139,12 +137,10 @@ def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
     if not day_found:
         DAILY_PNL_CALENDAR.insert(0, {"date": day_str, "pnl": pnl_usdc, "trades": 1})
     
-    # Uloženie obchodu do histórie
     CLOSED_TRADES_HISTORY.insert(0, {
         "pair": pair, "pnl_pct": pnl_pct, "pnl_usdc": pnl_usdc, "reason": reason, "time": get_sk_time_str()
     })
     
-    # Uložiť trvalo na disk
     save_persistent_data()
 
 def okx_request(method: str, path: str, body: str = ""):
@@ -499,7 +495,6 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
-# --- MINIMALISTICKÝ DESIGN V2 (S USDC ZOSTATKOM A KALENDÁROM) ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
