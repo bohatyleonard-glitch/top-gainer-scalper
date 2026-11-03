@@ -21,7 +21,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
 def send_telegram_msg(message: str):
-    """Pomocná funkcia pre odosielanie správ na Telegram"""
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("DOPLŇ"):
         return
     try:
@@ -31,11 +30,9 @@ def send_telegram_msg(message: str):
     except Exception as err:
         print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
-# --- 🟢 1. POVOLENÝ WATCHLIST ---
 WATCHLIST_SOL = ["SOL"]
 ALLOWED_STABLES = ["USDC", "USDT"]
 
-# --- GLOBAL STAV BOTA & LIMITOV ---
 ACTIVE_TRADES = {}
 MARKET_RADAR = []
 DAILY_PNL_CALENDAR = {}
@@ -47,7 +44,6 @@ MAX_PARALLEL_TRADES = 1
 trade_lock = asyncio.Lock()
 IS_ORDER_PROCESSING = False
 
-# 🔘 HLAVNÝ PREPÍNAČ BOTA
 IS_BOT_ACTIVE = True
 
 CURRENT_STRATEGY_MODE = "Agresívny Momentum (Breakout)"
@@ -125,7 +121,6 @@ def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
     if len(CLOSED_TRADES_HISTORY) > 30:
         CLOSED_TRADES_HISTORY.pop()
 
-# --- 9. OKX EEA DEMO PROSTREDIE & AUTENTIFIKÁCIA ---
 def okx_request(method: str, path: str, body: str = ""):
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     message = timestamp + method.upper() + path + body
@@ -151,7 +146,6 @@ def okx_request(method: str, path: str, body: str = ""):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# --- 11. ZISŤOVANIE REÁLNEHO ZOSTATKU ---
 def fetch_account_capital(stable_ccy="USDC") -> float:
     try:
         balance_res = okx_request("GET", "/api/v5/account/balance")
@@ -191,7 +185,6 @@ def calculate_position_budget(free_capital: float, current_price: float, inst_id
         return 0.0
     return base_budget
 
-# --- 10. NEPRETRŽITÝ MONITOROVACÍ CYKLUS ---
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
     await asyncio.sleep(3)
@@ -212,7 +205,6 @@ async def advanced_risk_monitor_loop():
                 trade = ACTIVE_TRADES[coin]
                 symbol = trade["market_pair"]
 
-                # GTC Expirácia 48h
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
                 if now_time - bought_time > timedelta(hours=48):
                     try:
@@ -245,7 +237,6 @@ async def advanced_risk_monitor_loop():
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
                     pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
 
-                    # Výpočet dynamických hladín
                     be_price = trade["entry_price"] * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
                     trail_stop_price = trade["highest_price"] * (1 - (SETTINGS["trail_pct"] / 100.0))
                     
@@ -270,7 +261,6 @@ async def advanced_risk_monitor_loop():
 
                     CURRENT_STAGE = f"STAV: Pozícia {symbol} aktívna | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
 
-                    # Stop-Loss / Break-Even exekúcia
                     if current_price <= effective_sl:
                         reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else "Stop-Loss (-3%)"
                         try:
@@ -288,7 +278,6 @@ async def advanced_risk_monitor_loop():
                         del ACTIVE_TRADES[coin]
                         continue
 
-                    # Trailing Take Profit Exitu
                     if trade.get("ttp_activated") and current_price <= ttp_stop_level:
                         reason = "Trailing Take Profit"
                         try:
@@ -310,7 +299,6 @@ async def advanced_risk_monitor_loop():
 
         await asyncio.sleep(2)
 
-# --- WEBHOOK SPRACOVANIE ---
 async def execute_trade_in_background(data: dict):
     global ACTIVE_TRADES, LAST_TRADE_TIME
     async with trade_lock:
@@ -485,7 +473,6 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
-# --- MINIMALISTICKÝ DESIGN (ČIERNA, BIELA, TRADING TERMINAL STYLE) ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -512,7 +499,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         
         .container { max-width: 1000px; margin: 0 auto; }
 
-        /* Top Bar */
         .top-bar {
             display: flex; justify-content: space-between; align-items: center;
             border-bottom: 1px solid var(--border-color); padding-bottom: 24px; margin-bottom: 24px;
@@ -523,7 +509,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         .actions { display: flex; gap: 10px; align-items: center; }
 
-        /* Minimalist Buttons */
         .btn {
             background: transparent; border: 1px solid var(--border-hover); color: var(--text-main);
             padding: 8px 16px; font-size: 0.8rem; font-weight: 500; cursor: pointer; border-radius: 4px;
@@ -538,7 +523,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .btn-sell:hover { background: #e4e4e7; }
         .btn-sell:disabled { opacity: 0.2; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
 
-        /* Status Line */
         .status-ticker {
             font-size: 0.8rem; color: var(--text-muted); background: var(--card-bg);
             border: 1px solid var(--border-color); padding: 10px 16px; border-radius: 4px;
@@ -546,7 +530,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
         .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
 
-        /* Sections */
         .section-title { font-size: 0.85rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-bottom: 12px; }
         
         .terminal-card {
@@ -574,7 +557,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <!-- TOP BAR -->
         <div class="top-bar">
             <div class="brand">
                 <h1>APEX SCALPER // PRO v5.4.5</h1>
@@ -590,13 +572,11 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </div>
         </div>
 
-        <!-- STATUS TICKER -->
         <div class="status-ticker">
             <div class="status-dot"></div>
             <span>{{ current_stage }}</span>
         </div>
 
-        <!-- ACTIVE TRADES -->
         <div class="section-title">Active Position & Dynamic Levels</div>
         <div class="terminal-card">
             {% if trades %}
@@ -633,7 +613,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% endif %}
         </div>
 
-        <!-- HISTORY -->
         <div class="section-title">Execution History</div>
         <div class="terminal-card">
             {% if history %}
@@ -687,8 +666,21 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             } catch(e) { alert('Error: ' + e); }
         }
 
-        // Auto-refresh every 3 seconds for live tracking
         setTimeout(() => { location.reload(); }, 3000);
     </script>
 </body>
-</html>
+</html>"""
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    template = Template(HTML_TEMPLATE_CONTENT)
+    return template.render(
+        trades=ACTIVE_TRADES,
+        history=CLOSED_TRADES_HISTORY,
+        current_stage=CURRENT_STAGE,
+        is_bot_active=IS_BOT_ACTIVE
+    )
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
