@@ -10,6 +10,7 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Template
 import requests
+import uvicorn
 
 # --- 🔑 OKX DEMO KĽÚČE ---
 OKX_API_KEY = os.getenv(
@@ -100,7 +101,7 @@ CURRENT_TIMEFRAME = "15m"
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC", "USDT"]
 
-# Predvolené nastavenia pre aktuálny TF (budú sa dynamicky meniť)
+# Predvolené nastavenia pre aktuálny TF
 SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
 SETTINGS.update(
     {"use_btc_filter": True, "reentry_cooldown_sec": 120, "use_breakeven": True}
