@@ -192,7 +192,6 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
                 for detail in acc.get("details", []):
                     if detail.get("ccy") == stable_ccy:
                         avail = safe_float(detail.get("availBal", 0))
-                        # Ochrana proti falošne vysokému zostatku v demo režime
                         if avail > 50000 or avail <= 0:
                             total_val = safe_float(detail.get("eq", 0))
                             if 0 < total_val < 50000:
@@ -219,7 +218,6 @@ def check_btc_health() -> bool:
     return True
 
 def calculate_position_budget(free_capital: float, current_price: float, inst_id: str) -> float:
-    # Bezpečnostný strop: Nikdy nevložiť viac ako reálny disponibilný zostatok, max 98%
     base_budget = free_capital * 0.98
     if base_budget < 5.0:
         return 0.0
@@ -231,7 +229,7 @@ async def advanced_risk_monitor_loop():
     while True:
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
-                CURRENT_STAGE = "STAV: Bot aktívny. Skenujem trh (15m)..."
+                CURRENT_STAGE = "STAV: Bot aktívny. Skenujem trh..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -348,13 +346,16 @@ async def execute_trade_in_background(data: dict):
     global ACTIVE_TRADES, LAST_TRADE_TIME
     async with trade_lock:
         try:
-            # Overenie tajného hesla pre bezpečnostnú ochranu
             req_secret = str(data.get("secret", "")).strip()
             if req_secret != WEBHOOK_SECRET:
                 log_event("⚠️ Ignorovaný webhook: Neplatné alebo chýbajúce heslo (secret).")
                 return
 
             action = str(data.get("action", "")).lower().strip()
+            if "{{" in action or "}}" in action:
+                log_event(f"⚠️ Ignorovaný webhook: TradingView nepreložil šablónu action: {action}")
+                return
+
             tv_ticker = str(data.get("symbol", data.get("ticker", ""))).upper().strip()
             coin_name, okx_symbol = format_tv_ticker(tv_ticker)
             now_ts = datetime.now().timestamp()
@@ -389,7 +390,8 @@ async def execute_trade_in_background(data: dict):
                 current_price = safe_float(ticker_res["data"][0]["last"])
                 coin_amount = safe_budget / current_price
 
-                limit_buy_price = current_price * 1.002
+                # Zlatý stred: 0,35% nad aktuálnou cenou pre okamžitú exekúciu bez trieštenia
+                limit_buy_price = current_price * 1.0035
                 order_body = json.dumps({
                     "instId": okx_symbol, "tdMode": "cash", "side": "buy",
                     "ordType": "limit", "px": str(round(limit_buy_price, 4)),
@@ -477,9 +479,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.4.6 spustený s ochranou proti triešteniu.")
+    log_event("🚀 Apex Scalper PRO v5.4.7 spustený (0.35% odskok + ochrana šablón).")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.6 plne spustený a pripravený!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.7 pripravený!</b>")
     yield
     monitor_task.cancel()
 
@@ -571,7 +573,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.4.6 PRO — Terminal</title>
+    <title>Apex Scalper v5.4.7 PRO — Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -666,7 +668,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.4.6</h1>
+                <h1>APEX SCALPER // PRO v5.4.7</h1>
                 <p>
                     <span>SOL-USDC · 15m · OKX Demo</span>
                     <span>Zostatok: <b class="balance-tag">{{ "%.2f"|format(usdc_balance) }} USDC</b></span>
@@ -835,24 +837,4 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         setTimeout(() => { location.reload(); }, 3000);
     </script>
 </body>
-</html>"""
-
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    usdc_balance = fetch_account_capital("USDC")
-    stats = calculate_stats()
-    template = Template(HTML_TEMPLATE_CONTENT)
-    return template.render(
-        trades=ACTIVE_TRADES,
-        history=CLOSED_TRADES_HISTORY,
-        calendar=DAILY_PNL_CALENDAR,
-        current_stage=CURRENT_STAGE,
-        is_bot_active=IS_BOT_ACTIVE,
-        usdc_balance=usdc_balance,
-        stats=stats,
-        logs=SYSTEM_LOGS
-    )
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+</html>
