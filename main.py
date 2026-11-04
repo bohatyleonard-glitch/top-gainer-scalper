@@ -1,26 +1,89 @@
-import os
-import hmac
+import asyncio
 import base64
+import hmac
 import json
 import math
-import asyncio
-from datetime import datetime, timedelta, timezone
+import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+from datetime import datetime, timedelta, timezone
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-import uvicorn
-import requests
 from jinja2 import Template
+import requests
 
 # --- 🔑 OKX DEMO KĽÚČE ---
-OKX_API_KEY = os.getenv("OKX_API_KEY", "638848ca-e65c-4074-bcfd-20cf4d292f2c")
+OKX_API_KEY = os.getenv(
+    "OKX_API_KEY", "638848ca-e65c-4074-bcfd-20cf4d292f2c"
+)
 OKX_SECRET = os.getenv("OKX_SECRET", "885934366C54F33B276E9E49E8EF87CF")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Australia111/")
 WEBHOOK_SECRET = "moje_tajne_heslo_123"
 
 # --- 📱 TELEGRAM NOTIFIKÁCIE & INTERAKTÍVNE BOT OVLÁDANIE ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8")
+TELEGRAM_BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8"
+)
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
+
+# --- 📊 DYNAMICKÉ PROFILY PRE ČASOVÉ RÁMCE (8m až 4h) ---
+TIMEFRAME_PROFILES = {
+    "8m": {
+        "trail_pct": 1.2,
+        "be_trigger_pct": 0.4,
+        "ttp_trigger_pct": 0.8,
+        "ttp_callback_pct": 0.2,
+        "desc": "Agresívny 8m scalp",
+    },
+    "15m": {
+        "trail_pct": 0.7,
+        "be_trigger_pct": 0.6,
+        "ttp_trigger_pct": 0.8,
+        "ttp_callback_pct": 0.2,
+        "desc": "Rýchly 15m scalp",
+    },
+    "30m": {
+        "trail_pct": 1.0,
+        "be_trigger_pct": 0.9,
+        "ttp_trigger_pct": 1.2,
+        "ttp_callback_pct": 0.3,
+        "desc": "30m trendový",
+    },
+    "45m": {
+        "trail_pct": 1.5,
+        "be_trigger_pct": 1.2,
+        "ttp_trigger_pct": 1.8,
+        "ttp_callback_pct": 0.4,
+        "desc": "45m strednodobý",
+    },
+    "1h": {
+        "trail_pct": 2.0,
+        "be_trigger_pct": 1.6,
+        "ttp_trigger_pct": 2.5,
+        "ttp_callback_pct": 0.5,
+        "desc": "1h hodinový swing",
+    },
+    "2h": {
+        "trail_pct": 3.0,
+        "be_trigger_pct": 2.2,
+        "ttp_trigger_pct": 3.5,
+        "ttp_callback_pct": 0.7,
+        "desc": "2h dvojhodinový trend",
+    },
+    "3h": {
+        "trail_pct": 4.0,
+        "be_trigger_pct": 3.0,
+        "ttp_trigger_pct": 5.0,
+        "ttp_callback_pct": 1.0,
+        "desc": "3h pozičný",
+    },
+    "4h": {
+        "trail_pct": 5.5,
+        "be_trigger_pct": 4.0,
+        "ttp_trigger_pct": 7.0,
+        "ttp_callback_pct": 1.5,
+        "desc": "4h masívny swing",
+    },
+}
 
 # --- GLOBAL STAV BOTA & LIMITOV ---
 ACTIVE_TRADES = {}
@@ -37,535 +100,706 @@ CURRENT_TIMEFRAME = "15m"
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC", "USDT"]
 
-SETTINGS = {
-    "trail_pct": 0.7,
-    "use_breakeven": True,
-    "be_trigger_pct": 0.6,
-    "use_trailing_tp": True,
-    "ttp_trigger_pct": 0.8,
-    "ttp_callback_pct": 0.2,
-    "use_btc_filter": True,
-    "reentry_cooldown_sec": 120,
-}
+# Predvolené nastavenia pre aktuálny TF (budú sa dynamicky meniť)
+SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
+SETTINGS.update(
+    {"use_btc_filter": True, "reentry_cooldown_sec": 120, "use_breakeven": True}
+)
+
 
 def log_event(message: str):
-    timestamp = datetime.now(timezone.utc) + timedelta(hours=1)
-    time_str = timestamp.strftime("%H:%M:%S")
-    entry = f"[{time_str}] {message}"
-    SYSTEM_LOGS.insert(0, entry)
-    if len(SYSTEM_LOGS) > 30:
-        SYSTEM_LOGS.pop()
-    print(entry, flush=True)
+  timestamp = datetime.now(timezone.utc) + timedelta(hours=1)
+  time_str = timestamp.strftime("%H:%M:%S")
+  entry = f"[{time_str}] {message}"
+  SYSTEM_LOGS.insert(0, entry)
+  if len(SYSTEM_LOGS) > 30:
+    SYSTEM_LOGS.pop()
+  print(entry, flush=True)
+
 
 def send_telegram_msg(message: str, reply_markup=None):
-    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("DOPLŇ"):
-        return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
-        if reply_markup:
-            payload["reply_markup"] = reply_markup
-        requests.post(url, json=payload, timeout=5)
-    except Exception as err:
-        print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
+  if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("DOPLŇ"):
+    return
+  try:
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+    if reply_markup:
+      payload["reply_markup"] = reply_markup
+    requests.post(url, json=payload, timeout=5)
+  except Exception as err:
+    print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
+
 
 def load_persistent_data():
-    global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR
-    if os.path.exists(STORAGE_FILE):
-        try:
-            with open(STORAGE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                CLOSED_TRADES_HISTORY = data.get("history", [])
-                DAILY_PNL_CALENDAR = data.get("calendar", [])
-                log_event(f"📂 Načítaných {len(CLOSED_TRADES_HISTORY)} histórie obchodov z disku.")
-        except Exception as e:
-            log_event(f"⚠️ Chyba pri načítaní úložiska: {e}")
+  global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR
+  if os.path.exists(STORAGE_FILE):
+    try:
+      with open(STORAGE_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        CLOSED_TRADES_HISTORY = data.get("history", [])
+        DAILY_PNL_CALENDAR = data.get("calendar", [])
+        log_event(
+            f"📂 Načítaných {len(CLOSED_TRADES_HISTORY)} histórie obchodov z"
+            " disku."
+        )
+    except Exception as e:
+      log_event(f"⚠️ Chyba pri načítaní úložiska: {e}")
+
 
 def save_persistent_data():
-    try:
-        cutoff_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-        filtered_history = [h for h in CLOSED_TRADES_HISTORY if h.get("time", "") >= cutoff_date]
-        
-        data = {
-            "history": filtered_history,
-            "calendar": DAILY_PNL_CALENDAR
-        }
-        with open(STORAGE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        log_event(f"⚠️ Chyba pri ukladaní údajov na disk: {e}")
+  try:
+    cutoff_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+    filtered_history = [
+        h for h in CLOSED_TRADES_HISTORY if h.get("time", "") >= cutoff_date
+    ]
+
+    data = {"history": filtered_history, "calendar": DAILY_PNL_CALENDAR}
+    with open(STORAGE_FILE, "w", encoding="utf-8") as f:
+      json.dump(data, f, ensure_ascii=False, indent=2)
+  except Exception as e:
+    log_event(f"⚠️ Chyba pri ukladaní údajov na disk: {e}")
+
 
 def get_sk_time_str() -> str:
-    sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
-    return sk_time.strftime("%Y-%m-%d %H:%M:%S")
+  sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
+  return sk_time.strftime("%Y-%m-%d %H:%M:%S")
+
 
 def get_sk_date_str() -> str:
-    sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
-    return sk_time.strftime("%Y-%m-%d")
+  sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
+  return sk_time.strftime("%Y-%m-%d")
+
 
 def safe_float(val, default=0.0) -> float:
-    if val is None:
-        return default
-    try:
-        if isinstance(val, str) and val.strip() == "":
-            return default
-        return float(val)
-    except (ValueError, TypeError):
-        return default
+  if val is None:
+    return default
+  try:
+    if isinstance(val, str) and val.strip() == "":
+      return default
+    return float(val)
+  except (ValueError, TypeError):
+    return default
+
 
 def format_tv_ticker(raw_ticker: str):
-    clean = raw_ticker.replace("OKX:", "").replace("/", "").replace("-", "").strip().upper()
-    for stable in ALLOWED_STABLES:
-        if clean.endswith(stable) and clean != stable:
-            coin = clean[:-len(stable)]
-            return coin, f"{coin}-{stable}"
-    return clean, f"{clean}-USDC"
+  clean = (
+      raw_ticker.replace("OKX:", "")
+      .replace("/", "")
+      .replace("-", "")
+      .strip()
+      .upper()
+  )
+  for stable in ALLOWED_STABLES:
+    if clean.endswith(stable) and clean != stable:
+      coin = clean[: -len(stable)]
+      return coin, f"{coin}-{stable}"
+  return clean, f"{clean}-USDC"
+
 
 def calculate_stats():
-    total = len(CLOSED_TRADES_HISTORY)
-    if total == 0:
-        return {"win_rate": 0.0, "total_trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
-    
-    wins = sum(1 for h in CLOSED_TRADES_HISTORY if h.get("pnl_usdc", 0) > 0)
-    losses = sum(1 for h in CLOSED_TRADES_HISTORY if h.get("pnl_usdc", 0) <= 0)
-    win_rate = (wins / total) * 100.0
-    total_pnl = sum(h.get("pnl_usdc", 0) for h in CLOSED_TRADES_HISTORY)
-    
+  total = len(CLOSED_TRADES_HISTORY)
+  if total == 0:
     return {
-        "win_rate": round(win_rate, 1),
-        "total_trades": total,
-        "wins": wins,
-        "losses": losses,
-        "total_pnl": round(total_pnl, 2)
+        "win_rate": 0.0,
+        "total_trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "total_pnl": 0.0,
     }
+
+  wins = sum(1 for h in CLOSED_TRADES_HISTORY if h.get("pnl_usdc", 0) > 0)
+  losses = sum(1 for h in CLOSED_TRADES_HISTORY if h.get("pnl_usdc", 0) <= 0)
+  win_rate = (wins / total) * 100.0
+  total_pnl = sum(h.get("pnl_usdc", 0) for h in CLOSED_TRADES_HISTORY)
+
+  return {
+      "win_rate": round(win_rate, 1),
+      "total_trades": total,
+      "wins": wins,
+      "losses": losses,
+      "total_pnl": round(total_pnl, 2),
+  }
+
 
 def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
-    global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR
-    day_str = get_sk_date_str()
-    
-    day_found = False
-    for item in DAILY_PNL_CALENDAR:
-        if item["date"] == day_str:
-            item["pnl"] += pnl_usdc
-            item["trades"] += 1
-            day_found = True
-            break
-    if not day_found:
-        DAILY_PNL_CALENDAR.insert(0, {"date": day_str, "pnl": pnl_usdc, "trades": 1})
-    
-    CLOSED_TRADES_HISTORY.insert(0, {
-        "pair": pair, "pnl_pct": pnl_pct, "pnl_usdc": pnl_usdc, "reason": reason, "time": get_sk_time_str()
-    })
-    
-    save_persistent_data()
+  global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR
+  day_str = get_sk_date_str()
+
+  day_found = False
+  for item in DAILY_PNL_CALENDAR:
+    if item["date"] == day_str:
+      item["pnl"] += pnl_usdc
+      item["trades"] += 1
+      day_found = True
+      break
+  if not day_found:
+    DAILY_PNL_CALENDAR.insert(0, {"date": day_str, "pnl": pnl_usdc, "trades": 1})
+
+  CLOSED_TRADES_HISTORY.insert(
+      0,
+      {
+          "pair": pair,
+          "pnl_pct": pnl_pct,
+          "pnl_usdc": pnl_usdc,
+          "reason": reason,
+          "time": get_sk_time_str(),
+      },
+  )
+
+  save_persistent_data()
+
 
 def okx_request(method: str, path: str, body: str = ""):
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-    message = timestamp + method.upper() + path + body
-    mac = hmac.new(OKX_SECRET.encode('utf-8'), message.encode('utf-8'), digestmod='sha256')
-    signature = base64.b64encode(mac.digest()).decode('utf-8')
+  timestamp = (
+      datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+  )
+  message = timestamp + method.upper() + path + body
+  mac = hmac.new(
+      OKX_SECRET.encode("utf-8"), message.encode("utf-8"), digestmod="sha256"
+  )
+  signature = base64.b64encode(mac.digest()).decode("utf-8")
 
-    headers = {
-        "OK-ACCESS-KEY": OKX_API_KEY,
-        "OK-ACCESS-SIGN": signature,
-        "OK-ACCESS-TIMESTAMP": timestamp,
-        "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
-        "x-simulated-trading": "1",
-        "Content-Type": "application/json"
-    }
+  headers = {
+      "OK-ACCESS-KEY": OKX_API_KEY,
+      "OK-ACCESS-SIGN": signature,
+      "OK-ACCESS-TIMESTAMP": timestamp,
+      "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
+      "x-simulated-trading": "1",
+      "Content-Type": "application/json",
+  }
 
-    url = "https://eea.okx.com" + path
-    try:
-        if method.upper() == "GET":
-            response = requests.get(url, headers=headers, timeout=5)
-        else:
-            response = requests.post(url, headers=headers, data=body, timeout=5)
-        return response.json()
-    except Exception as err:
-        return {"code": "-1", "msg": str(err)}
+  url = "https://eea.okx.com" + path
+  try:
+    if method.upper() == "GET":
+      response = requests.get(url, headers=headers, timeout=5)
+    else:
+      response = requests.post(url, headers=headers, data=body, timeout=5)
+    return response.json()
+  except Exception as err:
+    return {"code": "-1", "msg": str(err)}
+
 
 def fetch_account_capital(stable_ccy="USDC") -> float:
-    try:
-        balance_res = okx_request("GET", "/api/v5/account/balance")
-        if balance_res.get("code") == "0":
-            for acc in balance_res.get("data", []):
-                for detail in acc.get("details", []):
-                    if detail.get("ccy") == stable_ccy:
-                        avail = safe_float(detail.get("availBal", 0))
-                        if avail > 50000 or avail <= 0:
-                            total_val = safe_float(detail.get("eq", 0))
-                            if 0 < total_val < 50000:
-                                return total_val
-                        return avail if avail > 0 else 3000.0
-    except Exception as err:
-        log_event(f"⚠️ Chyba pri načítaní zostatku: {err}")
-    return 3000.0
+  try:
+    balance_res = okx_request("GET", "/api/v5/account/balance")
+    if balance_res.get("code") == "0":
+      for acc in balance_res.get("data", []):
+        for detail in acc.get("details", []):
+          if detail.get("ccy") == stable_ccy:
+            avail = safe_float(detail.get("availBal", 0))
+            if avail > 50000 or avail <= 0:
+              total_val = safe_float(detail.get("eq", 0))
+              if 0 < total_val < 50000:
+                return total_val
+            return avail if avail > 0 else 3000.0
+  except Exception as err:
+    log_event(f"⚠️ Chyba pri načítaní zostatku: {err}")
+  return 3000.0
+
 
 def check_btc_health() -> bool:
-    if not SETTINGS["use_btc_filter"]:
-        return True
-    try:
-        url = f"/api/v5/market/candles?instId=BTC-USDC&bar={CURRENT_TIMEFRAME}&limit=10"
-        res = okx_request("GET", url)
-        if res.get("code") == "0" and res.get("data"):
-            data = res["data"]
-            data.reverse()
-            closes = [safe_float(c[4]) for c in data]
-            avg_btc = sum(closes) / len(closes)
-            return closes[-1] >= avg_btc
-    except Exception:
-        pass
+  if not SETTINGS["use_btc_filter"]:
     return True
+  try:
+    url = (
+        f"/api/v5/market/candles?instId=BTC-USDC&bar={CURRENT_TIMEFRAME}&limit=10"
+    )
+    res = okx_request("GET", url)
+    if res.get("code") == "0" and res.get("data"):
+      data = res["data"]
+      data.reverse()
+      closes = [safe_float(c[4]) for c in data]
+      avg_btc = sum(closes) / len(closes)
+      return closes[-1] >= avg_btc
+  except Exception:
+    pass
+  return True
 
-def calculate_position_budget(free_capital: float, current_price: float, inst_id: str) -> float:
-    base_budget = free_capital * 0.98
-    if base_budget < 5.0:
-        return 0.0
-    return base_budget
+
+def calculate_position_budget(
+    free_capital: float, current_price: float, inst_id: str
+) -> float:
+  base_budget = free_capital * 0.98
+  if base_budget < 5.0:
+    return 0.0
+  return base_budget
+
 
 async def advanced_risk_monitor_loop():
-    global ACTIVE_TRADES, CURRENT_STAGE
-    await asyncio.sleep(3)
-    while True:
-        if not ACTIVE_TRADES:
-            if IS_BOT_ACTIVE:
-                CURRENT_STAGE = "STAV: Bot aktívny. Skenujem trh..."
-            else:
-                CURRENT_STAGE = "STAV: Bot pozastavený."
-            await asyncio.sleep(2)
+  global ACTIVE_TRADES, CURRENT_STAGE
+  await asyncio.sleep(3)
+  while True:
+    if not ACTIVE_TRADES:
+      if IS_BOT_ACTIVE:
+        CURRENT_STAGE = "STAV: Bot aktívny. Skenujem trh..."
+      else:
+        CURRENT_STAGE = "STAV: Bot pozastavený."
+      await asyncio.sleep(2)
+      continue
+
+    try:
+      now_time = datetime.now(timezone.utc) + timedelta(hours=1)
+      for coin in list(ACTIVE_TRADES.keys()):
+        if coin not in ACTIVE_TRADES:
+          continue
+        trade = ACTIVE_TRADES[coin]
+        symbol = trade["market_pair"]
+        trade_settings = trade.get("settings", SETTINGS)
+
+        bought_time = datetime.strptime(
+            trade["bought_at"], "%Y-%m-%d %H:%M:%S"
+        ).replace(tzinfo=timezone(timedelta(hours=1)))
+        if now_time - bought_time > timedelta(hours=48):
+          try:
+            ticker_res = okx_request(
+                "GET", f"/api/v5/market/ticker?instId={symbol}"
+            )
+            curr_p = (
+                safe_float(ticker_res["data"][0]["last"])
+                if ticker_res.get("code") == "0" and ticker_res.get("data")
+                else trade["entry_price"]
+            )
+            limit_exit_price = curr_p * 0.998
+            order_body = json.dumps({
+                "instId": symbol,
+                "tdMode": "cash",
+                "side": "sell",
+                "ordType": "limit",
+                "px": str(round(limit_exit_price, 4)),
+                "sz": str(round(trade["amount"], 4)),
+                "timeInForce": "ioc",
+            })
+            okx_request("POST", "/api/v5/trade/order", order_body)
+            pnl_pct = (
+                (curr_p - trade["entry_price"]) / trade["entry_price"]
+            ) * 100
+            invested = trade.get("invested_usdc", 100.0)
+            pnl_usdc = invested * (pnl_pct / 100.0)
+            record_closed_trade(symbol, pnl_pct, pnl_usdc, "GTC Expirácia 48h")
+            log_event(f"⏳ Expirácia 48h pre {symbol} | PnL: {pnl_pct:+.2f}%")
+          except Exception:
+            pass
+          del ACTIVE_TRADES[coin]
+          continue
+
+        ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={symbol}")
+        if ticker_res.get("code") == "0" and ticker_res.get("data"):
+          current_price = safe_float(ticker_res["data"][0]["last"])
+          if current_price <= 0:
             continue
 
-        try:
-            now_time = datetime.now(timezone.utc) + timedelta(hours=1)
-            for coin in list(ACTIVE_TRADES.keys()):
-                if coin not in ACTIVE_TRADES:
-                    continue
-                trade = ACTIVE_TRADES[coin]
-                symbol = trade["market_pair"]
+          if current_price > trade["highest_price"]:
+            trade["highest_price"] = current_price
 
-                bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
-                if now_time - bought_time > timedelta(hours=48):
-                    try:
-                        ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={symbol}")
-                        curr_p = safe_float(ticker_res['data'][0]['last']) if ticker_res.get('code') == '0' and ticker_res.get('data') else trade["entry_price"]
-                        limit_exit_price = curr_p * 0.998
-                        order_body = json.dumps({
-                            "instId": symbol, "tdMode": "cash", "side": "sell",
-                            "ordType": "limit", "px": str(round(limit_exit_price, 4)),
-                            "sz": str(round(trade["amount"], 4)), "timeInForce": "ioc"
-                        })
-                        okx_request("POST", "/api/v5/trade/order", order_body)
-                        pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
-                        invested = trade.get("invested_usdc", 100.0)
-                        pnl_usdc = invested * (pnl_pct / 100.0)
-                        record_closed_trade(symbol, pnl_pct, pnl_usdc, "GTC Expirácia 48h")
-                        log_event(f"⏳ Expirácia 48h pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                    except Exception:
-                        pass
-                    del ACTIVE_TRADES[coin]
-                    continue
+          pnl_pct = (
+              (current_price - trade["entry_price"]) / trade["entry_price"]
+          ) * 100
+          invested = trade.get("invested_usdc", 100.0)
+          pnl_usdc = invested * (pnl_pct / 100.0)
 
-                ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={symbol}")
-                if ticker_res.get("code") == "0" and ticker_res.get("data"):
-                    current_price = safe_float(ticker_res["data"][0]["last"])
-                    if current_price <= 0:
-                        continue
+          be_price = trade["entry_price"] * (
+              1 + (trade_settings["be_trigger_pct"] / 100.0)
+          )
+          trail_stop_price = trade["highest_price"] * (
+              1 - (trade_settings["trail_pct"] / 100.0)
+          )
 
-                    if current_price > trade["highest_price"]:
-                        trade["highest_price"] = current_price
+          if pnl_pct >= trade_settings["be_trigger_pct"]:
+            trade["break_even_activated"] = True
+            effective_sl = max(trail_stop_price, trade["entry_price"])
+          else:
+            effective_sl = trade["entry_price"] * 0.97
 
-                    pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
-                    invested = trade.get("invested_usdc", 100.0)
-                    pnl_usdc = invested * (pnl_pct / 100.0)
+          ttp_activation_price = trade["entry_price"] * (
+              1 + (trade_settings["ttp_trigger_pct"] / 100.0)
+          )
+          if current_price >= ttp_activation_price:
+            trade["ttp_activated"] = True
 
-                    be_price = trade["entry_price"] * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
-                    trail_stop_price = trade["highest_price"] * (1 - (SETTINGS["trail_pct"] / 100.0))
-                    
-                    if pnl_pct >= SETTINGS["be_trigger_pct"]:
-                        trade["break_even_activated"] = True
-                        effective_sl = max(trail_stop_price, trade["entry_price"])
-                    else:
-                        effective_sl = trade["entry_price"] * 0.97
+          ttp_stop_level = (
+              trade["highest_price"]
+              * (1 - (trade_settings["ttp_callback_pct"] / 100.0))
+              if trade.get("ttp_activated")
+              else ttp_activation_price
+          )
 
-                    ttp_activation_price = trade["entry_price"] * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0))
-                    if current_price >= ttp_activation_price:
-                        trade["ttp_activated"] = True
+          trade["current_price"] = current_price
+          trade["live_pnl_pct"] = pnl_pct
+          trade["live_pnl_usdc"] = pnl_usdc
+          trade["be_target_price"] = be_price
+          trade["current_sl_price"] = effective_sl
+          trade["ttp_target_price"] = ttp_stop_level
 
-                    ttp_stop_level = trade["highest_price"] * (1 - (SETTINGS["ttp_callback_pct"] / 100.0)) if trade.get("ttp_activated") else ttp_activation_price
+          CURRENT_STAGE = f"STAV: Pozícia {symbol} aktívna | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
 
-                    trade["current_price"] = current_price
-                    trade["live_pnl_pct"] = pnl_pct
-                    trade["live_pnl_usdc"] = pnl_usdc
-                    trade["be_target_price"] = be_price
-                    trade["current_sl_price"] = effective_sl
-                    trade["ttp_target_price"] = ttp_stop_level
+          if current_price <= effective_sl:
+            reason = (
+                "Break-Even Ochrana"
+                if effective_sl >= trade["entry_price"]
+                else "Stop-Loss (-3%)"
+            )
+            try:
+              limit_exit_price = current_price * 0.998
+              order_body = json.dumps({
+                  "instId": symbol,
+                  "tdMode": "cash",
+                  "side": "sell",
+                  "ordType": "limit",
+                  "px": str(round(limit_exit_price, 4)),
+                  "sz": str(round(trade["amount"], 4)),
+                  "timeInForce": "ioc",
+              })
+              okx_request("POST", "/api/v5/trade/order", order_body)
+              record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
+              log_event(
+                  f"🚨 Uzavretý obchod ({reason}) pre {symbol} | PnL:"
+                  f" {pnl_pct:+.2f}%"
+              )
+              send_telegram_msg(
+                  f"🚨 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b>"
+                  f" {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
+              )
+            except Exception:
+              pass
+            del ACTIVE_TRADES[coin]
+            continue
 
-                    CURRENT_STAGE = f"STAV: Pozícia {symbol} aktívna | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
+          if trade.get("ttp_activated") and current_price <= ttp_stop_level:
+            reason = "Trailing Take Profit"
+            try:
+              limit_exit_price = current_price * 0.998
+              order_body = json.dumps({
+                  "instId": symbol,
+                  "tdMode": "cash",
+                  "side": "sell",
+                  "ordType": "limit",
+                  "px": str(round(limit_exit_price, 4)),
+                  "sz": str(round(trade["amount"], 4)),
+                  "timeInForce": "ioc",
+              })
+              okx_request("POST", "/api/v5/trade/order", order_body)
+              record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
+              log_event(
+                  f"🎯 Uzavretý obchod (Trailing TP) pre {symbol} | PnL:"
+                  f" {pnl_pct:+.2f}%"
+              )
+              send_telegram_msg(
+                  f"🎯 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b>"
+                  f" {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
+              )
+            except Exception:
+              pass
+            del ACTIVE_TRADES[coin]
+            continue
+    except Exception:
+      pass
 
-                    if current_price <= effective_sl:
-                        reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else "Stop-Loss (-3%)"
-                        try:
-                            limit_exit_price = current_price * 0.998
-                            order_body = json.dumps({
-                                "instId": symbol, "tdMode": "cash", "side": "sell",
-                                "ordType": "limit", "px": str(round(limit_exit_price, 4)),
-                                "sz": str(round(trade["amount"], 4)), "timeInForce": "ioc"
-                            })
-                            okx_request("POST", "/api/v5/trade/order", order_body)
-                            record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                            log_event(f"🚨 Uzavretý obchod ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                            send_telegram_msg(f"🚨 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                        except Exception:
-                            pass
-                        del ACTIVE_TRADES[coin]
-                        continue
+    await asyncio.sleep(2)
 
-                    if trade.get("ttp_activated") and current_price <= ttp_stop_level:
-                        reason = "Trailing Take Profit"
-                        try:
-                            limit_exit_price = current_price * 0.998
-                            order_body = json.dumps({
-                                "instId": symbol, "tdMode": "cash", "side": "sell",
-                                "ordType": "limit", "px": str(round(limit_exit_price, 4)),
-                                "sz": str(round(trade["amount"], 4)), "timeInForce": "ioc"
-                            })
-                            okx_request("POST", "/api/v5/trade/order", order_body)
-                            record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                            log_event(f"🎯 Uzavretý obchod (Trailing TP) pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                            send_telegram_msg(f"🎯 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                        except Exception:
-                            pass
-                        del ACTIVE_TRADES[coin]
-                        continue
-        except Exception:
-            pass
-
-        await asyncio.sleep(2)
 
 async def execute_trade_in_background(data: dict):
-    global ACTIVE_TRADES, LAST_TRADE_TIME
-    async with trade_lock:
-        try:
-            req_secret = str(data.get("secret", "")).strip()
-            if req_secret != WEBHOOK_SECRET:
-                log_event("⚠️ Ignorovaný webhook: Neplatné alebo chýbajúce heslo (secret).")
-                return
+  global ACTIVE_TRADES, LAST_TRADE_TIME, CURRENT_TIMEFRAME, SETTINGS
+  async with trade_lock:
+    try:
+      req_secret = str(data.get("secret", "")).strip()
+      if req_secret != WEBHOOK_SECRET:
+        log_event(
+            "⚠️ Ignorovaný webhook: Neplatné alebo chýbajúce heslo (secret)."
+        )
+        return
 
-            action = str(data.get("action", "")).lower().strip()
-            if "{{" in action or "}}" in action:
-                log_event(f"⚠️ Ignorovaný webhook: TradingView nepreložil šablónu action: {action}")
-                return
+      action = str(data.get("action", "")).lower().strip()
+      if "{{" in action or "}}" in action:
+        log_event(
+            f"⚠️ Ignorovaný webhook: TradingView nepreložil šablónu action:"
+            f" {action}"
+        )
+        return
 
-            tv_ticker = str(data.get("symbol", data.get("ticker", ""))).upper().strip()
-            coin_name, okx_symbol = format_tv_ticker(tv_ticker)
-            now_ts = datetime.now().timestamp()
+      # Načítanie a nastavenie dynamického TF profilu
+      incoming_tf = str(data.get("tf", CURRENT_TIMEFRAME)).strip().lower()
+      if incoming_tf in TIMEFRAME_PROFILES:
+        CURRENT_TIMEFRAME = incoming_tf
+        SETTINGS.update(TIMEFRAME_PROFILES[incoming_tf])
 
-            if action == "buy":
-                if not IS_BOT_ACTIVE:
-                    log_event("⚠️ Ignorovaný buy signal: Bot je pozastavený.")
-                    return
-                if coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"]):
-                    log_event(f"⚠️ Ignorovaný buy pre {coin_name}: 120s zamedzenie zacyklenia.")
-                    return
-                if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or coin_name in ACTIVE_TRADES:
-                    log_event("⚠️ Preskočený buy: Pozícia už je aktívna.")
-                    return
-                if not check_btc_health():
-                    log_event("⚠️ Nákup blokovaný: BTC Trend Guard detegoval pokles.")
-                    return
+      tv_ticker = (
+          str(data.get("symbol", data.get("ticker", ""))).upper().strip()
+      )
+      coin_name, okx_symbol = format_tv_ticker(tv_ticker)
+      now_ts = datetime.now().timestamp()
 
-                LAST_TRADE_TIME[coin_name] = now_ts
-                stable_ccy = "USDC" if "USDC" in okx_symbol else "USDT"
+      if action == "buy":
+        if not IS_BOT_ACTIVE:
+          log_event("⚠️ Ignorovaný buy signal: Bot je pozastavený.")
+          return
+        if coin_name in LAST_TRADE_TIME and (
+            now_ts - LAST_TRADE_TIME[coin_name]
+            < SETTINGS["reentry_cooldown_sec"]
+        ):
+          log_event(
+              f"⚠️ Ignorovaný buy pre {coin_name}: 120s zamedzenie zacyklenia."
+          )
+          return
+        if (
+            len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES
+            or coin_name in ACTIVE_TRADES
+        ):
+          log_event("⚠️ Preskočený buy: Pozícia už je aktívna.")
+          return
+        if not check_btc_health():
+          log_event("⚠️ Nákup blokovaný: BTC Trend Guard detegoval pokles.")
+          return
 
-                free_capital = fetch_account_capital(stable_ccy)
-                safe_budget = calculate_position_budget(free_capital, 0.0, okx_symbol)
-                if safe_budget <= 0:
-                    log_event(f"❌ Nedostatok prostriedkov pre nákup: {free_capital} {stable_ccy}")
-                    return
+        LAST_TRADE_TIME[coin_name] = now_ts
+        stable_ccy = "USDC" if "USDC" in okx_symbol else "USDT"
 
-                ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={okx_symbol}")
-                if ticker_res.get("code") != "0" or not ticker_res.get("data"):
-                    return
+        free_capital = fetch_account_capital(stable_ccy)
+        safe_budget = calculate_position_budget(free_capital, 0.0, okx_symbol)
+        if safe_budget <= 0:
+          log_event(
+              f"❌ Nedostatok prostriedkov pre nákup: {free_capital}"
+              f" {stable_ccy}"
+          )
+          return
 
-                current_price = safe_float(ticker_res["data"][0]["last"])
-                coin_amount = safe_budget / current_price
+        ticker_res = okx_request(
+            "GET", f"/api/v5/market/ticker?instId={okx_symbol}"
+        )
+        if ticker_res.get("code") != "0" or not ticker_res.get("data"):
+          return
 
-                limit_buy_price = current_price * 1.0035
-                order_body = json.dumps({
-                    "instId": okx_symbol, "tdMode": "cash", "side": "buy",
-                    "ordType": "limit", "px": str(round(limit_buy_price, 4)),
-                    "sz": str(round(coin_amount, 4)), "timeInForce": "ioc"
-                })
+        current_price = safe_float(ticker_res["data"][0]["last"])
+        coin_amount = safe_budget / current_price
 
-                order_res = okx_request("POST", "/api/v5/trade/order", order_body)
-                if order_res.get("code") != "0":
-                    log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
-                    return
+        limit_buy_price = current_price * 1.0035
+        order_body = json.dumps({
+            "instId": okx_symbol,
+            "tdMode": "cash",
+            "side": "buy",
+            "ordType": "limit",
+            "px": str(round(limit_buy_price, 4)),
+            "sz": str(round(coin_amount, 4)),
+            "timeInForce": "ioc",
+        })
 
-                sl_price = current_price * 0.97
-                be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
-                ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0))
+        order_res = okx_request("POST", "/api/v5/trade/order", order_body)
+        if order_res.get("code") != "0":
+          log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
+          return
 
-                ACTIVE_TRADES[coin_name] = {
-                    "entry_price": current_price,
-                    "current_sl_price": sl_price,
-                    "be_target_price": be_price,
-                    "ttp_target_price": ttp_price,
-                    "amount": coin_amount,
-                    "bought_at": get_sk_time_str(),
-                    "market_pair": okx_symbol,
-                    "highest_price": current_price,
-                    "partial_tp_activated": False,
-                    "break_even_activated": False,
-                    "ttp_activated": False,
-                    "invested_usdc": safe_budget,
-                    "live_pnl_pct": 0.0,
-                    "live_pnl_usdc": 0.0
-                }
+        sl_price = current_price * 0.97
+        be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
+        ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0))
 
-                log_event(f"🛒 Nová pozícia: Nákup {okx_symbol} za {current_price:.4f} USDC (Rozpočet: {safe_budget:.2f}$)")
+        ACTIVE_TRADES[coin_name] = {
+            "entry_price": current_price,
+            "current_sl_price": sl_price,
+            "be_target_price": be_price,
+            "ttp_target_price": ttp_price,
+            "amount": coin_amount,
+            "bought_at": get_sk_time_str(),
+            "market_pair": okx_symbol,
+            "highest_price": current_price,
+            "partial_tp_activated": False,
+            "break_even_activated": False,
+            "ttp_activated": False,
+            "invested_usdc": safe_budget,
+            "live_pnl_pct": 0.0,
+            "live_pnl_usdc": 0.0,
+            "tf": CURRENT_TIMEFRAME,
+            "settings": SETTINGS.copy(),
+        }
 
-                inline_keyboard = {
-                    "inline_keyboard": [
-                        [
-                            {"text": "🛑 ZATVORIŤ POZÍCIU", "callback_data": "sell_now"},
-                            {"text": "⏸️ PAUZA BOTA", "callback_data": "toggle_bot"}
-                        ]
-                    ]
-                }
-                send_telegram_msg(
-                    f"🟢 <b>NOVÝ OBCHOD (BUY)</b>\n"
-                    f"<b>Pár:</b> {okx_symbol}\n"
-                    f"<b>Vstup:</b> {current_price:.4f}\n"
-                    f"<b>Investícia:</b> {safe_budget:.2f} USDC\n"
-                    f"🎯 <b>BE (+0.6%):</b> {be_price:.4f} | <b>Trail TP (+0.8%):</b> {ttp_price:.4f}",
-                    reply_markup=inline_keyboard
-                )
+        log_event(
+            f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za"
+            f" {current_price:.4f} USDC (Rozpočet: {safe_budget:.2f}$)"
+        )
 
-            elif action == "sell":
-                target_coin = coin_name if coin_name in ACTIVE_TRADES else None
-                if not target_coin:
-                    for c, t in ACTIVE_TRADES.items():
-                        if t["market_pair"] == okx_symbol or c.upper() == coin_name:
-                            target_coin = c
-                            break
+        inline_keyboard = {
+            "inline_keyboard": [[
+                {"text": "🛑 ZATVORIŤ POZÍCIU", "callback_data": "sell_now"},
+                {"text": "⏸️ PAUZA BOTA", "callback_data": "toggle_bot"},
+            ]]
+        }
+        send_telegram_msg(
+            f"🟢 <b>NOVÝ OBCHOD [TF: {CURRENT_TIMEFRAME}]</b>\n"
+            f"<b>Pár:</b> {okx_symbol}\n"
+            f"<b>Vstup:</b> {current_price:.4f}\n"
+            f"<b>Investícia:</b> {safe_budget:.2f} USDC\n"
+            f"🎯 <b>BE (+{SETTINGS['be_trigger_pct']}%):</b> {be_price:.4f} |"
+            f" <b>Trail TP (+{SETTINGS['ttp_trigger_pct']}%):</b>"
+            f" {ttp_price:.4f}",
+            reply_markup=inline_keyboard,
+        )
 
-                if target_coin:
-                    trade = ACTIVE_TRADES[target_coin]
-                    pair_to_sell = trade["market_pair"]
-                    ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={pair_to_sell}")
-                    curr_p = safe_float(ticker_res['data'][0]['last']) if ticker_res.get('code') == '0' and ticker_res.get('data') else trade["entry_price"]
+      elif action == "sell":
+        target_coin = coin_name if coin_name in ACTIVE_TRADES else None
+        if not target_coin:
+          for c, t in ACTIVE_TRADES.items():
+            if t["market_pair"] == okx_symbol or c.upper() == coin_name:
+              target_coin = c
+              break
 
-                    limit_sell_price = curr_p * 0.998
-                    order_body = json.dumps({
-                        "instId": pair_to_sell, "tdMode": "cash", "side": "sell",
-                        "ordType": "limit", "px": str(round(limit_sell_price, 4)),
-                        "sz": str(round(trade["amount"], 4)), "timeInForce": "ioc"
-                    })
+        if target_coin:
+          trade = ACTIVE_TRADES[target_coin]
+          pair_to_sell = trade["market_pair"]
+          ticker_res = okx_request(
+              "GET", f"/api/v5/market/ticker?instId={pair_to_sell}"
+          )
+          curr_p = (
+              safe_float(ticker_res["data"][0]["last"])
+              if ticker_res.get("code") == "0" and ticker_res.get("data")
+              else trade["entry_price"]
+          )
 
-                    order_res = okx_request("POST", "/api/v5/trade/order", order_body)
-                    if order_res.get("code") == "0":
-                        pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
-                        invested = trade.get("invested_usdc", 100.0)
-                        pnl_usdc = invested * (pnl_pct / 100.0)
-                        record_closed_trade(pair_to_sell, pnl_pct, pnl_usdc, "Webhook Predaj")
-                        log_event(f"🔴 Predaj z Webhooku pre {pair_to_sell} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                        send_telegram_msg(f"🔴 <b>PREDAJ (WEBHOOK)</b>\n<b>Pár:</b> {pair_to_sell}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                        del ACTIVE_TRADES[target_coin]
-        except Exception as e:
-            log_event(f"❌ Chyba webhooku: {e}")
+          limit_sell_price = curr_p * 0.998
+          order_body = json.dumps({
+              "instId": pair_to_sell,
+              "tdMode": "cash",
+              "side": "sell",
+              "ordType": "limit",
+              "px": str(round(limit_sell_price, 4)),
+              "sz": str(round(trade["amount"], 4)),
+              "timeInForce": "ioc",
+          })
+
+          order_res = okx_request("POST", "/api/v5/trade/order", order_body)
+          if order_res.get("code") == "0":
+            pnl_pct = (
+                (curr_p - trade["entry_price"]) / trade["entry_price"]
+            ) * 100
+            invested = trade.get("invested_usdc", 100.0)
+            pnl_usdc = invested * (pnl_pct / 100.0)
+            record_closed_trade(
+                pair_to_sell, pnl_pct, pnl_usdc, "Webhook Predaj"
+            )
+            log_event(
+                f"🔴 Predaj z Webhooku pre {pair_to_sell} | PnL:"
+                f" {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
+            )
+            send_telegram_msg(
+                f"🔴 <b>PREDAJ (WEBHOOK)</b>\n<b>Pár:</b>"
+                f" {pair_to_sell}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f}"
+                " $)"
+            )
+            del ACTIVE_TRADES[target_coin]
+    except Exception as e:
+      log_event(f"❌ Chyba webhooku: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.4.8 spustený.")
-    monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.8 pripravený!</b>")
-    yield
-    monitor_task.cancel()
+  load_persistent_data()
+  log_event("🚀 Apex Scalper PRO v5.4.8 (Dynamic TF) spustený.")
+  monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
+  send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.8 pripravený!</b>")
+  yield
+  monitor_task.cancel()
+
 
 app = FastAPI(lifespan=lifespan)
+
 
 @app.post("/webhook")
 @app.post("/api/webhook")
 async def tradingview_webhook(request: Request, background_tasks: BackgroundTasks):
-    try:
-        data = await request.json()
-        log_event(f"📥 Prijatý webhook: {data}")
-        action = str(data.get("action", "")).lower().strip()
-        tv_ticker = str(data.get("symbol", data.get("ticker", ""))).upper().strip()
-        coin_name, okx_symbol = format_tv_ticker(tv_ticker)
+  try:
+    data = await request.json()
+    log_event(f"📥 Prijatý webhook: {data}")
+    action = str(data.get("action", "")).lower().strip()
+    tv_ticker = str(data.get("symbol", data.get("ticker", ""))).upper().strip()
+    coin_name, okx_symbol = format_tv_ticker(tv_ticker)
 
-        if action == "sell" and coin_name not in ACTIVE_TRADES:
-            return {"status": "ignored_no_active_trade"}
+    if action == "sell" and coin_name not in ACTIVE_TRADES:
+      return {"status": "ignored_no_active_trade"}
 
-        background_tasks.add_task(execute_trade_in_background, data)
-        return {"status": "accepted"}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    background_tasks.add_task(execute_trade_in_background, data)
+    return {"status": "accepted"}
+  except Exception as e:
+    raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.post("/api/telegram-webhook")
 async def telegram_webhook(request: Request):
-    try:
-        data = await request.json()
-        if "callback_query" in data:
-            cb = data["callback_query"]
-            cb_data = cb.get("data", "")
-            if cb_data == "sell_now":
-                await sell_now()
-                send_telegram_msg("⚡ <b>Ručný predaj aktivovaný z Telegramu!</b>")
-            elif cb_data == "toggle_bot":
-                await toggle_bot()
-    except Exception:
-        pass
-    return {"status": "ok"}
+  try:
+    data = await request.json()
+    if "callback_query" in data:
+      cb = data["callback_query"]
+      cb_data = cb.get("data", "")
+      if cb_data == "sell_now":
+        await sell_now()
+        send_telegram_msg("⚡ <b>Ručný predaj aktivovaný z Telegramu!</b>")
+      elif cb_data == "toggle_bot":
+        await toggle_bot()
+  except Exception:
+    pass
+  return {"status": "ok"}
+
 
 @app.post("/api/toggle-bot")
 async def toggle_bot():
-    global IS_BOT_ACTIVE, CURRENT_STAGE
-    IS_BOT_ACTIVE = not IS_BOT_ACTIVE
-    status_str = "aktívny" if IS_BOT_ACTIVE else "pozastavený"
-    CURRENT_STAGE = f"STAV: Bot je {status_str}."
-    log_event(f"⚙️ Prepínač bota: {status_str.upper()}")
-    send_telegram_msg(f"⚙️ <b>Zmena stavu:</b> Bot je teraz {status_str.upper()}.")
-    return JSONResponse({"status": "success", "is_bot_active": IS_BOT_ACTIVE})
+  global IS_BOT_ACTIVE, CURRENT_STAGE
+  IS_BOT_ACTIVE = not IS_BOT_ACTIVE
+  status_str = "aktívny" if IS_BOT_ACTIVE else "pozastavený"
+  CURRENT_STAGE = f"STAV: Bot je {status_str}."
+  log_event(f"⚙️ Prepínač bota: {status_str.upper()}")
+  send_telegram_msg(f"⚙️ <b>Zmena stavu:</b> Bot je teraz {status_str.upper()}.")
+  return JSONResponse({"status": "success", "is_bot_active": IS_BOT_ACTIVE})
+
 
 @app.post("/api/sell-now")
 async def sell_now():
-    global ACTIVE_TRADES
-    async with trade_lock:
-        if not ACTIVE_TRADES:
-            return JSONResponse({"status": "error", "message": "Žiadna aktívna pozícia."})
-        
-        sold = []
-        for coin in list(ACTIVE_TRADES.keys()):
-            trade = ACTIVE_TRADES[coin]
-            symbol = trade["market_pair"]
-            try:
-                ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={symbol}")
-                curr_p = safe_float(ticker_res['data'][0]['last']) if ticker_res.get('code') == '0' and ticker_res.get('data') else trade["entry_price"]
-                
-                limit_sell_price = curr_p * 0.998
-                order_body = json.dumps({
-                    "instId": symbol, "tdMode": "cash", "side": "sell",
-                    "ordType": "limit", "px": str(round(limit_sell_price, 4)),
-                    "sz": str(round(trade["amount"], 4)), "timeInForce": "ioc"
-                })
-                okx_request("POST", "/api/v5/trade/order", order_body)
-                
-                pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
-                invested = trade.get("invested_usdc", 100.0)
-                pnl_usdc = invested * (pnl_pct / 100.0)
-                record_closed_trade(symbol, pnl_pct, pnl_usdc, "Ručný okamžitý predaj (UI)")
-                
-                log_event(f"⚡ Okamžitý ručný predaj pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                send_telegram_msg(f"⚡ <b>OKAMŽITÝ RUČNÝ PREDAJ</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                sold.append(symbol)
-            except Exception:
-                pass
-            del ACTIVE_TRADES[coin]
+  global ACTIVE_TRADES
+  async with trade_lock:
+    if not ACTIVE_TRADES:
+      return JSONResponse(
+          {"status": "error", "message": "Žiadna aktívna pozícia."}
+      )
 
-        return JSONResponse({"status": "success", "sold": sold})
+    sold = []
+    for coin in list(ACTIVE_TRADES.keys()):
+      trade = ACTIVE_TRADES[coin]
+      symbol = trade["market_pair"]
+      try:
+        ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={symbol}")
+        curr_p = (
+            safe_float(ticker_res["data"][0]["last"])
+            if ticker_res.get("code") == "0" and ticker_res.get("data")
+            else trade["entry_price"]
+        )
+
+        limit_sell_price = curr_p * 0.998
+        order_body = json.dumps({
+            "instId": symbol,
+            "tdMode": "cash",
+            "side": "sell",
+            "ordType": "limit",
+            "px": str(round(limit_sell_price, 4)),
+            "sz": str(round(trade["amount"], 4)),
+            "timeInForce": "ioc",
+        })
+        okx_request("POST", "/api/v5/trade/order", order_body)
+
+        pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
+        invested = trade.get("invested_usdc", 100.0)
+        pnl_usdc = invested * (pnl_pct / 100.0)
+        record_closed_trade(symbol, pnl_pct, pnl_usdc, "Ručný okamžitý predaj (UI)")
+
+        log_event(
+            f"⚡ Okamžitý ručný predaj pre {symbol} | PnL: {pnl_pct:+.2f}%"
+            f" ({pnl_usdc:+.2f} $)"
+        )
+        send_telegram_msg(
+            f"⚡ <b>OKAMŽITÝ RUČNÝ PREDAJ</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b>"
+            f" {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
+        )
+        sold.append(symbol)
+      except Exception:
+        pass
+      del ACTIVE_TRADES[coin]
+
+    return JSONResponse({"status": "success", "sold": sold})
+
 
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
@@ -669,7 +903,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="brand">
                 <h1>APEX SCALPER // PRO v5.4.8</h1>
                 <p>
-                    <span>SOL-USDC · 15m · OKX Demo</span>
+                    <span>SOL-USDC · <b style="color: #ffffff;">{{ current_tf }}</b> · OKX Demo</span>
                     <span>Zostatok: <b class="balance-tag">{{ "%.2f"|format(usdc_balance) }} USDC</b></span>
                 </p>
             </div>
@@ -839,22 +1073,25 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 </html>
 """
 
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    usdc_balance = fetch_account_capital("USDC")
-    stats = calculate_stats()
-    template = Template(HTML_TEMPLATE_CONTENT)
-    return template.render(
-        trades=ACTIVE_TRADES,
-        history=CLOSED_TRADES_HISTORY,
-        calendar=DAILY_PNL_CALENDAR,
-        current_stage=CURRENT_STAGE,
-        is_bot_active=IS_BOT_ACTIVE,
-        usdc_balance=usdc_balance,
-        stats=stats,
-        logs=SYSTEM_LOGS
-    )
+  usdc_balance = fetch_account_capital("USDC")
+  stats = calculate_stats()
+  template = Template(HTML_TEMPLATE_CONTENT)
+  return template.render(
+      trades=ACTIVE_TRADES,
+      history=CLOSED_TRADES_HISTORY,
+      calendar=DAILY_PNL_CALENDAR,
+      current_stage=CURRENT_STAGE,
+      is_bot_active=IS_BOT_ACTIVE,
+      usdc_balance=usdc_balance,
+      stats=stats,
+      logs=SYSTEM_LOGS,
+      current_tf=CURRENT_TIMEFRAME,
+  )
+
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+  port = int(os.environ.get("PORT", 10000))
+  uvicorn.run(app, host="0.0.0.0", port=port)
