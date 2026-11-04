@@ -12,10 +12,11 @@ import uvicorn
 import requests
 from jinja2 import Template
 
-# --- 🔑 9. OKX DEMO KĽÚČE ---
+# --- 🔑 OKX DEMO KĽÚČE ---
 OKX_API_KEY = os.getenv("OKX_API_KEY", "638848ca-e65c-4074-bcfd-20cf4d292f2c")
 OKX_SECRET = os.getenv("OKX_SECRET", "885934366C54F33B276E9E49E8EF87CF")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Australia111/")
+WEBHOOK_SECRET = "moje_tajne_heslo_123"
 
 # --- 📱 TELEGRAM NOTIFIKÁCIE & INTERAKTÍVNE BOT OVLÁDANIE ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8")
@@ -48,7 +49,6 @@ SETTINGS = {
 }
 
 def log_event(message: str):
-    """Zápis udalostí do živých systémových logov pre UI"""
     timestamp = datetime.now(timezone.utc) + timedelta(hours=1)
     time_str = timestamp.strftime("%H:%M:%S")
     entry = f"[{time_str}] {message}"
@@ -69,7 +69,6 @@ def send_telegram_msg(message: str, reply_markup=None):
     except Exception as err:
         print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
-# --- PERSISTENTNÉ ÚLOŽISKO (3 MESIACE / 90 DNÍ) ---
 def load_persistent_data():
     global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR
     if os.path.exists(STORAGE_FILE):
@@ -123,7 +122,6 @@ def format_tv_ticker(raw_ticker: str):
     return clean, f"{clean}-USDC"
 
 def calculate_stats():
-    """Výpočet štatistík: Win Rate, Celkový PnL a počet výhier/strát"""
     total = len(CLOSED_TRADES_HISTORY)
     if total == 0:
         return {"win_rate": 0.0, "total_trades": 0, "wins": 0, "losses": 0, "total_pnl": 0.0}
@@ -194,7 +192,12 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
                 for detail in acc.get("details", []):
                     if detail.get("ccy") == stable_ccy:
                         avail = safe_float(detail.get("availBal", 0))
-                        return avail
+                        # Ochrana proti falošne vysokému zostatku v demo režime
+                        if avail > 50000 or avail <= 0:
+                            total_val = safe_float(detail.get("eq", 0))
+                            if 0 < total_val < 50000:
+                                return total_val
+                        return avail if avail > 0 else 3000.0
     except Exception as err:
         log_event(f"⚠️ Chyba pri načítaní zostatku: {err}")
     return 3000.0
@@ -216,10 +219,8 @@ def check_btc_health() -> bool:
     return True
 
 def calculate_position_budget(free_capital: float, current_price: float, inst_id: str) -> float:
-    if MAX_PARALLEL_TRADES == 1:
-        base_budget = free_capital * 0.98
-    else:
-        base_budget = free_capital * 0.25
+    # Bezpečnostný strop: Nikdy nevložiť viac ako reálny disponibilný zostatok, max 98%
+    base_budget = free_capital * 0.98
     if base_budget < 5.0:
         return 0.0
     return base_budget
@@ -257,7 +258,8 @@ async def advanced_risk_monitor_loop():
                         })
                         okx_request("POST", "/api/v5/trade/order", order_body)
                         pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
-                        pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
+                        invested = trade.get("invested_usdc", 100.0)
+                        pnl_usdc = invested * (pnl_pct / 100.0)
                         record_closed_trade(symbol, pnl_pct, pnl_usdc, "GTC Expirácia 48h")
                         log_event(f"⏳ Expirácia 48h pre {symbol} | PnL: {pnl_pct:+.2f}%")
                     except Exception:
@@ -275,7 +277,8 @@ async def advanced_risk_monitor_loop():
                         trade["highest_price"] = current_price
 
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
-                    pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
+                    invested = trade.get("invested_usdc", 100.0)
+                    pnl_usdc = invested * (pnl_pct / 100.0)
 
                     be_price = trade["entry_price"] * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
                     trail_stop_price = trade["highest_price"] * (1 - (SETTINGS["trail_pct"] / 100.0))
@@ -345,6 +348,12 @@ async def execute_trade_in_background(data: dict):
     global ACTIVE_TRADES, LAST_TRADE_TIME
     async with trade_lock:
         try:
+            # Overenie tajného hesla pre bezpečnostnú ochranu
+            req_secret = str(data.get("secret", "")).strip()
+            if req_secret != WEBHOOK_SECRET:
+                log_event("⚠️ Ignorovaný webhook: Neplatné alebo chýbajúce heslo (secret).")
+                return
+
             action = str(data.get("action", "")).lower().strip()
             tv_ticker = str(data.get("symbol", data.get("ticker", ""))).upper().strip()
             coin_name, okx_symbol = format_tv_ticker(tv_ticker)
@@ -358,7 +367,7 @@ async def execute_trade_in_background(data: dict):
                     log_event(f"⚠️ Ignorovaný buy pre {coin_name}: 120s zamedzenie zacyklenia.")
                     return
                 if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or coin_name in ACTIVE_TRADES:
-                    log_event(f"⚠️ Preskočený buy: Dosiahnutý limit 1 pozície.")
+                    log_event("⚠️ Preskočený buy: Pozícia už je aktívna.")
                     return
                 if not check_btc_health():
                     log_event("⚠️ Nákup blokovaný: BTC Trend Guard detegoval pokles.")
@@ -413,9 +422,8 @@ async def execute_trade_in_background(data: dict):
                     "live_pnl_usdc": 0.0
                 }
 
-                log_event(f"🛒 Nová pozícia: Nákup {okx_symbol} za {current_price:.4f} USDC")
+                log_event(f"🛒 Nová pozícia: Nákup {okx_symbol} za {current_price:.4f} USDC (Rozpočet: {safe_budget:.2f}$)")
 
-                # TELEGRAM INTERAKTÍVNE TLAČIDLÁ
                 inline_keyboard = {
                     "inline_keyboard": [
                         [
@@ -457,10 +465,11 @@ async def execute_trade_in_background(data: dict):
                     order_res = okx_request("POST", "/api/v5/trade/order", order_body)
                     if order_res.get("code") == "0":
                         pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
-                        pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
+                        invested = trade.get("invested_usdc", 100.0)
+                        pnl_usdc = invested * (pnl_pct / 100.0)
                         record_closed_trade(pair_to_sell, pnl_pct, pnl_usdc, "Webhook Predaj")
-                        log_event(f"🔴 Predaj z Webhooku pre {pair_to_sell} | PnL: {pnl_pct:+.2f}%")
-                        send_telegram_msg(f"🔴 <b>PREDAJ (WEBHOOK)</b>\n<b>Pár:</b> {pair_to_sell}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                        log_event(f"🔴 Predaj z Webhooku pre {pair_to_sell} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+                        send_telegram_msg(f"🔴 <b>PREDAJ (WEBHOOK)</b>\n<b>Pár:</b> {pair_to_sell}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
                         del ACTIVE_TRADES[target_coin]
         except Exception as e:
             log_event(f"❌ Chyba webhooku: {e}")
@@ -468,9 +477,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.4.5 spustený s Win Rate štatistikami a Telegram botom.")
+    log_event("🚀 Apex Scalper PRO v5.4.6 spustený s ochranou proti triešteniu.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.5 plne spustený a pripravený na obchody!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.6 plne spustený a pripravený!</b>")
     yield
     monitor_task.cancel()
 
@@ -496,7 +505,6 @@ async def tradingview_webhook(request: Request, background_tasks: BackgroundTask
 
 @app.post("/api/telegram-webhook")
 async def telegram_webhook(request: Request):
-    """Spracovanie stlačení interaktívnych tlačidiel z Telegramu"""
     try:
         data = await request.json()
         if "callback_query" in data:
@@ -545,11 +553,12 @@ async def sell_now():
                 okx_request("POST", "/api/v5/trade/order", order_body)
                 
                 pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
-                pnl_usdc = trade.get("invested_usdc", 100.0) * (pnl_pct / 100.0)
+                invested = trade.get("invested_usdc", 100.0)
+                pnl_usdc = invested * (pnl_pct / 100.0)
                 record_closed_trade(symbol, pnl_pct, pnl_usdc, "Ručný okamžitý predaj (UI)")
                 
-                log_event(f"⚡ Okamžitý ručný predaj pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                send_telegram_msg(f"⚡ <b>OKAMŽITÝ RUČNÝ PREDAJ</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                log_event(f"⚡ Okamžitý ručný predaj pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+                send_telegram_msg(f"⚡ <b>OKAMŽITÝ RUČNÝ PREDAJ</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
                 sold.append(symbol)
             except Exception:
                 pass
@@ -562,7 +571,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.4.5 PRO — Terminal</title>
+    <title>Apex Scalper v5.4.6 PRO — Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -615,7 +624,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
         .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
 
-        /* WIN RATE STATS GRID */
         .stats-grid {
             display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 24px;
         }
@@ -656,10 +664,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <!-- TOP BAR -->
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.4.5</h1>
+                <h1>APEX SCALPER // PRO v5.4.6</h1>
                 <p>
                     <span>SOL-USDC · 15m · OKX Demo</span>
                     <span>Zostatok: <b class="balance-tag">{{ "%.2f"|format(usdc_balance) }} USDC</b></span>
@@ -680,7 +687,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <span>{{ current_stage }}</span>
         </div>
 
-        <!-- WIN RATE STATS -->
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-title">Win Rate</div>
@@ -700,7 +706,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </div>
         </div>
 
-        <!-- ACTIVE POSITION -->
         <div class="section-title">Active Position & Dynamic Levels</div>
         <div class="terminal-card">
             {% if trades %}
@@ -737,7 +742,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% endif %}
         </div>
 
-        <!-- DENNÝ PNL KALENDÁR -->
         <div class="section-title">Daily Performance Calendar (PnL)</div>
         <div class="terminal-card">
             {% if calendar %}
@@ -766,7 +770,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% endif %}
         </div>
 
-        <!-- HISTÓRIA -->
         <div class="section-title">Execution History (3-Month Persistent Storage)</div>
         <div class="terminal-card">
             {% if history %}
@@ -797,7 +800,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             {% endif %}
         </div>
 
-        <!-- SYSTÉMOVÉ LOGY (LIVE SYSTEM LOGS) -->
         <div class="section-title">System Execution Logs</div>
         <div class="terminal-card">
             <div class="logs-box">
