@@ -258,9 +258,9 @@ async def advanced_risk_monitor_loop():
                         trade["highest_price"] = current_price
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
                     
-                    # 100% presný prepočet live PnL z reálne minutých prostriedkov na burze
                     invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
                     pnl_usdc = invested * (pnl_pct / 100.0)
+                    current_total_value = invested + pnl_usdc
                     
                     be_price = trade["entry_price"] * (1 + (trade_settings["be_trigger_pct"] / 100.0))
                     trail_stop_price = trade["highest_price"] * (1 - (trade_settings["trail_pct"] / 100.0))
@@ -279,7 +279,9 @@ async def advanced_risk_monitor_loop():
                     trade["be_target_price"] = be_price
                     trade["current_sl_price"] = effective_sl
                     trade["ttp_target_price"] = ttp_stop_level
-                    CURRENT_STAGE = f"STAV: Pozícia {symbol} aktívna | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
+                    
+                    # Vylepšený stavový riadok s presnou hodnotou v dolároch (Investované + PnL)
+                    CURRENT_STAGE = f"STAV: Pozícia {symbol} aktívna | Hodnota: {current_total_value:.2f} $ | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
                     
                     if current_price <= effective_sl:
                         reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else "Stop-Loss (-3%)"
@@ -385,7 +387,6 @@ async def execute_trade_in_background(data: dict):
                     log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
                     return
                 
-                # Skutočne minutá suma overená z množstva mincí a vstupnej ceny
                 actual_spent_usdc = coin_amount * current_price
                 
                 sl_price = current_price * 0.97
@@ -598,7 +599,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .btn-sell { background: var(--accent-white); color: var(--bg-color); font-weight: 700; border-color: var(--accent-white); }
         .btn-sell:hover { background: #e4e4e7; }
         .btn-sell:disabled { opacity: 0.2; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
-        .status-ticker { font-size: 0.75rem; color: var(--text-muted); background: var(--card-bg); border: 1px solid var(--border-color); padding: 8px 12px; border-radius: 4px; display: flex; align-items: center; gap: 8px; }
+        .status-ticker { font-size: 0.75rem; color: var(--yellow); background: var(--card-bg); border: 1px solid var(--border-color); padding: 8px 12px; border-radius: 4px; display: flex; align-items: center; gap: 8px; font-weight: 700; }
         .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
         .stat-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px 12px; }
