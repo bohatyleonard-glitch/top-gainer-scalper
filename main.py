@@ -170,7 +170,6 @@ def okx_request(method: str, path: str, body: str = ""):
         return {"code": "-1", "msg": str(err)}
 
 def fetch_account_capital(stable_ccy="USDC") -> float:
-    """Opravené načítanie zostatku z OKX Demo pre presné zistenie voľných prostriedkov"""
     try:
         balance_res = okx_request("GET", "/api/v5/account/balance")
         if balance_res.get("code") == "0":
@@ -180,8 +179,6 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
                         avail = safe_float(detail.get("availBal", 0))
                         cash = safe_float(detail.get("cashBal", 0))
                         eq = safe_float(detail.get("eq", 0))
-                        
-                        # Zoberieme najvyššiu zmysluplnú hodnotu (na demo účtoch býva cashBal / availBal)
                         best_val = max(avail, cash, eq)
                         if best_val > 0:
                             return best_val
@@ -344,7 +341,6 @@ async def execute_trade_in_background(data: dict):
                 LAST_TRADE_TIME[coin_name] = now_ts
                 stable_ccy = "USDC" if "USDC" in okx_symbol else "USDT"
                 
-                # Získame reálny voľný kapitál z účtu
                 free_capital = fetch_account_capital(stable_ccy)
                 safe_budget = free_capital * 0.98  # 98% zostatku
                 
@@ -358,24 +354,25 @@ async def execute_trade_in_background(data: dict):
                     return
                 current_price = safe_float(ticker_res["data"][0]["last"])
                 
-                # --- OPRAVA TRIEŠTENIA: Použitie tgtCcy="quote_ccy" ---
-                # OKX takto utratí presnú sumu v USDC (safe_budget) jedným celistvým market príkazom
+                # --- OPRAVA TRIEŠTENIA: Výpočet presného množstva mincí a zaokrúhlenie na 2 desatinné miesta ---
+                coin_amount = round(safe_budget / current_price, 2)
+                if coin_amount <= 0:
+                    log_event(f"❌ Vypočítané množstvo mince je príliš nízke.")
+                    return
+
+                # Čistý Spot Market príkaz bez experimentov s tgtCcy
                 order_body = json.dumps({
                     "instId": okx_symbol,
                     "tdMode": "cash",
                     "side": "buy",
                     "ordType": "market",
-                    "sz": f"{safe_budget:.2f}",
-                    "tgtCcy": "quote_ccy"
+                    "sz": str(coin_amount)
                 })
                 
                 order_res = okx_request("POST", "/api/v5/trade/order", order_body)
                 if order_res.get("code") != "0":
                     log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
                     return
-                
-                # Vypočítame množstvo nakúpených mincí pre internú evidenciu
-                coin_amount = round(safe_budget / current_price, 4)
                 
                 sl_price = current_price * 0.97
                 be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
@@ -399,7 +396,7 @@ async def execute_trade_in_background(data: dict):
                     "tf": CURRENT_TIMEFRAME,
                     "settings": SETTINGS.copy()
                 }
-                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC (Rozpočet: {safe_budget:.2f}$)")
+                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {coin_amount} {coin_name} za {current_price:.4f} USDC (Rozpočet: {safe_budget:.2f}$)")
                 
                 inline_keyboard = {
                     "inline_keyboard": [
@@ -449,9 +446,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.4.9 (Anti-Fragmentation) spustený.")
+    log_event("🚀 Apex Scalper PRO v5.5.0 (Anti-Fragmentation Final) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.9 pripravený!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.5.0 pripravený!</b>")
     yield
     monitor_task.cancel()
 
@@ -538,7 +535,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.4.9 PRO — Terminal</title>
+    <title>Apex Scalper v5.5.0 PRO — Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -595,7 +592,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.4.9</h1>
+                <h1>APEX SCALPER // PRO v5.5.0</h1>
                 <p>
                     <span>SOL-USDC · <b style="color: #ffffff;">{{ current_tf }}</b> · OKX Demo</span>
                     <span>Zostatok: <b class="balance-tag">{{ "%.2f"|format(usdc_balance) }} USDC</b></span>
@@ -690,7 +687,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <td><b>{{ h.pair }}</b></td>
                             <td style="color: var(--text-muted);">{{ h.reason }}</td>
                             <td class="{{ 'pnl-green' if h.pnl_usdc >= 0 else 'pnl-red' }}">
-                                {{ "%+.2f"|format(h.pnl_usdc) }} $ ({{ "%+.2f"|format(h.pnl_pct) }}%)
+                                {{ "%+.2f"|format(h.pnl_usdc) }} $ ({{ "%+.2f"|format(h.pnl_pct) %>)
                             </td>
                         </tr>
                         {% endfor %}
