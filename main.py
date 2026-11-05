@@ -54,7 +54,7 @@ SETTINGS.update({
     "use_btc_filter": True, 
     "reentry_cooldown_sec": 120, 
     "use_breakeven": True,
-    "max_budget_cap": 3000.0
+    "max_budget_cap": 1000.0  # Predvolený strop
 })
 
 def log_event(message: str):
@@ -258,7 +258,7 @@ async def advanced_risk_monitor_loop():
                         trade["highest_price"] = current_price
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
                     
-                    # OPRAVENÉ: Výpočet live dolárového PnL presne z reálne minutých prostriedkov (coin_amount * entry_price)
+                    # 100% presný prepočet live PnL z reálne minutých prostriedkov na burze
                     invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
                     pnl_usdc = invested * (pnl_pct / 100.0)
                     
@@ -385,6 +385,7 @@ async def execute_trade_in_background(data: dict):
                     log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
                     return
                 
+                # Skutočne minutá suma overená z množstva mincí a vstupnej ceny
                 actual_spent_usdc = coin_amount * current_price
                 
                 sl_price = current_price * 0.97
@@ -593,7 +594,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .btn:hover { border-color: var(--text-muted); background: rgba(255,255,255,0.02); }
         .btn-on { border-color: var(--green); color: var(--green); }
         .btn-off { border-color: var(--text-muted); color: var(--text-muted); }
-        .btn-yellow { border-color: var(--yellow); color: var(--yellow); background: rgba(245, 158, 11, 0.08); font-weight: 700; }
+        .btn-yellow { border-color: var(--yellow) !important; color: var(--yellow) !important; background: rgba(245, 158, 11, 0.15) !important; font-weight: 700 !important; }
         .btn-sell { background: var(--accent-white); color: var(--bg-color); font-weight: 700; border-color: var(--accent-white); }
         .btn-sell:hover { background: #e4e4e7; }
         .btn-sell:disabled { opacity: 0.2; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
@@ -610,7 +611,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         td { padding: 9px 10px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
         tr:last-child td { border-bottom: none; }
         
-        /* Čisté, prehľadné rolovacie okno pre históriu a logy bez prekrývania textu */
         .scrollable-card { max-height: 160px; overflow-y: auto; }
         .logs-box { 
             background: var(--card-bg); 
@@ -648,10 +648,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </p>
             </div>
             <div class="actions">
-                <button class="btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" onclick="setBudget(1000)">1K</button>
-                <button class="btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" onclick="setBudget(3000)">3K</button>
-                <button class="btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" onclick="setBudget(5000)">5K</button>
-                <button class="btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" onclick="setBudget(10000)">10K</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
                 <button id="btc-btn" class="btn {% if SETTINGS.use_btc_filter %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBtcFilter()">
                     BTC: {% if SETTINGS.use_btc_filter %}ON{% else %}OFF{% endif %}
                 </button>
@@ -767,12 +767,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             let res = await fetch(`/api/set-budget/${amount}`, {method: 'POST'});
             let data = await res.json();
             if (data.status === 'success') {
-                document.querySelectorAll('.actions .btn').forEach(b => {
-                    if (['1K','3K','5K','10K'].includes(b.innerText)) {
-                        b.className = "btn";
+                document.querySelectorAll('.budget-btn').forEach(b => {
+                    b.classList.remove('btn-yellow');
+                    if (parseInt(b.getAttribute('data-val')) === amount) {
+                        b.classList.add('btn-yellow');
                     }
                 });
-                event.target.className = "btn btn-yellow";
             }
         }
 
