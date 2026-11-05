@@ -62,7 +62,7 @@ def log_event(message: str):
     time_str = timestamp.strftime("%H:%M:%S")
     entry = f"[{time_str}] {message}"
     SYSTEM_LOGS.insert(0, entry)
-    if len(SYSTEM_LOGS) > 15:
+    if len(SYSTEM_LOGS) > 30:
         SYSTEM_LOGS.pop()
     print(entry, flush=True)
 
@@ -244,7 +244,7 @@ async def advanced_risk_monitor_loop():
                         })
                         okx_request("POST", "/api/v5/trade/order", order_body)
                         pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
-                        invested = trade.get("invested_usdc", 100.0)
+                        invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
                         pnl_usdc = invested * (pnl_pct / 100.0)
                         record_closed_trade(symbol, pnl_pct, pnl_usdc, "GTC Expirácia 48h")
                         log_event(f"⏳ Expirácia 48h pre {symbol} | PnL: {pnl_pct:+.2f}%")
@@ -257,7 +257,7 @@ async def advanced_risk_monitor_loop():
                     if current_price > trade["highest_price"]:
                         trade["highest_price"] = current_price
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
-                    invested = trade.get("invested_usdc", 100.0)
+                    invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
                     pnl_usdc = invested * (pnl_pct / 100.0)
                     be_price = trade["entry_price"] * (1 + (trade_settings["be_trigger_pct"] / 100.0))
                     trail_stop_price = trade["highest_price"] * (1 - (trade_settings["trail_pct"] / 100.0))
@@ -367,9 +367,7 @@ async def execute_trade_in_background(data: dict):
                     return
                 current_price = safe_float(ticker_res["data"][0]["last"])
                 
-                # Výpočet reálne investovanej sumy podľa toho, koľko burza skutočne použije
-                real_invested = safe_budget
-                coin_amount = round(real_invested / current_price, 2)
+                coin_amount = round(safe_budget / current_price, 2)
                 
                 order_body = json.dumps({
                     "instId": okx_symbol,
@@ -384,7 +382,7 @@ async def execute_trade_in_background(data: dict):
                     log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
                     return
                 
-                # Pre istotu reálne prepočítame investíciu podľa coin_amount * current_price
+                # Získame skutočnú reálne minutú sumu na základe vygenerovaného coin_amount
                 actual_spent_usdc = coin_amount * current_price
                 
                 sl_price = current_price * 0.97
@@ -448,7 +446,7 @@ async def execute_trade_in_background(data: dict):
                     })
                     okx_request("POST", "/api/v5/trade/order", order_body)
                     pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
-                    invested = trade.get("invested_usdc", 100.0)
+                    invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
                     pnl_usdc = invested * (pnl_pct / 100.0)
                     record_closed_trade(pair_to_sell, pnl_pct, pnl_usdc, "Webhook Predaj")
                     log_event(f"🔴 Predaj z Webhooku pre {pair_to_sell} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
@@ -547,7 +545,7 @@ async def sell_now():
                 })
                 okx_request("POST", "/api/v5/trade/order", order_body)
                 pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
-                invested = trade.get("invested_usdc", 100.0)
+                invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
                 pnl_usdc = invested * (pnl_pct / 100.0)
                 record_closed_trade(symbol, pnl_pct, pnl_usdc, "Ručný okamžitý predaj (UI)")
                 log_event(f"⚡ Okamžitý ručný predaj pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
@@ -606,9 +604,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .section-title { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-top: 4px; margin-bottom: 4px; }
         .terminal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.75rem; }
-        th { color: var(--text-muted); font-weight: 400; padding: 6px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; }
+        th { color: var(--text-muted); font-weight: 400; padding: 6px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
         td { padding: 8px 10px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
         tr:last-child td { border-bottom: none; }
+        .scrollable-card { max-height: 110px; overflow-y: auto; }
         .logs-box { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; height: 110px; overflow-y: auto; font-size: 0.7rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 3px; }
         .log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .text-green { color: var(--green); font-weight: 700; }
@@ -688,7 +687,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         <div>
             <div class="section-title">Execution History (3-Month Persistent Storage)</div>
-            <div class="terminal-card" style="max-height: 120px; overflow-y: auto;">
+            <div class="terminal-card scrollable-card">
                 <table>
                     <thead>
                         <tr>
