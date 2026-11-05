@@ -54,7 +54,7 @@ SETTINGS.update({
     "use_btc_filter": True, 
     "reentry_cooldown_sec": 120, 
     "use_breakeven": True,
-    "max_budget_cap": 3000.0  # Predvolený strop (napr. 3K)
+    "max_budget_cap": 3000.0
 })
 
 def log_event(message: str):
@@ -62,7 +62,7 @@ def log_event(message: str):
     time_str = timestamp.strftime("%H:%M:%S")
     entry = f"[{time_str}] {message}"
     SYSTEM_LOGS.insert(0, entry)
-    if len(SYSTEM_LOGS) > 50:
+    if len(SYSTEM_LOGS) > 60:
         SYSTEM_LOGS.pop()
     print(entry, flush=True)
 
@@ -257,7 +257,8 @@ async def advanced_risk_monitor_loop():
                     if current_price > trade["highest_price"]:
                         trade["highest_price"] = current_price
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
-                    # Oprava výpočtu live dolárového PnL z reálne minutých prostriedkov za coin_amount * entry_price
+                    
+                    # OPRAVENÉ: Výpočet live dolárového PnL presne z reálne minutých prostriedkov (coin_amount * entry_price)
                     invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
                     pnl_usdc = invested * (pnl_pct / 100.0)
                     
@@ -289,7 +290,7 @@ async def advanced_risk_monitor_loop():
                             })
                             okx_request("POST", "/api/v5/trade/order", order_body)
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                            log_event(f"🚨 Uzavretý obchod ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}%")
+                            log_event(f"🚨 Uzavretý obchod ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
                             send_telegram_msg(f"🚨 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
                         except Exception:
                             pass
@@ -304,7 +305,7 @@ async def advanced_risk_monitor_loop():
                             })
                             okx_request("POST", "/api/v5/trade/order", order_body)
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                            log_event(f"🎯 Uzavretý obchod (Trailing TP) pre {symbol} | PnL: {pnl_pct:+.2f}%")
+                            log_event(f"🎯 Uzavretý obchod (Trailing TP) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
                             send_telegram_msg(f"🎯 <b>UZAVRETÝ OBCHOD ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
                         except Exception:
                             pass
@@ -384,7 +385,6 @@ async def execute_trade_in_background(data: dict):
                     log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
                     return
                 
-                # Presná reálna investícia podľa skutočne nakúpeného množstva a vstupnej ceny
                 actual_spent_usdc = coin_amount * current_price
                 
                 sl_price = current_price * 0.97
@@ -582,10 +582,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             --yellow: #f59e0b;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; }
-        /* Oprava rozloženia: zrušený pevný height: 100vh a overflow: hidden, aby stránka umožňovala plynulé rolovanie */
-        body { background-color: var(--bg-color); color: var(--text-main); padding: 12px 16px; min-height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
-        .container { max-width: 1000px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; padding-bottom: 24px; }
-        .top-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; flex-wrap: wrap; gap: 10px; }
+        body { background-color: var(--bg-color); color: var(--text-main); padding: 16px; min-height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
+        .container { max-width: 1000px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
+        .top-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; flex-wrap: wrap; gap: 10px; }
         .brand h1 { font-size: 1rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
         .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 1px; display: flex; gap: 10px; flex-wrap: wrap; }
         .balance-tag { color: var(--yellow); font-weight: 700; }
@@ -598,22 +597,42 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .btn-sell { background: var(--accent-white); color: var(--bg-color); font-weight: 700; border-color: var(--accent-white); }
         .btn-sell:hover { background: #e4e4e7; }
         .btn-sell:disabled { opacity: 0.2; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
-        .status-ticker { font-size: 0.75rem; color: var(--text-muted); background: var(--card-bg); border: 1px solid var(--border-color); padding: 6px 12px; border-radius: 4px; display: flex; align-items: center; gap: 8px; }
+        .status-ticker { font-size: 0.75rem; color: var(--text-muted); background: var(--card-bg); border: 1px solid var(--border-color); padding: 8px 12px; border-radius: 4px; display: flex; align-items: center; gap: 8px; }
         .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-        .stat-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; }
+        .stat-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px 12px; }
         .stat-title { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
-        .stat-value { font-size: 1.05rem; font-weight: 700; margin-top: 2px; color: var(--accent-white); }
-        .section-title { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-top: 4px; margin-bottom: 4px; }
+        .stat-value { font-size: 1.1rem; font-weight: 700; margin-top: 4px; color: var(--accent-white); }
+        .section-title { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-top: 6px; margin-bottom: 4px; }
         .terminal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.75rem; }
-        th { color: var(--text-muted); font-weight: 400; padding: 6px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
-        td { padding: 8px 10px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
+        th { color: var(--text-muted); font-weight: 400; padding: 8px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
+        td { padding: 9px 10px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
         tr:last-child td { border-bottom: none; }
-        /* Pohodlné rolovanie tabuliek a logov */
-        .scrollable-card { max-height: 140px; overflow-y: auto; }
-        .logs-box { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; height: 140px; overflow-y: auto; font-size: 0.7rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 3px; }
-        .log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        
+        /* Čisté, prehľadné rolovacie okno pre históriu a logy bez prekrývania textu */
+        .scrollable-card { max-height: 160px; overflow-y: auto; }
+        .logs-box { 
+            background: var(--card-bg); 
+            border: 1px solid var(--border-color); 
+            border-radius: 6px; 
+            padding: 10px 12px; 
+            height: 180px; 
+            max-height: 180px;
+            overflow-y: auto; 
+            font-size: 0.7rem; 
+            color: var(--text-muted); 
+            display: flex; 
+            flex-direction: column; 
+            gap: 6px; 
+        }
+        .log-line { 
+            white-space: pre-wrap; 
+            word-break: break-all; 
+            line-height: 1.4;
+            border-bottom: 1px dashed rgba(255,255,255,0.03);
+            padding-bottom: 4px;
+        }
         .text-green { color: var(--green); font-weight: 700; }
         .text-red { color: var(--red); font-weight: 700; }
     </style>
