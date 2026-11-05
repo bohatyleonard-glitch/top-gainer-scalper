@@ -170,6 +170,7 @@ def okx_request(method: str, path: str, body: str = ""):
         return {"code": "-1", "msg": str(err)}
 
 def fetch_account_capital(stable_ccy="USDC") -> float:
+    """Opravené načítanie zostatku z OKX Demo pre presné zistenie voľných prostriedkov"""
     try:
         balance_res = okx_request("GET", "/api/v5/account/balance")
         if balance_res.get("code") == "0":
@@ -179,6 +180,7 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
                         avail = safe_float(detail.get("availBal", 0))
                         cash = safe_float(detail.get("cashBal", 0))
                         eq = safe_float(detail.get("eq", 0))
+                        
                         best_val = max(avail, cash, eq)
                         if best_val > 0:
                             return best_val
@@ -341,6 +343,7 @@ async def execute_trade_in_background(data: dict):
                 LAST_TRADE_TIME[coin_name] = now_ts
                 stable_ccy = "USDC" if "USDC" in okx_symbol else "USDT"
                 
+                # Získame reálny voľný kapitál z účtu
                 free_capital = fetch_account_capital(stable_ccy)
                 safe_budget = free_capital * 0.98  # 98% zostatku
                 
@@ -354,24 +357,22 @@ async def execute_trade_in_background(data: dict):
                     return
                 current_price = safe_float(ticker_res["data"][0]["last"])
                 
-                # Výpočet presného množstva mincí a zaokrúhlenie na 2 desatinné miesta
-                coin_amount = round(safe_budget / current_price, 2)
-                if coin_amount <= 0:
-                    log_event(f"❌ Vypočítané množstvo mince je príliš nízke.")
-                    return
-
+                # --- OPRAVA TRIEŠTENIA: Použitie tgtCcy="quote_ccy" ---
                 order_body = json.dumps({
                     "instId": okx_symbol,
                     "tdMode": "cash",
                     "side": "buy",
                     "ordType": "market",
-                    "sz": str(coin_amount)
+                    "sz": f"{safe_budget:.2f}",
+                    "tgtCcy": "quote_ccy"
                 })
                 
                 order_res = okx_request("POST", "/api/v5/trade/order", order_body)
                 if order_res.get("code") != "0":
                     log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
                     return
+                
+                coin_amount = round(safe_budget / current_price, 4)
                 
                 sl_price = current_price * 0.97
                 be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
@@ -395,7 +396,7 @@ async def execute_trade_in_background(data: dict):
                     "tf": CURRENT_TIMEFRAME,
                     "settings": SETTINGS.copy()
                 }
-                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {coin_amount} {coin_name} za {current_price:.4f} USDC (Rozpočet: {safe_budget:.2f}$)")
+                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC (Rozpočet: {safe_budget:.2f}$)")
                 
                 inline_keyboard = {
                     "inline_keyboard": [
@@ -445,9 +446,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.5.2 (Fixed HTML) spustený.")
+    log_event("🚀 Apex Scalper PRO v5.4.9 (Anti-Fragmentation) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.5.2 pripravený!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.9 pripravený!</b>")
     yield
     monitor_task.cancel()
 
@@ -495,6 +496,15 @@ async def toggle_bot():
     send_telegram_msg(f"⚙️ <b>Zmena stavu:</b> Bot je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "is_bot_active": IS_BOT_ACTIVE})
 
+# --- NOVÝ ENDPOINT PRE PREPÍNANIE BTC TREND GUARD FILTRA ---
+@app.post("/api/toggle-btc-filter")
+async def toggle_btc_filter():
+    SETTINGS["use_btc_filter"] = not SETTINGS.get("use_btc_filter", True)
+    status_str = "zapnutý (aktívny)" if SETTINGS["use_btc_filter"] else "vypnutý (deaktivovaný)"
+    log_event(f"⚙️ BTC Trend Guard filter: {status_str.upper()}")
+    send_telegram_msg(f"⚙️ <b>Zmena stavu:</b> BTC Trend Guard filter je teraz {status_str.upper()}.")
+    return JSONResponse({"status": "success", "use_btc_filter": SETTINGS["use_btc_filter"]})
+
 @app.post("/api/sell-now")
 async def sell_now():
     global ACTIVE_TRADES
@@ -534,7 +544,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.5.2 PRO — Terminal</title>
+    <title>Apex Scalper v5.4.9 PRO — Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -561,6 +571,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .btn:hover { border-color: var(--text-muted); background: rgba(255,255,255,0.02); }
         .btn-on { border-color: var(--green); color: var(--green); }
         .btn-off { border-color: var(--text-muted); color: var(--text-muted); }
+        .btn-yellow { border-color: var(--yellow); color: var(--yellow); background: rgba(245, 158, 11, 0.05); }
         .btn-sell { background: var(--accent-white); color: var(--bg-color); font-weight: 700; border-color: var(--accent-white); }
         .btn-sell:hover { background: #e4e4e7; }
         .btn-sell:disabled { opacity: 0.2; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
@@ -591,13 +602,16 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.5.2</h1>
+                <h1>APEX SCALPER // PRO v5.4.9</h1>
                 <p>
                     <span>SOL-USDC · <b style="color: #ffffff;">{{ current_tf }}</b> · OKX Demo</span>
                     <span>Zostatok: <b class="balance-tag">{{ "%.2f"|format(usdc_balance) }} USDC</b></span>
                 </p>
             </div>
             <div class="actions">
+                <button id="btcFilterBtn" onclick="toggleBtcFilter()" class="btn {{ 'btn-on' if settings.use_btc_filter else 'btn-yellow' }}">
+                    {{ 'BTC: ON' if settings.use_btc_filter else 'BTC: OFF' }}
+                </button>
                 <button id="toggleBtn" onclick="toggleBot()" class="btn {{ 'btn-on' if is_bot_active else 'btn-off' }}">
                     {{ '● ACTIVE' if is_bot_active else '○ PAUSED' }}
                 </button>
@@ -716,6 +730,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             } catch(e) { alert('Error: ' + e); }
         }
 
+        async function toggleBtcFilter() {
+            try {
+                const res = await fetch('/api/toggle-btc-filter', { method: 'POST' });
+                const data = await res.json();
+                if(data.status === 'success') location.reload();
+            } catch(e) { alert('Error: ' + e); }
+        }
+
         async function sellNow() {
             if(!confirm("Execute immediate market exit for active position?")) return;
             try {
@@ -749,7 +771,8 @@ async def dashboard():
         usdc_balance=usdc_balance,
         stats=stats,
         logs=SYSTEM_LOGS,
-        current_tf=CURRENT_TIMEFRAME
+        current_tf=CURRENT_TIMEFRAME,
+        settings=SETTINGS
     )
 
 if __name__ == "__main__":
