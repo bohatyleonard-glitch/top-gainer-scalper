@@ -50,7 +50,12 @@ STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC", "USDT"]
 
 SETTINGS = TIMEFRAME_PROFILES["30m"].copy()
-SETTINGS.update({"use_btc_filter": True, "reentry_cooldown_sec": 120, "use_breakeven": True})
+SETTINGS.update({
+    "use_btc_filter": True, 
+    "reentry_cooldown_sec": 120, 
+    "use_breakeven": True,
+    "max_budget_cap": 3000.0  # Predvolený strop (napr. 3K)
+})
 
 def log_event(message: str):
     timestamp = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -347,7 +352,11 @@ async def execute_trade_in_background(data: dict):
                 stable_ccy = "USDC" if "USDC" in okx_symbol else "USDT"
                 
                 free_capital = fetch_account_capital(stable_ccy)
-                safe_budget = free_capital * 0.98  # Presne 98% zostatku
+                
+                # Výpočet 98% z kapitálu, no prísne ohraničený zvoleným stropom (max_budget_cap)
+                desired_from_balance = free_capital * 0.98
+                budget_cap = SETTINGS.get("max_budget_cap", 3000.0)
+                safe_budget = min(desired_from_balance, budget_cap)
                 
                 if safe_budget < 5.0:
                     log_event(f"❌ Nedostatok prostriedkov pre nákup: {free_capital} {stable_ccy}")
@@ -397,7 +406,7 @@ async def execute_trade_in_background(data: dict):
                     "tf": CURRENT_TIMEFRAME,
                     "settings": SETTINGS.copy()
                 }
-                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC (Rozpočet: {safe_budget:.2f}$)")
+                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC (Rozpočet: {safe_budget:.2f}$ / Strop: {budget_cap}$)")
                 
                 inline_keyboard = {
                     "inline_keyboard": [
@@ -411,7 +420,7 @@ async def execute_trade_in_background(data: dict):
                     f"🟢 <b>NOVÝ OBCHOD [TF: {CURRENT_TIMEFRAME}]</b>\n"
                     f"<b>Pár:</b> {okx_symbol}\n"
                     f"<b>Vstup:</b> {current_price:.4f}\n"
-                    f"<b>Investícia:</b> {safe_budget:.2f} USDC\n"
+                    f"<b>Investícia:</b> {safe_budget:.2f} USDC (Strop: {budget_cap}$)\n"
                     f"🎯 <b>BE (+{SETTINGS['be_trigger_pct']}%):</b> {be_price:.4f} | <b>Trail TP (+{SETTINGS['ttp_trigger_pct']}%):</b> {ttp_price:.4f}",
                     reply_markup=inline_keyboard
                 )
@@ -447,9 +456,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.5.0 spustený.")
+    log_event("🚀 Apex Scalper PRO v5.6.0 spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.5.0 pripravený!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.6.0 pripravený!</b>")
     yield
     monitor_task.cancel()
 
@@ -505,6 +514,16 @@ async def toggle_btc_filter():
     send_telegram_msg(f"⚙️ <b>Zmena stavu:</b> BTC Trend Guard filter je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "use_btc_filter": SETTINGS["use_btc_filter"]})
 
+# --- NOVÉ ENDPOINTY PRE PREPÍNANIE ROZPOČTOVÝCH STROPOV (1K, 3K, 5K, 10K) ---
+@app.post("/api/set-budget/{amount}")
+async def set_budget(amount: int):
+    if amount in [1000, 3000, 5000, 10000]:
+        SETTINGS["max_budget_cap"] = float(amount)
+        log_event(f"💰 Maximálny rozpočet (strop) zmenený na: {amount} USDC")
+        send_telegram_msg(f"💰 <b>Zmena rozpočtu:</b> Maximálny strop pre obchod je teraz <b>{amount} USDC</b>.")
+        return JSONResponse({"status": "success", "max_budget_cap": amount})
+    return JSONResponse({"status": "error", "message": "Neplatná hodnota rozpočtu."})
+
 @app.post("/api/sell-now")
 async def sell_now():
     global ACTIVE_TRADES
@@ -544,7 +563,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.5.0 PRO — Terminal</title>
+    <title>Apex Scalper v5.6.0 PRO — Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -566,12 +585,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .brand h1 { font-size: 1rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
         .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 1px; display: flex; gap: 10px; flex-wrap: wrap; }
         .balance-tag { color: var(--yellow); font-weight: 700; }
-        .actions { display: flex; gap: 8px; align-items: center; }
-        .btn { background: transparent; border: 1px solid var(--border-hover); color: var(--text-main); padding: 6px 12px; font-size: 0.75rem; font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px; }
+        .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+        .btn { background: transparent; border: 1px solid var(--border-hover); color: var(--text-main); padding: 5px 10px; font-size: 0.7rem; font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px; }
         .btn:hover { border-color: var(--text-muted); background: rgba(255,255,255,0.02); }
         .btn-on { border-color: var(--green); color: var(--green); }
         .btn-off { border-color: var(--text-muted); color: var(--text-muted); }
-        .btn-yellow { border-color: var(--yellow); color: var(--yellow); background: rgba(245, 158, 11, 0.05); }
+        .btn-yellow { border-color: var(--yellow); color: var(--yellow); background: rgba(245, 158, 11, 0.08); font-weight: 700; }
         .btn-sell { background: var(--accent-white); color: var(--bg-color); font-weight: 700; border-color: var(--accent-white); }
         .btn-sell:hover { background: #e4e4e7; }
         .btn-sell:disabled { opacity: 0.2; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
@@ -602,13 +621,19 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.5.0</h1>
+                <h1>APEX SCALPER // PRO v5.6.0</h1>
                 <p>
                     <span>SOL-USDC · <b style="color: #ffffff;">{{ current_tf }}</b> · OKX Demo</span>
                     <span>Zostatok: <b class="balance-tag">{{ "%.2f"|format(usdc_balance) }} USDC</b></span>
                 </p>
             </div>
             <div class="actions">
+                <!-- Tlačidlá pre výber maximálneho stropu rozpočtu (1K, 3K, 5K, 10K) -->
+                <button onclick="setBudget(1000)" class="btn {{ 'btn-yellow' if settings.max_budget_cap == 1000 else '' }}">1K</button>
+                <button onclick="setBudget(3000)" class="btn {{ 'btn-yellow' if settings.max_budget_cap == 3000 else '' }}">3K</button>
+                <button onclick="setBudget(5000)" class="btn {{ 'btn-yellow' if settings.max_budget_cap == 5000 else '' }}">5K</button>
+                <button onclick="setBudget(10000)" class="btn {{ 'btn-yellow' if settings.max_budget_cap == 10000 else '' }}">10K</button>
+
                 <button id="btcFilterBtn" onclick="toggleBtcFilter()" class="btn {{ 'btn-on' if settings.use_btc_filter else 'btn-yellow' }}">
                     {{ 'BTC: ON' if settings.use_btc_filter else 'BTC: OFF' }}
                 </button>
@@ -733,6 +758,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         async function toggleBtcFilter() {
             try {
                 const res = await fetch('/api/toggle-btc-filter', { method: 'POST' });
+                const data = await res.json();
+                if(data.status === 'success') location.reload();
+            } catch(e) { alert('Error: ' + e); }
+        }
+
+        async function setBudget(amount) {
+            try {
+                const res = await fetch(`/api/set-budget/${amount}`, { method: 'POST' });
                 const data = await res.json();
                 if(data.status === 'success') location.reload();
             } catch(e) { alert('Error: ' + e); }
