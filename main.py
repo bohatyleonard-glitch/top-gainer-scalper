@@ -49,7 +49,7 @@ CURRENT_TIMEFRAME = "Multi-TF"
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC", "USDT"]
 
-SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
+SETTINGS = TIMEFRAME_PROFILES["30m"].copy()
 SETTINGS.update({"use_btc_filter": True, "reentry_cooldown_sec": 120, "use_breakeven": True})
 
 def log_event(message: str):
@@ -170,18 +170,19 @@ def okx_request(method: str, path: str, body: str = ""):
         return {"code": "-1", "msg": str(err)}
 
 def fetch_account_capital(stable_ccy="USDC") -> float:
+    """Opravené načítanie zostatku z OKX Demo pre presné zistenie voľných prostriedkov"""
     try:
         balance_res = okx_request("GET", "/api/v5/account/balance")
         if balance_res.get("code") == "0":
             for acc in balance_res.get("data", []):
                 for detail in acc.get("details", []):
                     if detail.get("ccy") == stable_ccy:
-                        # Vyskúšame zobrať celkovú hodnotu účtu (eq) alebo dostupnú hotovosť
-                        eq_val = safe_float(detail.get("eq", 0))
-                        cash_val = safe_float(detail.get("cashBal", 0))
-                        avail_val = safe_float(detail.get("availBal", 0))
+                        avail = safe_float(detail.get("availBal", 0))
+                        cash = safe_float(detail.get("cashBal", 0))
+                        eq = safe_float(detail.get("eq", 0))
                         
-                        best_val = max(eq_val, cash_val, avail_val)
+                        # Zoberieme najvyššiu zmysluplnú hodnotu (na demo účtoch býva cashBal / availBal)
+                        best_val = max(avail, cash, eq)
                         if best_val > 0:
                             return best_val
     except Exception as err:
@@ -203,12 +204,6 @@ def check_btc_health() -> bool:
     except Exception:
         pass
     return True
-
-def calculate_position_budget(free_capital: float, current_price: float, inst_id: str) -> float:
-    base_budget = free_capital * 0.98
-    if base_budget < 5.0:
-        return 0.0
-    return base_budget
 
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
@@ -323,7 +318,7 @@ async def execute_trade_in_background(data: dict):
                 log_event(f"⚠️ Ignorovaný webhook: TradingView nepreložil šablónu action: {action}")
                 return
             
-            incoming_tf = str(data.get("tf", "15m")).strip().lower()
+            incoming_tf = str(data.get("tf", "30m")).strip().lower()
             if incoming_tf in TIMEFRAME_PROFILES:
                 CURRENT_TIMEFRAME = incoming_tf.upper()
                 SETTINGS.update(TIMEFRAME_PROFILES[incoming_tf])
@@ -331,6 +326,7 @@ async def execute_trade_in_background(data: dict):
             tv_ticker = str(data.get("symbol", data.get("ticker", ""))).upper().strip()
             coin_name, okx_symbol = format_tv_ticker(tv_ticker)
             now_ts = datetime.now().timestamp()
+            
             if action == "buy":
                 if not IS_BOT_ACTIVE:
                     log_event("⚠️ Ignorovaný buy signal: Bot je pozastavený.")
@@ -344,32 +340,47 @@ async def execute_trade_in_background(data: dict):
                 if not check_btc_health():
                     log_event("⚠️ Nákup blokovaný: BTC Trend Guard detegoval pokles.")
                     return
+                
                 LAST_TRADE_TIME[coin_name] = now_ts
                 stable_ccy = "USDC" if "USDC" in okx_symbol else "USDT"
+                
+                # Získame reálny voľný kapitál z účtu
                 free_capital = fetch_account_capital(stable_ccy)
-                safe_budget = calculate_position_budget(free_capital, 0.0, okx_symbol)
-                if safe_budget <= 0:
+                safe_budget = free_capital * 0.98  # 98% zostatku
+                
+                if safe_budget < 5.0:
                     log_event(f"❌ Nedostatok prostriedkov pre nákup: {free_capital} {stable_ccy}")
                     return
+                
                 ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={okx_symbol}")
                 if ticker_res.get("code") != "0" or not ticker_res.get("data"):
+                    log_event(f"❌ Nepodarilo sa získať cenu pre {okx_symbol}")
                     return
                 current_price = safe_float(ticker_res["data"][0]["last"])
                 
-                coin_amount = round(safe_budget / current_price, 2)
-
+                # --- OPRAVA TRIEŠTENIA: Použitie tgtCcy="quote_ccy" ---
+                # OKX takto utratí presnú sumu v USDC (safe_budget) jedným celistvým market príkazom
                 order_body = json.dumps({
-                    "instId": okx_symbol, "tdMode": "cash", "side": "buy",
-                    "ordType": "market", "sz": str(coin_amount)
+                    "instId": okx_symbol,
+                    "tdMode": "cash",
+                    "side": "buy",
+                    "ordType": "market",
+                    "sz": f"{safe_budget:.2f}",
+                    "tgtCcy": "quote_ccy"
                 })
+                
                 order_res = okx_request("POST", "/api/v5/trade/order", order_body)
                 if order_res.get("code") != "0":
                     log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
                     return
                 
+                # Vypočítame množstvo nakúpených mincí pre internú evidenciu
+                coin_amount = round(safe_budget / current_price, 4)
+                
                 sl_price = current_price * 0.97
                 be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
                 ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0))
+                
                 ACTIVE_TRADES[coin_name] = {
                     "entry_price": current_price,
                     "current_sl_price": sl_price,
@@ -389,6 +400,7 @@ async def execute_trade_in_background(data: dict):
                     "settings": SETTINGS.copy()
                 }
                 log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC (Rozpočet: {safe_budget:.2f}$)")
+                
                 inline_keyboard = {
                     "inline_keyboard": [
                         [
@@ -405,6 +417,7 @@ async def execute_trade_in_background(data: dict):
                     f"🎯 <b>BE (+{SETTINGS['be_trigger_pct']}%):</b> {be_price:.4f} | <b>Trail TP (+{SETTINGS['ttp_trigger_pct']}%):</b> {ttp_price:.4f}",
                     reply_markup=inline_keyboard
                 )
+                
             elif action == "sell":
                 target_coin = coin_name if coin_name in ACTIVE_TRADES else None
                 if not target_coin:
@@ -422,7 +435,7 @@ async def execute_trade_in_background(data: dict):
                         "instId": pair_to_sell, "tdMode": "cash", "side": "sell",
                         "ordType": "market", "sz": str(round(trade["amount"], 2))
                     })
-                    order_res = okx_request("POST", "/api/v5/trade/order", order_body)
+                    okx_request("POST", "/api/v5/trade/order", order_body)
                     pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
                     invested = trade.get("invested_usdc", 100.0)
                     pnl_usdc = invested * (pnl_pct / 100.0)
@@ -436,9 +449,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.4.8 (Multi-TF) spustený.")
+    log_event("🚀 Apex Scalper PRO v5.4.9 (Anti-Fragmentation) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.8 pripravený!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.9 pripravený!</b>")
     yield
     monitor_task.cancel()
 
@@ -515,7 +528,6 @@ async def sell_now():
             except Exception as e:
                 log_event(f"⚠️ Chyba pri Emergency Sell pre {symbol}: {e}")
             finally:
-                # Bezpečné odstránenie pozície zo zoznamu za každých okolností, aby sa UI okamžite odblokovalo
                 if coin in ACTIVE_TRADES:
                     del ACTIVE_TRADES[coin]
 
@@ -526,7 +538,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.4.8 PRO — Terminal</title>
+    <title>Apex Scalper v5.4.9 PRO — Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -541,79 +553,41 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             --red: #ef4444;
             --yellow: #f59e0b;
         }
-
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; }
         body { background-color: var(--bg-color); color: var(--text-main); padding: 12px 16px; height: 100vh; overflow: hidden; display: flex; flex-direction: column; justify-content: center; }
-        
         .container { max-width: 1000px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
-
-        .top-bar {
-            display: flex; justify-content: space-between; align-items: center;
-            border-bottom: 1px solid var(--border-color); padding-bottom: 8px;
-            flex-wrap: wrap; gap: 10px;
-        }
+        .top-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; flex-wrap: wrap; gap: 10px; }
         .brand h1 { font-size: 1rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
         .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 1px; display: flex; gap: 10px; flex-wrap: wrap; }
         .balance-tag { color: var(--yellow); font-weight: 700; }
-
         .actions { display: flex; gap: 8px; align-items: center; }
-
-        .btn {
-            background: transparent; border: 1px solid var(--border-hover); color: var(--text-main);
-            padding: 6px 12px; font-size: 0.75rem; font-weight: 500; cursor: pointer; border-radius: 4px;
-            transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px;
-        }
+        .btn { background: transparent; border: 1px solid var(--border-hover); color: var(--text-main); padding: 6px 12px; font-size: 0.75rem; font-weight: 500; cursor: pointer; border-radius: 4px; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px; }
         .btn:hover { border-color: var(--text-muted); background: rgba(255,255,255,0.02); }
-        
         .btn-on { border-color: var(--green); color: var(--green); }
         .btn-off { border-color: var(--text-muted); color: var(--text-muted); }
-        
         .btn-sell { background: var(--accent-white); color: var(--bg-color); font-weight: 700; border-color: var(--accent-white); }
         .btn-sell:hover { background: #e4e4e7; }
         .btn-sell:disabled { opacity: 0.2; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
-
-        .status-ticker {
-            font-size: 0.75rem; color: var(--text-muted); background: var(--card-bg);
-            border: 1px solid var(--border-color); padding: 6px 12px; border-radius: 4px;
-            display: flex; align-items: center; gap: 8px;
-        }
+        .status-ticker { font-size: 0.75rem; color: var(--text-muted); background: var(--card-bg); border: 1px solid var(--border-color); padding: 6px 12px; border-radius: 4px; display: flex; align-items: center; gap: 8px; }
         .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
-
-        .stats-grid {
-            display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
-        }
-        .stat-card {
-            background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px;
-        }
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+        .stat-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; }
         .stat-title { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
         .stat-value { font-size: 1.05rem; font-weight: 700; margin-top: 2px; color: var(--accent-white); }
-
         .section-title { font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-top: 4px; margin-bottom: 4px; }
-        
-        .terminal-card {
-            background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px;
-            overflow: hidden;
-        }
-
+        .terminal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.75rem; }
         th { color: var(--text-muted); font-weight: 400; padding: 6px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; }
         td { padding: 8px 10px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
         tr:last-child td { border-bottom: none; }
-
         .tag { font-size: 0.7rem; padding: 2px 5px; border: 1px solid var(--border-hover); border-radius: 3px; color: var(--accent-white); }
-        
         .val-price { color: var(--accent-white); font-weight: 500; }
         .val-be { color: var(--yellow); }
         .val-sl { color: var(--red); }
         .val-tp { color: var(--green); }
-
         .pnl-green { color: var(--green); font-weight: 700; }
         .pnl-red { color: var(--red); font-weight: 700; }
-
-        .logs-box {
-            padding: 8px 12px; font-size: 0.7rem; color: var(--text-muted); max-height: 85px; overflow-y: auto; line-height: 1.4;
-        }
-
+        .logs-box { padding: 8px 12px; font-size: 0.7rem; color: var(--text-muted); max-height: 85px; overflow-y: auto; line-height: 1.4; }
         .empty { padding: 12px; text-align: center; color: var(--text-muted); font-size: 0.75rem; }
     </style>
 </head>
@@ -621,7 +595,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.4.8</h1>
+                <h1>APEX SCALPER // PRO v5.4.9</h1>
                 <p>
                     <span>SOL-USDC · <b style="color: #ffffff;">{{ current_tf }}</b> · OKX Demo</span>
                     <span>Zostatok: <b class="balance-tag">{{ "%.2f"|format(usdc_balance) }} USDC</b></span>
