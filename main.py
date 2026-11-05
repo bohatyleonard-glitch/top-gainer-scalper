@@ -148,7 +148,7 @@ def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
             break
     if not day_found:
         DAILY_PNL_CALENDAR.insert(0, {"date": day_str, "pnl": pnl_usdc, "trades": 1})
-    CLOSED_TRADES_HISTORY.insert(0, {"pair": pair, "pnl_pct": pnl_pct, "pnl_usdc": pnl_usdc, "reason": reason, "time": get_sk_time_str()})
+    CLOSED_TRADES_HISTORY.insert(0, {"pair": pair, "pnl_pct": pnl_pct, "pnl_usdc": round(pnl_usdc, 2), "reason": reason, "time": get_sk_time_str()})
     save_persistent_data()
 
 def okx_request(method: str, path: str, body: str = ""):
@@ -353,7 +353,6 @@ async def execute_trade_in_background(data: dict):
                 
                 free_capital = fetch_account_capital(stable_ccy)
                 
-                # Výpočet 98% z kapitálu, no prísne ohraničený zvoleným stropom (max_budget_cap)
                 desired_from_balance = free_capital * 0.98
                 budget_cap = SETTINGS.get("max_budget_cap", 3000.0)
                 safe_budget = min(desired_from_balance, budget_cap)
@@ -368,7 +367,9 @@ async def execute_trade_in_background(data: dict):
                     return
                 current_price = safe_float(ticker_res["data"][0]["last"])
                 
-                coin_amount = round(safe_budget / current_price, 2)
+                # Výpočet reálne investovanej sumy podľa toho, koľko burza skutočne použije
+                real_invested = safe_budget
+                coin_amount = round(real_invested / current_price, 2)
                 
                 order_body = json.dumps({
                     "instId": okx_symbol,
@@ -382,6 +383,9 @@ async def execute_trade_in_background(data: dict):
                 if order_res.get("code") != "0":
                     log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
                     return
+                
+                # Pre istotu reálne prepočítame investíciu podľa coin_amount * current_price
+                actual_spent_usdc = coin_amount * current_price
                 
                 sl_price = current_price * 0.97
                 be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
@@ -400,13 +404,13 @@ async def execute_trade_in_background(data: dict):
                     "partial_tp_activated": False,
                     "break_even_activated": False,
                     "ttp_activated": False,
-                    "invested_usdc": safe_budget,
+                    "invested_usdc": actual_spent_usdc,
                     "live_pnl_pct": 0.0,
                     "live_pnl_usdc": 0.0,
                     "tf": CURRENT_TIMEFRAME,
                     "settings": SETTINGS.copy()
                 }
-                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC (Rozpočet: {safe_budget:.2f}$ / Strop: {budget_cap}$)")
+                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC (Investované: {actual_spent_usdc:.2f}$ / Strop: {budget_cap}$)")
                 
                 inline_keyboard = {
                     "inline_keyboard": [
@@ -420,7 +424,7 @@ async def execute_trade_in_background(data: dict):
                     f"🟢 <b>NOVÝ OBCHOD [TF: {CURRENT_TIMEFRAME}]</b>\n"
                     f"<b>Pár:</b> {okx_symbol}\n"
                     f"<b>Vstup:</b> {current_price:.4f}\n"
-                    f"<b>Investícia:</b> {safe_budget:.2f} USDC (Strop: {budget_cap}$)\n"
+                    f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC (Strop: {budget_cap}$)\n"
                     f"🎯 <b>BE (+{SETTINGS['be_trigger_pct']}%):</b> {be_price:.4f} | <b>Trail TP (+{SETTINGS['ttp_trigger_pct']}%):</b> {ttp_price:.4f}",
                     reply_markup=inline_keyboard
                 )
@@ -514,7 +518,6 @@ async def toggle_btc_filter():
     send_telegram_msg(f"⚙️ <b>Zmena stavu:</b> BTC Trend Guard filter je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "use_btc_filter": SETTINGS["use_btc_filter"]})
 
-# --- NOVÉ ENDPOINTY PRE PREPÍNANIE ROZPOČTOVÝCH STROPOV (1K, 3K, 5K, 10K) ---
 @app.post("/api/set-budget/{amount}")
 async def set_budget(amount: int):
     if amount in [1000, 3000, 5000, 10000]:
@@ -606,15 +609,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         th { color: var(--text-muted); font-weight: 400; padding: 6px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; }
         td { padding: 8px 10px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
         tr:last-child td { border-bottom: none; }
-        .tag { font-size: 0.7rem; padding: 2px 5px; border: 1px solid var(--border-hover); border-radius: 3px; color: var(--accent-white); }
-        .val-price { color: var(--accent-white); font-weight: 500; }
-        .val-be { color: var(--yellow); }
-        .val-sl { color: var(--red); }
-        .val-tp { color: var(--green); }
-        .pnl-green { color: var(--green); font-weight: 700; }
-        .pnl-red { color: var(--red); font-weight: 700; }
-        .logs-box { padding: 8px 12px; font-size: 0.7rem; color: var(--text-muted); max-height: 85px; overflow-y: auto; line-height: 1.4; }
-        .empty { padding: 12px; text-align: center; color: var(--text-muted); font-size: 0.75rem; }
+        .logs-box { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; height: 110px; overflow-y: auto; font-size: 0.7rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 3px; }
+        .log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .text-green { color: var(--green); font-weight: 700; }
+        .text-red { color: var(--red); font-weight: 700; }
     </style>
 </head>
 <body>
@@ -623,56 +621,52 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="brand">
                 <h1>APEX SCALPER // PRO v5.6.0</h1>
                 <p>
-                    <span>SOL-USDC · <b style="color: #ffffff;">{{ current_tf }}</b> · OKX Demo</span>
-                    <span>Zostatok: <b class="balance-tag">{{ "%.2f"|format(usdc_balance) }} USDC</b></span>
+                    <span id="header-pair">SOL-USDC · Multi-TF · OKX Demo</span>
+                    <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
                 </p>
             </div>
             <div class="actions">
-                <!-- Tlačidlá pre výber maximálneho stropu rozpočtu (1K, 3K, 5K, 10K) -->
-                <button onclick="setBudget(1000)" class="btn {{ 'btn-yellow' if settings.max_budget_cap == 1000 else '' }}">1K</button>
-                <button onclick="setBudget(3000)" class="btn {{ 'btn-yellow' if settings.max_budget_cap == 3000 else '' }}">3K</button>
-                <button onclick="setBudget(5000)" class="btn {{ 'btn-yellow' if settings.max_budget_cap == 5000 else '' }}">5K</button>
-                <button onclick="setBudget(10000)" class="btn {{ 'btn-yellow' if settings.max_budget_cap == 10000 else '' }}">10K</button>
-
-                <button id="btcFilterBtn" onclick="toggleBtcFilter()" class="btn {{ 'btn-on' if settings.use_btc_filter else 'btn-yellow' }}">
-                    {{ 'BTC: ON' if settings.use_btc_filter else 'BTC: OFF' }}
+                <button class="btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" onclick="setBudget(1000)">1K</button>
+                <button class="btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" onclick="setBudget(3000)">3K</button>
+                <button class="btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" onclick="setBudget(5000)">5K</button>
+                <button class="btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" onclick="setBudget(10000)">10K</button>
+                <button id="btc-btn" class="btn {% if SETTINGS.use_btc_filter %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBtcFilter()">
+                    BTC: {% if SETTINGS.use_btc_filter %}ON{% else %}OFF{% endif %}
                 </button>
-                <button id="toggleBtn" onclick="toggleBot()" class="btn {{ 'btn-on' if is_bot_active else 'btn-off' }}">
-                    {{ '● ACTIVE' if is_bot_active else '○ PAUSED' }}
+                <button id="bot-btn" class="btn {% if IS_BOT_ACTIVE %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBot()">
+                    {% if IS_BOT_ACTIVE %}● ACTIVE{% else %}○ PAUSED{% endif %}
                 </button>
-                <button id="sellBtn" onclick="sellNow()" class="btn btn-sell" {{ '' if trades else 'disabled' }}>
-                    ⚡ EMERGENCY SELL
-                </button>
+                <button id="sell-btn" class="btn btn-sell" onclick="sellNow()" disabled>⚡ EMERGENCY SELL</button>
             </div>
         </div>
 
         <div class="status-ticker">
             <div class="status-dot"></div>
-            <span>{{ current_stage }}</span>
+            <span id="current-stage">{{ CURRENT_STAGE }}</span>
         </div>
 
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-title">Win Rate</div>
-                <div class="stat-value" style="color: var(--green);">{{ stats.win_rate }}%</div>
+                <div class="stat-value" id="stat-winrate">0.0%</div>
             </div>
             <div class="stat-card">
                 <div class="stat-title">Total Trades</div>
-                <div class="stat-value">{{ stats.total_trades }}</div>
+                <div class="stat-value" id="stat-trades">0</div>
             </div>
             <div class="stat-card">
                 <div class="stat-title">Win / Loss</div>
-                <div class="stat-value"><span style="color: var(--green);">{{ stats.wins }}W</span> / <span style="color: var(--red);">{{ stats.losses }}L</span></div>
+                <div class="stat-value" id="stat-winloss">0W / 0L</div>
             </div>
             <div class="stat-card">
                 <div class="stat-title">Net PnL</div>
-                <div class="stat-value {{ 'pnl-green' if stats.total_pnl >= 0 else 'pnl-red' }}">{{ "%+.2f"|format(stats.total_pnl) }} $</div>
+                <div class="stat-value" id="stat-pnl">+0.00 $</div>
             </div>
         </div>
 
-        <div class="section-title">Active Position & Dynamic Levels</div>
-        <div class="terminal-card">
-            {% if trades %}
+        <div>
+            <div class="section-title">Active Position & Dynamic Levels</div>
+            <div class="terminal-card">
                 <table>
                     <thead>
                         <tr>
@@ -685,30 +679,16 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <th>Live PnL</th>
                         </tr>
                     </thead>
-                    <tbody>
-                        {% for t, d in trades.items() %}
-                        <tr>
-                            <td><span class="tag">{{ d.market_pair }}</span></td>
-                            <td>{{ "%.4f"|format(d.entry_price) }}</td>
-                            <td class="val-price">{{ "%.4f"|format(d.current_price) }}</td>
-                            <td class="val-be">{{ "%.4f"|format(d.be_target_price) }}</td>
-                            <td class="val-sl">{{ "%.4f"|format(d.current_sl_price) }}</td>
-                            <td class="val-tp">{{ "%.4f"|format(d.ttp_target_price) }}</td>
-                            <td class="{{ 'pnl-green' if d.live_pnl_pct >= 0 else 'pnl-red' }}">
-                                {{ "%+.2f"|format(d.live_pnl_pct) }}% ({{ "%+.2f"|format(d.live_pnl_usdc) }} $)
-                            </td>
-                        </tr>
-                        {% endfor %}
+                    <tbody id="active-position-tbody">
+                        <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">No active positions. Scanning orderbook for triggers...</td></tr>
                     </tbody>
                 </table>
-            {% else %}
-                <div class="empty">No active positions. Scanning orderbook for triggers...</div>
-            {% endif %}
+            </div>
         </div>
 
-        <div class="section-title">Execution History (3-Month Persistent Storage)</div>
-        <div class="terminal-card">
-            {% if history %}
+        <div>
+            <div class="section-title">Execution History (3-Month Persistent Storage)</div>
+            <div class="terminal-card" style="max-height: 120px; overflow-y: auto;">
                 <table>
                     <thead>
                         <tr>
@@ -718,73 +698,139 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <th>Net PnL</th>
                         </tr>
                     </thead>
-                    <tbody>
-                        {% for h in history[:3] %}
-                        <tr>
-                            <td style="color: var(--text-muted); font-size: 0.7rem;">{{ h.time }}</td>
-                            <td><b>{{ h.pair }}</b></td>
-                            <td style="color: var(--text-muted);">{{ h.reason }}</td>
-                            <td class="{{ 'pnl-green' if h.pnl_usdc >= 0 else 'pnl-red' }}">
-                                {{ "%+.2f"|format(h.pnl_usdc) }} $ ({{ "%+.2f"|format(h.pnl_pct) }}%)
-                            </td>
-                        </tr>
-                        {% endfor %}
+                    <tbody id="history-tbody">
+                        <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No closed trades recorded yet.</td></tr>
                     </tbody>
                 </table>
-            {% else %}
-                <div class="empty">No closed trades recorded yet.</div>
-            {% endif %}
+            </div>
         </div>
 
-        <div class="section-title">System Execution Logs</div>
-        <div class="terminal-card">
-            <div class="logs-box">
-                {% for log in logs[:4] %}
-                    <div>{{ log }}</div>
-                {% endfor %}
+        <div>
+            <div class="section-title">System Execution Logs</div>
+            <div class="logs-box" id="logs-container">
+                <div class="log-line">[System Initialized] Čakám na prvé udalosti...</div>
             </div>
         </div>
     </div>
 
     <script>
         async function toggleBot() {
-            try {
-                const res = await fetch('/api/toggle-bot', { method: 'POST' });
-                const data = await res.json();
-                if(data.status === 'success') location.reload();
-            } catch(e) { alert('Error: ' + e); }
+            let res = await fetch('/api/toggle-bot', {method: 'POST'});
+            let data = await res.json();
+            let btn = document.getElementById('bot-btn');
+            if (data.is_bot_active) {
+                btn.className = "btn btn-on";
+                btn.innerText = "● ACTIVE";
+            } else {
+                btn.className = "btn btn-off";
+                btn.innerText = "○ PAUSED";
+            }
+            updateState();
         }
 
         async function toggleBtcFilter() {
-            try {
-                const res = await fetch('/api/toggle-btc-filter', { method: 'POST' });
-                const data = await res.json();
-                if(data.status === 'success') location.reload();
-            } catch(e) { alert('Error: ' + e); }
+            let res = await fetch('/api/toggle-btc-filter', {method: 'POST'});
+            let data = await res.json();
+            let btn = document.getElementById('btc-btn');
+            if (data.use_btc_filter) {
+                btn.className = "btn btn-on";
+                btn.innerText = "BTC: ON";
+            } else {
+                btn.className = "btn btn-off";
+                btn.innerText = "BTC: OFF";
+            }
         }
 
         async function setBudget(amount) {
-            try {
-                const res = await fetch(`/api/set-budget/${amount}`, { method: 'POST' });
-                const data = await res.json();
-                if(data.status === 'success') location.reload();
-            } catch(e) { alert('Error: ' + e); }
+            let res = await fetch(`/api/set-budget/${amount}`, {method: 'POST'});
+            let data = await res.json();
+            if (data.status === 'success') {
+                document.querySelectorAll('.actions .btn').forEach(b => {
+                    if (['1K','3K','5K','10K'].includes(b.innerText)) {
+                        b.className = "btn";
+                    }
+                });
+                event.target.className = "btn btn-yellow";
+            }
         }
 
         async function sellNow() {
-            if(!confirm("Execute immediate market exit for active position?")) return;
-            try {
-                const res = await fetch('/api/sell-now', { method: 'POST' });
-                const data = await res.json();
-                if(data.status === 'success') {
-                    location.reload();
-                } else {
-                    alert('Error: ' + data.message);
-                }
-            } catch(e) { alert('Error: ' + e); }
+            if (!confirm("Naozaj vykonať núdzový okamžitý predaj všetkých pozícií?")) return;
+            let res = await fetch('/api/sell-now', {method: 'POST'});
+            let data = await res.json();
+            updateState();
         }
 
-        setTimeout(() => { location.reload(); }, 3000);
+        async function updateState() {
+            try {
+                let res = await fetch('/api/state');
+                let data = await res.json();
+                
+                document.getElementById('header-balance').innerText = data.balance.toFixed(2) + " USDC";
+                document.getElementById('current-stage').innerText = data.current_stage;
+                
+                let stats = data.stats;
+                document.getElementById('stat-winrate').innerText = stats.win_rate.toFixed(1) + "%";
+                document.getElementById('stat-trades').innerText = stats.total_trades;
+                document.getElementById('stat-winloss').innerText = stats.wins + "W / " + stats.losses + "L";
+                let pnlEl = document.getElementById('stat-pnl');
+                pnlEl.innerText = (stats.total_pnl >= 0 ? "+" : "") + stats.total_pnl.toFixed(2) + " $";
+                pnlEl.className = "stat-value " + (stats.total_pnl >= 0 ? "text-green" : "text-red");
+
+                let activeTbody = document.getElementById('active-position-tbody');
+                let sellBtn = document.getElementById('sell-btn');
+                if (Object.keys(data.active_trades).length > 0) {
+                    let html = "";
+                    for (let [coin, t] of Object.entries(data.active_trades)) {
+                        let pnlClass = t.live_pnl_pct >= 0 ? "text-green" : "text-red";
+                        html += `<tr>
+                            <td><b>${t.market_pair}</b></td>
+                            <td>${t.entry_price.toFixed(4)}</td>
+                            <td>${t.current_price.toFixed(4)}</td>
+                            <td>${t.be_target_price.toFixed(4)}</td>
+                            <td>${t.current_sl_price.toFixed(4)}</td>
+                            <td>${t.ttp_target_price.toFixed(4)}</td>
+                            <td class="${pnlClass}">${t.live_pnl_pct >= 0 ? "+" : ""}${t.live_pnl_pct.toFixed(2)}% (${t.live_pnl_usdc >= 0 ? "+" : ""}${t.live_pnl_usdc.toFixed(2)} $)</td>
+                        </tr>`;
+                    }
+                    activeTbody.innerHTML = html;
+                    sellBtn.disabled = false;
+                } else {
+                    activeTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">No active positions. Scanning orderbook for triggers...</td></tr>`;
+                    sellBtn.disabled = true;
+                }
+
+                let historyTbody = document.getElementById('history-tbody');
+                if (data.history.length > 0) {
+                    let hHtml = "";
+                    for (let h of data.history) {
+                        let pnlClass = h.pnl_usdc >= 0 ? "text-green" : "text-red";
+                        hHtml += `<tr>
+                            <td>${h.time}</td>
+                            <td><b>${h.pair}</b></td>
+                            <td>${h.reason}</td>
+                            <td class="${pnlClass}">${h.pnl_usdc >= 0 ? "+" : ""}${h.pnl_usdc.toFixed(2)} $ (${h.pnl_pct >= 0 ? "+" : ""}${h.pnl_pct.toFixed(2)}%)</td>
+                        </tr>`;
+                    }
+                    historyTbody.innerHTML = hHtml;
+                } else {
+                    historyTbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No closed trades recorded yet.</td></tr>`;
+                }
+
+                let logsBox = document.getElementById('logs-container');
+                let lHtml = "";
+                for (let log of data.logs) {
+                    lHtml += `<div class="log-line">${log}</div>`;
+                }
+                logsBox.innerHTML = lHtml;
+
+            } catch (err) {
+                console.error("Chyba pri obnove stavu:", err);
+            }
+        }
+
+        setInterval(updateState, 2000);
+        updateState();
     </script>
 </body>
 </html>
@@ -792,22 +838,28 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    usdc_balance = fetch_account_capital("USDC")
-    stats = calculate_stats()
-    template = Template(HTML_TEMPLATE_CONTENT)
-    return template.render(
-        trades=ACTIVE_TRADES,
-        history=CLOSED_TRADES_HISTORY,
-        calendar=DAILY_PNL_CALENDAR,
-        current_stage=CURRENT_STAGE,
-        is_bot_active=IS_BOT_ACTIVE,
-        usdc_balance=usdc_balance,
-        stats=stats,
-        logs=SYSTEM_LOGS,
-        current_tf=CURRENT_TIMEFRAME,
-        settings=SETTINGS
+    balance = fetch_account_capital("USDC")
+    t = Template(HTML_TEMPLATE_CONTENT)
+    return t.render(
+        SETTINGS=SETTINGS,
+        IS_BOT_ACTIVE=IS_BOT_ACTIVE,
+        CURRENT_STAGE=CURRENT_STAGE,
+        balance=balance
     )
 
+@app.get("/api/state")
+async def get_state():
+    balance = fetch_account_capital("USDC")
+    stats = calculate_stats()
+    return JSONResponse({
+        "balance": balance,
+        "is_bot_active": IS_BOT_ACTIVE,
+        "current_stage": CURRENT_STAGE,
+        "stats": stats,
+        "active_trades": ACTIVE_TRADES,
+        "history": CLOSED_TRADES_HISTORY[:15],
+        "logs": SYSTEM_LOGS
+    })
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
