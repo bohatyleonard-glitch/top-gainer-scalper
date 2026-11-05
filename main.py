@@ -62,7 +62,7 @@ def log_event(message: str):
     time_str = timestamp.strftime("%H:%M:%S")
     entry = f"[{time_str}] {message}"
     SYSTEM_LOGS.insert(0, entry)
-    if len(SYSTEM_LOGS) > 30:
+    if len(SYSTEM_LOGS) > 50:
         SYSTEM_LOGS.pop()
     print(entry, flush=True)
 
@@ -257,8 +257,10 @@ async def advanced_risk_monitor_loop():
                     if current_price > trade["highest_price"]:
                         trade["highest_price"] = current_price
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
+                    # Oprava výpočtu live dolárového PnL z reálne minutých prostriedkov za coin_amount * entry_price
                     invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
                     pnl_usdc = invested * (pnl_pct / 100.0)
+                    
                     be_price = trade["entry_price"] * (1 + (trade_settings["be_trigger_pct"] / 100.0))
                     trail_stop_price = trade["highest_price"] * (1 - (trade_settings["trail_pct"] / 100.0))
                     if pnl_pct >= trade_settings["be_trigger_pct"]:
@@ -382,7 +384,7 @@ async def execute_trade_in_background(data: dict):
                     log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
                     return
                 
-                # Získame skutočnú reálne minutú sumu na základe vygenerovaného coin_amount
+                # Presná reálna investícia podľa skutočne nakúpeného množstva a vstupnej ceny
                 actual_spent_usdc = coin_amount * current_price
                 
                 sl_price = current_price * 0.97
@@ -580,8 +582,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             --yellow: #f59e0b;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; }
-        body { background-color: var(--bg-color); color: var(--text-main); padding: 12px 16px; height: 100vh; overflow: hidden; display: flex; flex-direction: column; justify-content: center; }
-        .container { max-width: 1000px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
+        /* Oprava rozloženia: zrušený pevný height: 100vh a overflow: hidden, aby stránka umožňovala plynulé rolovanie */
+        body { background-color: var(--bg-color); color: var(--text-main); padding: 12px 16px; min-height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
+        .container { max-width: 1000px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; padding-bottom: 24px; }
         .top-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; flex-wrap: wrap; gap: 10px; }
         .brand h1 { font-size: 1rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
         .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 1px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -607,8 +610,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         th { color: var(--text-muted); font-weight: 400; padding: 6px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
         td { padding: 8px 10px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
         tr:last-child td { border-bottom: none; }
-        .scrollable-card { max-height: 110px; overflow-y: auto; }
-        .logs-box { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; height: 110px; overflow-y: auto; font-size: 0.7rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 3px; }
+        /* Pohodlné rolovanie tabuliek a logov */
+        .scrollable-card { max-height: 140px; overflow-y: auto; }
+        .logs-box { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; height: 140px; overflow-y: auto; font-size: 0.7rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 3px; }
         .log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .text-green { color: var(--green); font-weight: 700; }
         .text-red { color: var(--red); font-weight: 700; }
