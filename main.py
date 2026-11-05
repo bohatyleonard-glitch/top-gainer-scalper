@@ -354,13 +354,12 @@ async def execute_trade_in_background(data: dict):
                     return
                 current_price = safe_float(ticker_res["data"][0]["last"])
                 
-                # --- OPRAVA TRIEŠTENIA: Výpočet presného množstva mincí a zaokrúhlenie na 2 desatinné miesta ---
+                # Výpočet presného množstva mincí a zaokrúhlenie na 2 desatinné miesta
                 coin_amount = round(safe_budget / current_price, 2)
                 if coin_amount <= 0:
                     log_event(f"❌ Vypočítané množstvo mince je príliš nízke.")
                     return
 
-                # Čistý Spot Market príkaz bez experimentov s tgtCcy
                 order_body = json.dumps({
                     "instId": okx_symbol,
                     "tdMode": "cash",
@@ -446,9 +445,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.5.0 (Anti-Fragmentation Final) spustený.")
+    log_event("🚀 Apex Scalper PRO v5.5.1 (Fixed) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.5.0 pripravený!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.5.1 pripravený!</b>")
     yield
     monitor_task.cancel()
 
@@ -535,7 +534,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.5.0 PRO — Terminal</title>
+    <title>Apex Scalper v5.5.1 PRO — Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -592,7 +591,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.5.0</h1>
+                <h1>APEX SCALPER // PRO v5.5.1</h1>
                 <p>
                     <span>SOL-USDC · <b style="color: #ffffff;">{{ current_tf }}</b> · OKX Demo</span>
                     <span>Zostatok: <b class="balance-tag">{{ "%.2f"|format(usdc_balance) }} USDC</b></span>
@@ -687,7 +686,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <td><b>{{ h.pair }}</b></td>
                             <td style="color: var(--text-muted);">{{ h.reason }}</td>
                             <td class="{{ 'pnl-green' if h.pnl_usdc >= 0 else 'pnl-red' }}">
-                                {{ "%+.2f"|format(h.pnl_usdc) }} $ ({{ "%+.2f"|format(h.pnl_pct) %>)
+                                {{ "%+.2f"|format(h.pnl_usdc) }} $ ({{ "%+.2f"|format(h.pnl_pct) }}%)
                             </td>
                         </tr>
                         {% endfor %}
