@@ -22,8 +22,9 @@ WEBHOOK_SECRET = "moje_tajne_heslo_123"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-# --- 📊 DYNAMICKÉ PROFILY PRE ČASOVÉ RÁMCE (8m až 4h) ---
+# --- 📊 DYNAMICKÉ PROFILY PRE ČASOVÉ RÁMCE ---
 TIMEFRAME_PROFILES = {
+    "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "desc": "Skalper 1m"},
     "8m": {"trail_pct": 1.2, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "desc": "Agresívny 8m scalp"},
     "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.6, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "desc": "Rýchly 15m scalp"},
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.3, "desc": "30m trendový"},
@@ -34,7 +35,6 @@ TIMEFRAME_PROFILES = {
     "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 7.0, "ttp_callback_pct": 1.5, "desc": "4h masívny swing"}
 }
 
-# --- GLOBAL STAV BOTA & LIMITOV ---
 ACTIVE_TRADES = {}
 DAILY_PNL_CALENDAR = []
 CLOSED_TRADES_HISTORY = []
@@ -170,7 +170,6 @@ def okx_request(method: str, path: str, body: str = ""):
         return {"code": "-1", "msg": str(err)}
 
 def fetch_account_capital(stable_ccy="USDC") -> float:
-    """Opravené načítanie zostatku z OKX Demo pre presné zistenie voľných prostriedkov"""
     try:
         balance_res = okx_request("GET", "/api/v5/account/balance")
         if balance_res.get("code") == "0":
@@ -180,7 +179,6 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
                         avail = safe_float(detail.get("availBal", 0))
                         cash = safe_float(detail.get("cashBal", 0))
                         eq = safe_float(detail.get("eq", 0))
-                        
                         best_val = max(avail, cash, eq)
                         if best_val > 0:
                             return best_val
@@ -223,17 +221,25 @@ async def advanced_risk_monitor_loop():
                 trade = ACTIVE_TRADES[coin]
                 symbol = trade["market_pair"]
                 trade_settings = trade.get("settings", SETTINGS)
+                
+                # Zisťujeme aktuálnu cenu pre bezpečné naplnenie premennej
+                ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={symbol}")
+                if ticker_res.get("code") == "0" and ticker_res.get("data"):
+                    current_price = safe_float(ticker_res["data"][0]["last"])
+                else:
+                    current_price = trade["entry_price"]
+
+                trade["current_price"] = current_price
+
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
                 if now_time - bought_time > timedelta(hours=48):
                     try:
-                        ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={symbol}")
-                        curr_p = safe_float(ticker_res['data'][0]['last']) if ticker_res.get('code') == '0' and ticker_res.get('data') else trade["entry_price"]
                         order_body = json.dumps({
                             "instId": symbol, "tdMode": "cash", "side": "sell",
                             "ordType": "market", "sz": str(round(trade["amount"], 2))
                         })
                         okx_request("POST", "/api/v5/trade/order", order_body)
-                        pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
+                        pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
                         invested = trade.get("invested_usdc", 100.0)
                         pnl_usdc = invested * (pnl_pct / 100.0)
                         record_closed_trade(symbol, pnl_pct, pnl_usdc, "GTC Expirácia 48h")
@@ -242,11 +248,8 @@ async def advanced_risk_monitor_loop():
                         pass
                     del ACTIVE_TRADES[coin]
                     continue
-                ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={symbol}")
-                if ticker_res.get("code") == "0" and ticker_res.get("data"):
-                    current_price = safe_float(ticker_res["data"][0]["last"])
-                    if current_price <= 0:
-                        continue
+
+                if current_price > 0:
                     if current_price > trade["highest_price"]:
                         trade["highest_price"] = current_price
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
@@ -263,13 +266,14 @@ async def advanced_risk_monitor_loop():
                     if current_price >= ttp_activation_price:
                         trade["ttp_activated"] = True
                     ttp_stop_level = trade["highest_price"] * (1 - (trade_settings["ttp_callback_pct"] / 100.0)) if trade.get("ttp_activated") else ttp_activation_price
-                    trade["current_price"] = current_price
+                    
                     trade["live_pnl_pct"] = pnl_pct
                     trade["live_pnl_usdc"] = pnl_usdc
                     trade["be_target_price"] = be_price
                     trade["current_sl_price"] = effective_sl
                     trade["ttp_target_price"] = ttp_stop_level
                     CURRENT_STAGE = f"STAV: Pozícia {symbol} aktívna | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
+                    
                     if current_price <= effective_sl:
                         reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else "Stop-Loss (-3%)"
                         try:
@@ -343,9 +347,8 @@ async def execute_trade_in_background(data: dict):
                 LAST_TRADE_TIME[coin_name] = now_ts
                 stable_ccy = "USDC" if "USDC" in okx_symbol else "USDT"
                 
-                # Získame reálny voľný kapitál z účtu
                 free_capital = fetch_account_capital(stable_ccy)
-                safe_budget = free_capital * 0.98  # 98% zostatku
+                safe_budget = free_capital * 0.98  # Presne 98% zostatku
                 
                 if safe_budget < 5.0:
                     log_event(f"❌ Nedostatok prostriedkov pre nákup: {free_capital} {stable_ccy}")
@@ -357,14 +360,15 @@ async def execute_trade_in_background(data: dict):
                     return
                 current_price = safe_float(ticker_res["data"][0]["last"])
                 
-                # --- OPRAVA TRIEŠTENIA: Použitie tgtCcy="quote_ccy" ---
+                # Výpočet presného množstva mincí, aby OKX neseparovala príkaz na stovky malých fragmentov
+                coin_amount = round(safe_budget / current_price, 2)
+                
                 order_body = json.dumps({
                     "instId": okx_symbol,
                     "tdMode": "cash",
                     "side": "buy",
                     "ordType": "market",
-                    "sz": f"{safe_budget:.2f}",
-                    "tgtCcy": "quote_ccy"
+                    "sz": f"{coin_amount}"
                 })
                 
                 order_res = okx_request("POST", "/api/v5/trade/order", order_body)
@@ -372,14 +376,13 @@ async def execute_trade_in_background(data: dict):
                     log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
                     return
                 
-                coin_amount = round(safe_budget / current_price, 4)
-                
                 sl_price = current_price * 0.97
                 be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
                 ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0))
                 
                 ACTIVE_TRADES[coin_name] = {
                     "entry_price": current_price,
+                    "current_price": current_price,
                     "current_sl_price": sl_price,
                     "be_target_price": be_price,
                     "ttp_target_price": ttp_price,
@@ -446,9 +449,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.4.9 (Anti-Fragmentation) spustený.")
+    log_event("🚀 Apex Scalper PRO v5.5.0 spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.4.9 pripravený!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.5.0 pripravený!</b>")
     yield
     monitor_task.cancel()
 
@@ -496,7 +499,6 @@ async def toggle_bot():
     send_telegram_msg(f"⚙️ <b>Zmena stavu:</b> Bot je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "is_bot_active": IS_BOT_ACTIVE})
 
-# --- NOVÝ ENDPOINT PRE PREPÍNANIE BTC TREND GUARD FILTRA ---
 @app.post("/api/toggle-btc-filter")
 async def toggle_btc_filter():
     SETTINGS["use_btc_filter"] = not SETTINGS.get("use_btc_filter", True)
@@ -544,7 +546,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.4.9 PRO — Terminal</title>
+    <title>Apex Scalper v5.5.0 PRO — Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -602,7 +604,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.4.9</h1>
+                <h1>APEX SCALPER // PRO v5.5.0</h1>
                 <p>
                     <span>SOL-USDC · <b style="color: #ffffff;">{{ current_tf }}</b> · OKX Demo</span>
                     <span>Zostatok: <b class="balance-tag">{{ "%.2f"|format(usdc_balance) }} USDC</b></span>
