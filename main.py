@@ -445,9 +445,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.5.1 (Fixed) spustený.")
+    log_event("🚀 Apex Scalper PRO v5.5.2 (Fixed HTML) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.5.1 pripravený!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.5.2 pripravený!</b>")
     yield
     monitor_task.cancel()
 
@@ -534,7 +534,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper v5.5.1 PRO — Terminal</title>
+    <title>Apex Scalper v5.5.2 PRO — Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -591,7 +591,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.5.1</h1>
+                <h1>APEX SCALPER // PRO v5.5.2</h1>
                 <p>
                     <span>SOL-USDC · <b style="color: #ffffff;">{{ current_tf }}</b> · OKX Demo</span>
                     <span>Zostatok: <b class="balance-tag">{{ "%.2f"|format(usdc_balance) }} USDC</b></span>
