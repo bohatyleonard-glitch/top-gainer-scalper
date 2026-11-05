@@ -12,7 +12,7 @@ from jinja2 import Template
 import requests
 import uvicorn
 
-# --- 🔑 OKX DEMO KĽÚČE ---
+# --- 🔑 OKX KĽÚČE ---
 OKX_API_KEY = os.getenv("OKX_API_KEY", "638848ca-e65c-4074-bcfd-20cf4d292f2c")
 OKX_SECRET = os.getenv("OKX_SECRET", "885934366C54F33B276E9E49E8EF87CF")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Australia111/")
@@ -222,7 +222,6 @@ async def advanced_risk_monitor_loop():
                 symbol = trade["market_pair"]
                 trade_settings = trade.get("settings", SETTINGS)
                 
-                # Zisťujeme aktuálnu cenu pre bezpečné naplnenie premennej
                 ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={symbol}")
                 if ticker_res.get("code") == "0" and ticker_res.get("data"):
                     current_price = safe_float(ticker_res["data"][0]["last"])
@@ -360,7 +359,6 @@ async def execute_trade_in_background(data: dict):
                     return
                 current_price = safe_float(ticker_res["data"][0]["last"])
                 
-                # Výpočet presného množstva mincí, aby OKX neseparovala príkaz na stovky malých fragmentov
                 coin_amount = round(safe_budget / current_price, 2)
                 
                 order_body = json.dumps({
