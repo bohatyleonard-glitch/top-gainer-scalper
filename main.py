@@ -26,7 +26,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
     "8m": {"trail_pct": 1.2, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.7, "desc": "Agresívny 8m scalp"},
-    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.6, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.9, "desc": "Rýchly 15m scalp (Zvýšený cieľ 0.9%)"},
+    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.6, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.7, "desc": "Rýchly 15m scalp"},
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.3, "target_pct": 1.2, "desc": "30m trendový"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.8, "ttp_callback_pct": 0.4, "target_pct": 1.5, "desc": "45m strednodobý"},
     "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.5, "ttp_callback_pct": 0.5, "target_pct": 1.7, "desc": "1h hodinový swing"},
@@ -49,13 +49,12 @@ CURRENT_TIMEFRAME = "Multi-TF"
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC", "USDT"]
 
-SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
+SETTINGS = TIMEFRAME_PROFILES["30m"].copy()
 SETTINGS.update({
     "use_btc_filter": True, 
-    "use_compounding": True,  # NOVÝ PREPÍNAČ REINVESTOVANIA
     "reentry_cooldown_sec": 120, 
     "use_breakeven": True,
-    "max_budget_cap": 5000.0  # Predvolený strop 5K
+    "max_budget_cap": 3000.0  # Predvolený strop 3K
 })
 
 def log_event(message: str):
@@ -165,12 +164,12 @@ def okx_request(method: str, path: str, body: str = ""):
         "x-simulated-trading": "1",
         "Content-Type": "application/json"
     }
-    url = "https://www.okx.com" + path
+    url = "https://eea.okx.com" + path
     try:
         if method.upper() == "GET":
-            response = requests.get(url, headers=headers, timeout=3)
+            response = requests.get(url, headers=headers, timeout=5)
         else:
-            response = requests.post(url, headers=headers, data=body, timeout=3)
+            response = requests.post(url, headers=headers, data=body, timeout=5)
         return response.json()
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
@@ -190,7 +189,7 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
                             return best_val
     except Exception as err:
         log_event(f"⚠️ Chyba pri načítaní zostatku: {err}")
-    return 5000.0
+    return 3000.0
 
 def check_btc_health() -> bool:
     if not SETTINGS["use_btc_filter"]:
@@ -264,7 +263,7 @@ async def advanced_risk_monitor_loop():
                     current_total_value = invested + pnl_usdc
                     
                     # --- SCALING OUT (50% PREDAJ PRI DOSIAHNUTÍ TARGET %) ---
-                    target_pct = trade_settings.get("target_pct", 0.9)
+                    target_pct = trade_settings.get("target_pct", 1.0)
                     if not trade.get("partial_sold", False) and pnl_pct >= target_pct:
                         half_amount = round(trade["initial_amount"] / 2.0, 2)
                         if half_amount >= 0.01:
@@ -301,6 +300,7 @@ async def advanced_risk_monitor_loop():
                     trade["current_sl_price"] = effective_sl
                     trade["ttp_target_price"] = ttp_stop_level
                     
+                    # Výpočet zisku pre druhú polovicu pozície
                     second_half_invested = invested / 2.0
                     second_half_pnl_usdc = second_half_invested * (pnl_pct / 100.0)
                     trade["second_half_pnl_usdc"] = second_half_pnl_usdc
@@ -356,7 +356,7 @@ async def execute_trade_in_background(data: dict):
                 log_event(f"⚠️ Ignorovaný webhook: TradingView nepreložil šablónu action: {action}")
                 return
             
-            incoming_tf = str(data.get("tf", "15m")).strip().lower()
+            incoming_tf = str(data.get("tf", "30m")).strip().lower()
             if incoming_tf in TIMEFRAME_PROFILES:
                 CURRENT_TIMEFRAME = incoming_tf.upper()
                 SETTINGS.update(TIMEFRAME_PROFILES[incoming_tf])
@@ -383,15 +383,9 @@ async def execute_trade_in_background(data: dict):
                 stable_ccy = "USDC" if "USDC" in okx_symbol else "USDT"
                 
                 free_capital = fetch_account_capital(stable_ccy)
-                budget_cap = SETTINGS.get("max_budget_cap", 5000.0)
-                
-                # --- LOGIKA REINVESTOVANIA (COMPOUNDING) ---
-                if SETTINGS.get("use_compounding", True):
-                    safe_budget = free_capital * 0.98
-                    log_type = "DYNAMIC COMPOUNDING (REINVESTING)"
-                else:
-                    safe_budget = min(free_capital * 0.98, budget_cap)
-                    log_type = "FIXED BUDGET (NO COMPOUNDING)"
+                desired_from_balance = free_capital * 0.98
+                budget_cap = SETTINGS.get("max_budget_cap", 3000.0)
+                safe_budget = min(desired_from_balance, budget_cap)
                 
                 if safe_budget < 5.0:
                     log_event(f"❌ Nedostatok prostriedkov pre nákup: {free_capital} {stable_ccy}")
@@ -423,7 +417,7 @@ async def execute_trade_in_background(data: dict):
                 sl_price = current_price * 0.97
                 be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
                 ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0))
-                target_pct = SETTINGS.get("target_pct", 0.9)
+                target_pct = SETTINGS.get("target_pct", 1.0)
                 
                 ACTIVE_TRADES[coin_name] = {
                     "entry_price": current_price,
@@ -446,7 +440,7 @@ async def execute_trade_in_background(data: dict):
                     "tf": CURRENT_TIMEFRAME,
                     "settings": SETTINGS.copy()
                 }
-                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC | Suma: {actual_spent_usdc:.2f}$ [{log_type}] | Target 50% na +{target_pct}%")
+                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC | Target 50% na +{target_pct}% (Strop: {budget_cap}$)")
                 
                 inline_keyboard = {
                     "inline_keyboard": [
@@ -460,7 +454,7 @@ async def execute_trade_in_background(data: dict):
                     f"🟢 <b>NOVÝ OBCHOD [TF: {CURRENT_TIMEFRAME}]</b>\n"
                     f"<b>Pár:</b> {okx_symbol}\n"
                     f"<b>Vstup:</b> {current_price:.4f}\n"
-                    f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC ({log_type})\n"
+                    f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC (Strop: {budget_cap}$)\n"
                     f"🎯 <b>Cieľ pre 50% Scale-Out:</b> +{target_pct}%\n"
                     f"🛡️ <b>BE (+{SETTINGS['be_trigger_pct']}%):</b> {be_price:.4f}",
                     reply_markup=inline_keyboard
@@ -497,9 +491,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.6.0 spustený s podporou Scaling Out (50/50) a Reinvestovaním (Compounding).")
+    log_event("🚀 Apex Scalper PRO v5.6.0 spustený s podporou Scaling Out (50/50).")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.6.0 pripravený so Scaling Out a Compounding modulom!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.6.0 pripravený so Scaling Out modulom!</b>")
     yield
     monitor_task.cancel()
 
@@ -554,14 +548,6 @@ async def toggle_btc_filter():
     log_event(f"⚙️ BTC Trend Guard filter: {status_str.upper()}")
     send_telegram_msg(f"⚙️ <b>Zmena stavu:</b> BTC Trend Guard filter je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "use_btc_filter": SETTINGS["use_btc_filter"]})
-
-@app.post("/api/toggle-compounding")
-async def toggle_compounding():
-    SETTINGS["use_compounding"] = not SETTINGS.get("use_compounding", True)
-    status_str = "ZAPNUTÉ (Reinvestovanie aktívne)" if SETTINGS["use_compounding"] else "VYPNUTÉ (Pevný rozpočet)"
-    log_event(f"⚙️ Automatické reinvestovanie (COMPOUNDING): {status_str.upper()}")
-    send_telegram_msg(f"⚙️ <b>Zmena stavu:</b> Automatické reinvestovanie (COMPOUNDING) je teraz <b>{status_str}</b>.")
-    return JSONResponse({"status": "success", "use_compounding": SETTINGS["use_compounding"]})
 
 @app.post("/api/set-budget/{amount}")
 async def set_budget(amount: int):
@@ -654,6 +640,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         th { color: var(--text-muted); font-weight: 400; padding: 8px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
         td { padding: 9px 10px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
         tr:last-child td { border-bottom: none; }
+        
         .scrollable-card { max-height: 160px; overflow-y: auto; }
         .logs-box { 
             background: var(--card-bg); 
@@ -692,9 +679,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </p>
             </div>
             <div class="actions">
-                <button id="compounding-btn" class="btn {% if SETTINGS.use_compounding %}btn-yellow{% else %}btn-off{% endif %}" onclick="toggleCompounding()">
-                    COMPOUNDING: {% if SETTINGS.use_compounding %}ON{% else %}OFF{% endif %}
-                </button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
@@ -807,19 +791,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             } else {
                 btn.className = "btn btn-off";
                 btn.innerText = "BTC: OFF";
-            }
-        }
-
-        async function toggleCompounding() {
-            let res = await fetch('/api/toggle-compounding', {method: 'POST'});
-            let data = await res.json();
-            let btn = document.getElementById('compounding-btn');
-            if (data.use_compounding) {
-                btn.className = "btn btn-yellow";
-                btn.innerText = "COMPOUNDING: ON";
-            } else {
-                btn.className = "btn btn-off";
-                btn.innerText = "COMPOUNDING: OFF";
             }
         }
 
