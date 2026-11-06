@@ -165,12 +165,12 @@ def okx_request(method: str, path: str, body: str = ""):
         "x-simulated-trading": "1",
         "Content-Type": "application/json"
     }
-    url = "https://eea.okx.com" + path
+    url = "https://www.okx.com" + path
     try:
         if method.upper() == "GET":
-            response = requests.get(url, headers=headers, timeout=5)
+            response = requests.get(url, headers=headers, timeout=3)
         else:
-            response = requests.post(url, headers=headers, data=body, timeout=5)
+            response = requests.post(url, headers=headers, data=body, timeout=3)
         return response.json()
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
@@ -387,11 +387,9 @@ async def execute_trade_in_background(data: dict):
                 
                 # --- LOGIKA REINVESTOVANIA (COMPOUNDING) ---
                 if SETTINGS.get("use_compounding", True):
-                    # Ak je COMPOUNDING ON, reinvestujeme 98% celkového voľného zostatku
                     safe_budget = free_capital * 0.98
                     log_type = "DYNAMIC COMPOUNDING (REINVESTING)"
                 else:
-                    # Ak je COMPOUNDING OFF, nakupujeme iba do pevného stropu / rozpočtu
                     safe_budget = min(free_capital * 0.98, budget_cap)
                     log_type = "FIXED BUDGET (NO COMPOUNDING)"
                 
@@ -641,8 +639,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .btn-on { border-color: var(--green); color: var(--green); }
         .btn-off { border-color: var(--text-muted); color: var(--text-muted); }
         .btn-yellow { border-color: var(--yellow) !important; color: var(--yellow) !important; background: rgba(245, 158, 11, 0.15) !important; font-weight: 700 !important; }
-        .btn-compounding-on { border-color: var(--yellow) !important; color: var(--yellow) !important; background: rgba(245, 158, 11, 0.25) !important; font-weight: 700 !important; box-shadow: 0 0 10px rgba(245, 158, 11, 0.2); }
-        .btn-compounding-off { border-color: var(--border-hover) !important; color: var(--text-muted) !important; background: transparent !important; }
         .btn-sell { background: var(--accent-white); color: var(--bg-color); font-weight: 700; border-color: var(--accent-white); }
         .btn-sell:hover { background: #e4e4e7; }
         .btn-sell:disabled { opacity: 0.2; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
@@ -658,7 +654,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         th { color: var(--text-muted); font-weight: 400; padding: 8px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
         td { padding: 9px 10px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
         tr:last-child td { border-bottom: none; }
-        
         .scrollable-card { max-height: 160px; overflow-y: auto; }
         .logs-box { 
             background: var(--card-bg); 
@@ -690,16 +685,15 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.6.0 (Scaling Out & Compounding)</h1>
+                <h1>APEX SCALPER // PRO v5.6.0 (Scaling Out)</h1>
                 <p>
                     <span id="header-pair">SOL-USDC · Multi-TF · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
                 </p>
             </div>
             <div class="actions">
-                <!-- NOVÉ TLACIDLO COMPOUNDING V ŽLTEJ FARBE -->
-                <button id="compounding-btn" class="btn {% if SETTINGS.use_compounding %}btn-compounding-on{% else %}btn-compounding-off{% endif %}" onclick="toggleCompounding()">
-                    ⚡ COMPOUNDING: {% if SETTINGS.use_compounding %}ON{% else %}OFF{% endif %}
+                <button id="compounding-btn" class="btn {% if SETTINGS.use_compounding %}btn-yellow{% else %}btn-off{% endif %}" onclick="toggleCompounding()">
+                    COMPOUNDING: {% if SETTINGS.use_compounding %}ON{% else %}OFF{% endif %}
                 </button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
@@ -821,11 +815,11 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             let data = await res.json();
             let btn = document.getElementById('compounding-btn');
             if (data.use_compounding) {
-                btn.className = "btn btn-compounding-on";
-                btn.innerText = "⚡ COMPOUNDING: ON";
+                btn.className = "btn btn-yellow";
+                btn.innerText = "COMPOUNDING: ON";
             } else {
-                btn.className = "btn btn-compounding-off";
-                btn.innerText = "⚡ COMPOUNDING: OFF";
+                btn.className = "btn btn-off";
+                btn.innerText = "COMPOUNDING: OFF";
             }
         }
 
