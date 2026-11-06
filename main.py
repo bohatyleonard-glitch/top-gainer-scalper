@@ -181,16 +181,16 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
         if balance_res.get("code") == "0":
             for acc in balance_res.get("data", []):
                 for detail in acc.get("details", []):
-                    if detail.get("ccy") == stable_ccy:
+                    # Striktná kontrola len na USDC (ignorujeme fiat USD, EUR atď.)
+                    if detail.get("ccy") == "USDC":
                         avail = safe_float(detail.get("availBal", 0))
-                        cash = safe_float(detail.get("cashBal", 0))
                         eq = safe_float(detail.get("eq", 0))
-                        best_val = max(avail, cash, eq)
+                        best_val = max(avail, eq)
                         if best_val > 0:
                             return best_val
     except Exception as err:
         log_event(f"⚠️ Chyba pri načítaní zostatku: {err}")
-    return 5000.0
+    return 13339.33  # Záložná hodnota na reálny USDC zostatok
 
 def check_btc_health() -> bool:
     if not SETTINGS["use_btc_filter"]:
