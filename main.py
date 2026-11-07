@@ -13,9 +13,9 @@ import requests
 import uvicorn
 
 # --- 🔑 OKX KĽÚČE ---
-OKX_API_KEY = os.getenv("OKX_API_KEY", "be3a166e-52e8-4c4c-88f1-c4d58bddec5a")
-OKX_SECRET = os.getenv("OKX_SECRET", "5A10C111B93F78612BC74C5BAFC4D841")
-OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Australia111/")
+OKX_API_KEY = os.getenv("OKX_API_KEY", "54ebe9fe-1fd0-443d-8f76-0cd1a3439ddb")
+OKX_SECRET = os.getenv("OKX_SECRET", "FBD5C8332D88E3ED5662470CA9C3E813")
+OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Novyzeland111/")
 WEBHOOK_SECRET = "moje_tajne_heslo_123"
 
 # --- 📱 TELEGRAM NOTIFIKÁCIE & INTERAKTÍVNE BOT OVLÁDANIE ---
