@@ -26,7 +26,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
     "8m": {"trail_pct": 1.2, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.7, "desc": "Agresívny 8m scalp"},
-    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.6, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.9, "desc": "Rýchly 15m scalp"},
+    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.6, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.9, "desc": "Rýchly 15m scalp (+0.9%)"},
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.3, "target_pct": 1.2, "desc": "30m trendový"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.8, "ttp_callback_pct": 0.4, "target_pct": 1.5, "desc": "45m strednodobý"},
     "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.5, "ttp_callback_pct": 0.5, "target_pct": 1.7, "desc": "1h hodinový swing"},
@@ -189,7 +189,7 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
                             return best_val
     except Exception as err:
         log_event(f"⚠️ Chyba pri načítaní zostatku: {err}")
-    return 13339.33
+    return 13339.33 # Bezpečný fallback na reálny zostatok
 
 def check_btc_health() -> bool:
     if not SETTINGS["use_btc_filter"]:
@@ -409,7 +409,7 @@ async def execute_trade_in_background(data: dict):
                 order_res = okx_request("POST", "/api/v5/trade/order", order_body)
                 if order_res.get("code") != "0":
                     log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
-                    send_telegram_msg(f"❌ <b>Chyba nákupnej objednávky:</b> {order_res}")
+                    send_telegram_msg(f"❌ <b>Chyba nákupnej objednávky na OKX:</b> {order_res.get('msg', 'Neznáma chyba')}")
                     return
                 
                 actual_spent_usdc = coin_amount * current_price
