@@ -13,8 +13,8 @@ import requests
 import uvicorn
 
 # --- 🔑 OKX KĽÚČE ---
-OKX_API_KEY = os.getenv("OKX_API_KEY", "638848ca-e65c-4074-bcfd-20cf4d292f2c")
-OKX_SECRET = os.getenv("OKX_SECRET", "885934366C54F33B276E9E49E8EF87CF")
+OKX_API_KEY = os.getenv("OKX_API_KEY", "58f37361-b715-487d-b231-57e7d59341b5")
+OKX_SECRET = os.getenv("OKX_SECRET", "68DB484AAC87DB9C10A56A2C346A73B5")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Australia111/")
 WEBHOOK_SECRET = "moje_tajne_heslo_123"
 
