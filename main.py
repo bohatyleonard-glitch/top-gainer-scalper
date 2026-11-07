@@ -22,7 +22,7 @@ WEBHOOK_SECRET = "moje_tajne_heslo_123"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-# --- 📊 DYNAMICKÉ PROFILY PRE ČASOVÉ RÁMCE (Vrátane Target % pre 50% Scale-Out) ---
+# --- 📊 DYNAMICKÉ PROFILY PRE ČASOVÉ RÁMCE ---
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
     "8m": {"trail_pct": 1.2, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.7, "desc": "Agresívny 8m scalp"},
@@ -54,7 +54,8 @@ SETTINGS.update({
     "use_btc_filter": True, 
     "reentry_cooldown_sec": 120, 
     "use_breakeven": True,
-    "max_budget_cap": 1000.0  # Predvolený strop
+    "max_budget_cap": 1000.0,
+    "compounding_enabled": False  # Auto-Compounding vypnutý predvolene
 })
 
 def log_event(message: str):
@@ -189,7 +190,7 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
                             return best_val
     except Exception as err:
         log_event(f"⚠️ Chyba pri načítaní zostatku: {err}")
-    return 13339.33 # Bezpečný fallback na reálny zostatok
+    return 13339.33
 
 def check_btc_health() -> bool:
     if not SETTINGS["use_btc_filter"]:
@@ -262,7 +263,6 @@ async def advanced_risk_monitor_loop():
                     pnl_usdc = invested * (pnl_pct / 100.0)
                     current_total_value = invested + pnl_usdc
                     
-                    # --- SCALING OUT (50% PREDAJ PRI DOSIAHNUTÍ TARGET %) ---
                     target_pct = trade_settings.get("target_pct", 0.9)
                     if not trade.get("partial_sold", False) and pnl_pct >= target_pct:
                         half_amount = round(trade["initial_amount"] / 2.0, 2)
@@ -382,10 +382,18 @@ async def execute_trade_in_background(data: dict):
                 stable_ccy = "USDC" if "USDC" in okx_symbol else "USDT"
                 
                 free_capital = fetch_account_capital(stable_ccy)
-                desired_from_balance = free_capital * 0.98
                 budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
-                safe_budget = min(desired_from_balance, budget_cap)
                 
+                # --- AUTO-COMPOUNDING LOGIKA ---
+                if SETTINGS.get("compounding_enabled", False):
+                    # Ak je compounding zapnutý, využije sa voľný kapitál (zložené úročenie) obmedzený stropom
+                    safe_budget = min(free_capital * 0.98, budget_cap)
+                    log_event(f"🔄 Compounding AKTÍVNY: Používam reálny zostatok ({free_capital:.2f} USDC) do stropu {budget_cap}$")
+                else:
+                    # Ak je compounding vypnutý, drží sa pevný rozpočtový strop
+                    safe_budget = min(free_capital * 0.98, budget_cap)
+                    log_event(f"⚙️ Compounding VYPNUTÝ: Používam pevný rozpočet {budget_cap}$")
+
                 if safe_budget < 5.0:
                     log_event(f"❌ Nedostatok prostriedkov pre nákup: {free_capital} {stable_ccy}")
                     return
@@ -440,7 +448,7 @@ async def execute_trade_in_background(data: dict):
                     "tf": CURRENT_TIMEFRAME,
                     "settings": SETTINGS.copy()
                 }
-                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC | Target 50% na +{target_pct}% (Strop: {budget_cap}$)")
+                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC | Target 50% na +{target_pct}% (Investícia: {actual_spent_usdc:.2f}$)")
                 
                 inline_keyboard = {
                     "inline_keyboard": [
@@ -454,7 +462,7 @@ async def execute_trade_in_background(data: dict):
                     f"🟢 <b>NOVÝ OBCHOD [TF: {CURRENT_TIMEFRAME}]</b>\n"
                     f"<b>Pár:</b> {okx_symbol}\n"
                     f"<b>Vstup:</b> {current_price:.4f}\n"
-                    f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC (Strop: {budget_cap}$)\n"
+                    f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
                     f"🎯 <b>Cieľ pre 50% Scale-Out:</b> +{target_pct}%\n"
                     f"🛡️ <b>BE (+{SETTINGS['be_trigger_pct']}%):</b> {be_price:.4f}",
                     reply_markup=inline_keyboard
@@ -491,9 +499,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.6.0 spustený s podporou Scaling Out (50/50).")
+    log_event("🚀 Apex Scalper PRO v5.6.0 spustený s podporou Scaling Out (50/50) a Compounding.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.6.0 pripravený so Scaling Out modulom!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.6.0 pripravený so Scaling Out a Compounding modulom!</b>")
     yield
     monitor_task.cancel()
 
@@ -548,6 +556,14 @@ async def toggle_btc_filter():
     log_event(f"⚙️ BTC Trend Guard filter: {status_str.upper()}")
     send_telegram_msg(f"⚙️ <b>Zmena stavu:</b> BTC Trend Guard filter je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "use_btc_filter": SETTINGS["use_btc_filter"]})
+
+@app.post("/api/toggle-compounding")
+async def toggle_compounding():
+    SETTINGS["compounding_enabled"] = not SETTINGS.get("compounding_enabled", False)
+    status_str = "ZAPNUTÉ (Zložené úročenie)" if SETTINGS["compounding_enabled"] else "VYPNUTÉ (Pevný rozpočet)"
+    log_event(f"⚙️ Automatické reinvestovanie (COMPOUNDING): {status_str.upper()}")
+    send_telegram_msg(f"⚙️ <b>Zmena stavu:</b> Auto-Compounding je teraz <b>{status_str}</b>.")
+    return JSONResponse({"status": "success", "compounding_enabled": SETTINGS["compounding_enabled"]})
 
 @app.post("/api/set-budget/{amount}")
 async def set_budget(amount: int):
@@ -683,6 +699,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
+                <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-yellow{% endif %}" onclick="toggleCompounding()">
+                    COMPOUNDING: {% if SETTINGS.compounding_enabled %}ON{% else %}OFF{% endif %}
+                </button>
                 <button id="btc-btn" class="btn {% if SETTINGS.use_btc_filter %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBtcFilter()">
                     BTC: {% if SETTINGS.use_btc_filter %}ON{% else %}OFF{% endif %}
                 </button>
@@ -791,6 +810,19 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             } else {
                 btn.className = "btn btn-off";
                 btn.innerText = "BTC: OFF";
+            }
+        }
+
+        async function toggleCompounding() {
+            let res = await fetch('/api/toggle-compounding', {method: 'POST'});
+            let data = await res.json();
+            let btn = document.getElementById('compounding-btn');
+            if (data.compounding_enabled) {
+                btn.className = "btn btn-yellow";
+                btn.innerText = "COMPOUNDING: ON";
+            } else {
+                btn.className = "btn";
+                btn.innerText = "COMPOUNDING: OFF";
             }
         }
 
