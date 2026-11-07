@@ -45,17 +45,17 @@ MAX_PARALLEL_TRADES = 1
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
-CURRENT_TIMEFRAME = "Multi-TF"
+CURRENT_TIMEFRAME = "15M"  # Predvolený TF
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC", "USDT"]
 
-SETTINGS = TIMEFRAME_PROFILES["30m"].copy()
+SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
 SETTINGS.update({
     "use_btc_filter": True, 
     "reentry_cooldown_sec": 120, 
     "use_breakeven": True,
     "max_budget_cap": 1000.0,
-    "compounding_enabled": False  # Auto-Compounding vypnutý predvolene
+    "compounding_enabled": False
 })
 
 def log_event(message: str):
@@ -386,11 +386,9 @@ async def execute_trade_in_background(data: dict):
                 
                 # --- AUTO-COMPOUNDING LOGIKA ---
                 if SETTINGS.get("compounding_enabled", False):
-                    # Ak je compounding zapnutý, využije sa voľný kapitál (zložené úročenie) obmedzený stropom
                     safe_budget = min(free_capital * 0.98, budget_cap)
                     log_event(f"🔄 Compounding AKTÍVNY: Používam reálny zostatok ({free_capital:.2f} USDC) do stropu {budget_cap}$")
                 else:
-                    # Ak je compounding vypnutý, drží sa pevný rozpočtový strop
                     safe_budget = min(free_capital * 0.98, budget_cap)
                     log_event(f"⚙️ Compounding VYPNUTÝ: Používam pevný rozpočet {budget_cap}$")
 
@@ -574,6 +572,94 @@ async def set_budget(amount: int):
         return JSONResponse({"status": "success", "max_budget_cap": amount})
     return JSONResponse({"status": "error", "message": "Neplatná hodnota rozpočtu."})
 
+@app.post("/api/set-tf/{tf_val}")
+async def set_tf(tf_val: str):
+    global CURRENT_TIMEFRAME, SETTINGS
+    tf_lower = tf_val.lower()
+    if tf_lower in TIMEFRAME_PROFILES:
+        CURRENT_TIMEFRAME = tf_val.upper()
+        SETTINGS.update(TIMEFRAME_PROFILES[tf_lower])
+        log_event(f"⏱️ Časový rámec (TF) manuálne zmenený na: {CURRENT_TIMEFRAME}")
+        return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
+    return JSONResponse({"status": "error", "message": "Neplatný časový rámec."})
+
+@app.post("/api/manual-buy/{coin}")
+async def manual_buy(coin: str):
+    global ACTIVE_TRADES, LAST_TRADE_TIME
+    async with trade_lock:
+        try:
+            if not IS_BOT_ACTIVE:
+                return JSONResponse({"status": "error", "message": "Bot je pozastavený."})
+            
+            coin_upper = coin.upper()
+            if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or coin_upper in ACTIVE_TRADES:
+                return JSONResponse({"status": "error", "message": "Pozícia už je aktívna."})
+            
+            okx_symbol = f"{coin_upper}-USDC"
+            stable_ccy = "USDC"
+            free_capital = fetch_account_capital(stable_ccy)
+            budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
+            
+            if SETTINGS.get("compounding_enabled", False):
+                safe_budget = min(free_capital * 0.98, budget_cap)
+                log_event(f"🔄 Compounding AKTÍVNY (Manuálny nákup): Používam reálny zostatok ({free_capital:.2f} USDC) do stropu {budget_cap}$")
+            else:
+                safe_budget = min(free_capital * 0.98, budget_cap)
+                log_event(f"⚙️ Compounding VYPNUTÝ (Manuálny nákup): Používam pevný rozpočet {budget_cap}$")
+
+            if safe_budget < 5.0:
+                return JSONResponse({"status": "error", "message": "Nedostatok prostriedkov."})
+            
+            ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={okx_symbol}")
+            if ticker_res.get("code") != "0" or not ticker_res.get("data"):
+                return JSONResponse({"status": "error", "message": f"Nepodarilo sa získať cenu pre {okx_symbol}"})
+            
+            current_price = safe_float(ticker_res["data"][0]["last"])
+            coin_amount = round(safe_budget / current_price, 2)
+            
+            order_body = json.dumps({
+                "instId": okx_symbol, "tdMode": "cash", "side": "buy",
+                "ordType": "market", "sz": f"{coin_amount}"
+            })
+            
+            order_res = okx_request("POST", "/api/v5/trade/order", order_body)
+            if order_res.get("code") != "0":
+                return JSONResponse({"status": "error", "message": order_res.get("msg", "Neznáma chyba OKX")})
+            
+            actual_spent_usdc = coin_amount * current_price
+            sl_price = current_price * 0.97
+            be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
+            ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0))
+            target_pct = SETTINGS.get("target_pct", 0.9)
+            
+            ACTIVE_TRADES[coin_upper] = {
+                "entry_price": current_price,
+                "current_price": current_price,
+                "current_sl_price": sl_price,
+                "be_target_price": be_price,
+                "ttp_target_price": ttp_price,
+                "amount": coin_amount,
+                "initial_amount": coin_amount,
+                "bought_at": get_sk_time_str(),
+                "market_pair": okx_symbol,
+                "highest_price": current_price,
+                "partial_sold": False,
+                "break_even_activated": False,
+                "ttp_activated": False,
+                "invested_usdc": actual_spent_usdc,
+                "live_pnl_pct": 0.0,
+                "live_pnl_usdc": 0.0,
+                "second_half_pnl_usdc": 0.0,
+                "tf": CURRENT_TIMEFRAME,
+                "settings": SETTINGS.copy()
+            }
+            log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$")
+            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC")
+            
+            return JSONResponse({"status": "success", "symbol": okx_symbol})
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)})
+
 @app.post("/api/sell-now")
 async def sell_now():
     global ACTIVE_TRADES
@@ -630,7 +716,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; }
         body { background-color: var(--bg-color); color: var(--text-main); padding: 16px; min-height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
-        .container { max-width: 1000px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
+        .container { max-width: 1050px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
         .top-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; flex-wrap: wrap; gap: 10px; }
         .brand h1 { font-size: 1rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
         .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 1px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -690,15 +776,28 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="brand">
                 <h1>APEX SCALPER // PRO v5.6.0 (Scaling Out)</h1>
                 <p>
-                    <span id="header-pair">SOL-USDC · Multi-TF · OKX Demo</span>
+                    <span id="header-pair">Multi-TF · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
+                    <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
                 </p>
             </div>
             <div class="actions">
+                <!-- Časové rámce -->
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
+
+                <!-- Rozpočtové stropy -->
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
+
+                <!-- Manuálne nákupy -->
+                <button class="btn btn-on" onclick="manualBuy('SOL')">🚀 BUY SOL</button>
+                <button class="btn btn-on" onclick="manualBuy('SUI')">🚀 BUY SUI</button>
+
+                <!-- Prepínače -->
                 <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-yellow{% endif %}" onclick="toggleCompounding()">
                     COMPOUNDING: {% if SETTINGS.compounding_enabled %}ON{% else %}OFF{% endif %}
                 </button>
@@ -839,6 +938,31 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             }
         }
 
+        async function setTf(tfVal) {
+            let res = await fetch(`/api/set-tf/${tfVal}`, {method: 'POST'});
+            let data = await res.json();
+            if (data.status === 'success') {
+                document.querySelectorAll('.tf-btn').forEach(b => {
+                    b.classList.remove('btn-yellow');
+                    if (b.getAttribute('data-tf') === tfVal) {
+                        b.classList.add('btn-yellow');
+                    }
+                });
+                document.getElementById('header-tf').innerText = data.tf;
+            }
+        }
+
+        async function manualBuy(coin) {
+            if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDC za aktuálne zvolený rozpočet a TF?`)) return;
+            let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
+            let data = await res.json();
+            if (data.status === 'success') {
+                updateState();
+            } else {
+                alert("Chyba pri manuálnom nákupe: " + data.message);
+            }
+        }
+
         async function sellNow() {
             if (!confirm("Naozaj vykonať núdzový okamžitý predaj všetkých pozícií?")) return;
             let res = await fetch('/api/sell-now', {method: 'POST'});
@@ -932,6 +1056,7 @@ async def dashboard():
     return t.render(
         SETTINGS=SETTINGS,
         IS_BOT_ACTIVE=IS_BOT_ACTIVE,
+        CURRENT_TIMEFRAME=CURRENT_TIMEFRAME,
         CURRENT_STAGE=CURRENT_STAGE,
         balance=balance
     )
