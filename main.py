@@ -25,7 +25,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 # --- 📊 DYNAMICKÉ PROFILY PRE ČASOVÉ RÁMCE ---
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
-    "8m": {"trail_pct": 1.2, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.7, "desc": "Agresívny 8m scalp"},
+    "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m (Bez % podmienok)"},
+    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 8m (Bez % podmienok)"},
     "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.6, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.9, "desc": "Rýchly 15m scalp (+0.9%)"},
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.3, "target_pct": 1.2, "desc": "30m trendový"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.8, "ttp_callback_pct": 0.4, "target_pct": 1.5, "desc": "45m strednodobý"},
@@ -265,85 +266,99 @@ async def advanced_risk_monitor_loop():
                     pnl_usdc = invested * (pnl_pct / 100.0)
                     current_total_value = invested + pnl_usdc
                     
-                    target_pct = trade_settings.get("target_pct", 0.9)
+                    target_pct = trade_settings.get("target_pct", 0.0)
                     
-                    # --- 🎯 50/50 SCALING OUT LOGIKA ---
-                    if not trade.get("partial_sold", False) and pnl_pct >= target_pct:
-                        half_amount = round(trade["initial_amount"] / 2.0, 2)
-                        if half_amount >= 0.01:
-                            part_body = json.dumps({
-                                "instId": symbol, "tdMode": "cash", "side": "sell",
-                                "ordType": "market", "sz": str(half_amount)
-                            })
-                            res_part = okx_request("POST", "/api/v5/trade/order", part_body)
-                            if res_part.get("code") == "0":
-                                trade["amount"] = round(trade["amount"] - half_amount, 2)
-                                trade["partial_sold"] = True
-                                part_pnl_usdc = (invested / 2.0) * (pnl_pct / 100.0)
-                                record_closed_trade(symbol, pnl_pct, part_pnl_usdc, f"Scaling Out 50% (+{target_pct}%)")
-                                log_event(f"🎯 Scaling Out 50% pre {symbol} pri {pnl_pct:+.2f}% | Odpredaná polovica, zisk uzamknutý!")
-                                send_telegram_msg(f"🎯 <b>SCALING OUT 50% SPLNENÝ</b>\n<b>Pár:</b> {symbol}\n<b>Cieľ:</b> +{target_pct}%\n<b>PnL (50%):</b> +{part_pnl_usdc:.2f} $")
+                    # Ak je target_pct > 0 (napr. 15m), vykonáva sa automatický Scaling Out a Trailing
+                    if target_pct > 0:
+                        # --- 🎯 50/50 SCALING OUT LOGIKA ---
+                        if not trade.get("partial_sold", False) and pnl_pct >= target_pct:
+                            half_amount = round(trade["initial_amount"] / 2.0, 2)
+                            if half_amount >= 0.01:
+                                part_body = json.dumps({
+                                    "instId": symbol, "tdMode": "cash", "side": "sell",
+                                    "ordType": "market", "sz": str(half_amount)
+                                })
+                                res_part = okx_request("POST", "/api/v5/trade/order", part_body)
+                                if res_part.get("code") == "0":
+                                    trade["amount"] = round(trade["amount"] - half_amount, 2)
+                                    trade["partial_sold"] = True
+                                    part_pnl_usdc = (invested / 2.0) * (pnl_pct / 100.0)
+                                    record_closed_trade(symbol, pnl_pct, part_pnl_usdc, f"Scaling Out 50% (+{target_pct}%)")
+                                    log_event(f"🎯 Scaling Out 50% pre {symbol} pri {pnl_pct:+.2f}% | Odpredaná polovica, zisk uzamknutý!")
+                                    send_telegram_msg(f"🎯 <b>SCALING OUT 50% SPLNENÝ</b>\n<b>Pár:</b> {symbol}\n<b>Cieľ:</b> +{target_pct}%\n<b>PnL (50%):</b> +{part_pnl_usdc:.2f} $")
 
-                    # --- 🛡️ BREAK-EVEN & TRAILING STOP LOGIKA ---
-                    be_price = trade["entry_price"] * (1 + (trade_settings["be_trigger_pct"] / 100.0))
-                    trail_stop_price = trade["highest_price"] * (1 - (trade_settings["trail_pct"] / 100.0))
-                    
-                    if pnl_pct >= trade_settings["be_trigger_pct"]:
-                        trade["break_even_activated"] = True
-                        effective_sl = max(trail_stop_price, trade["entry_price"])
+                        # --- 🛡️ BREAK-EVEN & TRAILING STOP LOGIKA ---
+                        be_trigger = trade_settings.get("be_trigger_pct", 0.0)
+                        if be_trigger > 0:
+                            be_price = trade["entry_price"] * (1 + (be_trigger / 100.0))
+                            trail_stop_price = trade["highest_price"] * (1 - (trade_settings["trail_pct"] / 100.0))
+                            
+                            if pnl_pct >= be_trigger:
+                                trade["break_even_activated"] = True
+                                effective_sl = max(trail_stop_price, trade["entry_price"])
+                            else:
+                                effective_sl = trade["entry_price"] * 0.97
+                                
+                            ttp_trigger = trade_settings.get("ttp_trigger_pct", 0.0)
+                            if ttp_trigger > 0:
+                                ttp_activation_price = trade["entry_price"] * (1 + (ttp_trigger / 100.0))
+                                if current_price >= ttp_activation_price:
+                                    trade["ttp_activated"] = True
+                                ttp_stop_level = trade["highest_price"] * (1 - (trade_settings["ttp_callback_pct"] / 100.0)) if trade.get("ttp_activated") else ttp_activation_price
+                            else:
+                                ttp_stop_level = 0
+                            
+                            trade["live_pnl_pct"] = pnl_pct
+                            trade["live_pnl_usdc"] = pnl_usdc
+                            trade["be_target_price"] = be_price
+                            trade["current_sl_price"] = effective_sl
+                            trade["ttp_target_price"] = ttp_stop_level
+                            
+                            second_half_invested = invested / 2.0 if trade.get("partial_sold") else invested
+                            trade["second_half_pnl_usdc"] = second_half_invested * (pnl_pct / 100.0)
+                            
+                            partial_status_text = "50% ODPREDANÉ (TRAIL AKTÍVNY)" if trade.get("partial_sold") else f"ČAKÁ NA +{target_pct}%"
+                            CURRENT_STAGE = f"STAV: {symbol} | Hodnota: {current_total_value:.2f}$ | PnL: {pnl_pct:+.2f}% | {partial_status_text}"
+                            
+                            # --- 🚨 STOP LOSS / BREAK-EVEN EXEKÚCIA ---
+                            if current_price <= effective_sl:
+                                reason = "Break-Even Ochrana (Zvyšok)" if effective_sl >= trade["entry_price"] else "Stop-Loss (-3%)"
+                                try:
+                                    order_body = json.dumps({
+                                        "instId": symbol, "tdMode": "cash", "side": "sell",
+                                        "ordType": "market", "sz": str(round(trade["amount"], 2))
+                                    })
+                                    okx_request("POST", "/api/v5/trade/order", order_body)
+                                    record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
+                                    log_event(f"🚨 Uzavretý zvyšok ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+                                    send_telegram_msg(f"🚨 <b>UZAVRETÝ ZVYŠOK OBCHODU ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>Celkový PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+                                except Exception:
+                                    pass
+                                del ACTIVE_TRADES[coin]
+                                continue
+                                
+                            # --- 🎯 TRAILING TAKE PROFIT EXEKÚCIA ---
+                            if trade.get("ttp_activated") and current_price <= ttp_stop_level:
+                                reason = "Trailing Take Profit (Zvyšok)"
+                                try:
+                                    order_body = json.dumps({
+                                        "instId": symbol, "tdMode": "cash", "side": "sell",
+                                        "ordType": "market", "sz": str(round(trade["amount"], 2))
+                                    })
+                                    okx_request("POST", "/api/v5/trade/order", order_body)
+                                    record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
+                                    log_event(f"🎯 Uzavretý zvyšok (Trailing TP) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+                                    send_telegram_msg(f"🎯 <b>UZAVRETÝ ZVYŠOK (TTP)</b>\n<b>Pár:</b> {symbol}\n<b>Celkový PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+                                except Exception:
+                                    pass
+                                del ACTIVE_TRADES[coin]
+                                continue
                     else:
-                        effective_sl = trade["entry_price"] * 0.97
-                        
-                    ttp_activation_price = trade["entry_price"] * (1 + (trade_settings["ttp_trigger_pct"] / 100.0))
-                    if current_price >= ttp_activation_price:
-                        trade["ttp_activated"] = True
-                    ttp_stop_level = trade["highest_price"] * (1 - (trade_settings["ttp_callback_pct"] / 100.0)) if trade.get("ttp_activated") else ttp_activation_price
-                    
-                    trade["live_pnl_pct"] = pnl_pct
-                    trade["live_pnl_usdc"] = pnl_usdc
-                    trade["be_target_price"] = be_price
-                    trade["current_sl_price"] = effective_sl
-                    trade["ttp_target_price"] = ttp_stop_level
-                    
-                    second_half_invested = invested / 2.0 if trade.get("partial_sold") else invested
-                    trade["second_half_pnl_usdc"] = second_half_invested * (pnl_pct / 100.0)
-                    
-                    partial_status_text = "50% ODPREDANÉ (TRAIL AKTÍVNY)" if trade.get("partial_sold") else f"ČAKÁ NA +{target_pct}%"
-                    CURRENT_STAGE = f"STAV: {symbol} | Hodnota: {current_total_value:.2f}$ | PnL: {pnl_pct:+.2f}% | {partial_status_text}"
-                    
-                    # --- 🚨 STOP LOSS / BREAK-EVEN EXEKÚCIA ---
-                    if current_price <= effective_sl:
-                        reason = "Break-Even Ochrana (Zvyšok)" if effective_sl >= trade["entry_price"] else "Stop-Loss (-3%)"
-                        try:
-                            order_body = json.dumps({
-                                "instId": symbol, "tdMode": "cash", "side": "sell",
-                                "ordType": "market", "sz": str(round(trade["amount"], 2))
-                            })
-                            okx_request("POST", "/api/v5/trade/order", order_body)
-                            record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                            log_event(f"🚨 Uzavretý zvyšok ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                            send_telegram_msg(f"🚨 <b>UZAVRETÝ ZVYŠOK OBCHODU ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>Celkový PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                        except Exception:
-                            pass
-                        del ACTIVE_TRADES[coin]
-                        continue
-                        
-                    # --- 🎯 TRAILING TAKE PROFIT EXEKÚCIA ---
-                    if trade.get("ttp_activated") and current_price <= ttp_stop_level:
-                        reason = "Trailing Take Profit (Zvyšok)"
-                        try:
-                            order_body = json.dumps({
-                                "instId": symbol, "tdMode": "cash", "side": "sell",
-                                "ordType": "market", "sz": str(round(trade["amount"], 2))
-                            })
-                            okx_request("POST", "/api/v5/trade/order", order_body)
-                            record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                            log_event(f"🎯 Uzavretý zvyšok (Trailing TP) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                            send_telegram_msg(f"🎯 <b>UZAVRETÝ ZVYŠOK (TTP)</b>\n<b>Pár:</b> {symbol}\n<b>Celkový PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                        except Exception:
-                            pass
-                        del ACTIVE_TRADES[coin]
-                        continue
+                        # Pre 5m / 8m (manuálny scalping bez automatických percentuálnych obmedzení)
+                        trade["live_pnl_pct"] = pnl_pct
+                        trade["live_pnl_usdc"] = pnl_usdc
+                        trade["second_half_pnl_usdc"] = pnl_usdc
+                        CURRENT_STAGE = f"STAV [MANUÁLNY TF {trade['tf']}]: {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f}$)"
         except Exception:
             pass
         await asyncio.sleep(2)
@@ -352,7 +367,6 @@ async def execute_trade_in_background(data: dict):
     global ACTIVE_TRADES, LAST_TRADE_TIME, CURRENT_TIMEFRAME, SETTINGS
     async with trade_lock:
         try:
-            # 1. Secret Overenie
             req_secret = str(data.get("secret", "")).strip()
             if req_secret != WEBHOOK_SECRET:
                 log_event("⚠️ Ignorovaný webhook: Neplatné alebo chýbajúce heslo (secret).")
@@ -363,7 +377,6 @@ async def execute_trade_in_background(data: dict):
                 log_event(f"⚠️ Ignorovaný webhook: TradingView nepreložil šablónu action: {action}")
                 return
             
-            # 2. Nastavenie TF profilu
             incoming_tf = str(data.get("tf", "15m")).strip().lower()
             if incoming_tf in TIMEFRAME_PROFILES:
                 CURRENT_TIMEFRAME = incoming_tf.upper()
@@ -393,7 +406,6 @@ async def execute_trade_in_background(data: dict):
                 free_capital = fetch_account_capital(stable_ccy)
                 budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
                 
-                # --- AUTO-COMPOUNDING vs STROP ---
                 if SETTINGS.get("compounding_enabled", False):
                     safe_budget = min(free_capital * 0.98, budget_cap)
                     log_event(f"🔄 Compounding AKTÍVNY: Používam zostatok ({free_capital:.2f} USDC) do stropu {budget_cap}$")
@@ -413,7 +425,6 @@ async def execute_trade_in_background(data: dict):
                 
                 coin_amount = round(safe_budget / current_price, 2)
                 
-                # Exekúcia pomocou vypočítaných kusov (sz) pre vysokú presnosť a Blockpit kompatibilitu
                 order_body = json.dumps({
                     "instId": okx_symbol,
                     "tdMode": "cash",
@@ -431,9 +442,9 @@ async def execute_trade_in_background(data: dict):
                 
                 actual_spent_usdc = coin_amount * current_price
                 sl_price = current_price * 0.97
-                be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
-                ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0))
-                target_pct = SETTINGS.get("target_pct", 0.9)
+                be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
+                ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
+                target_pct = SETTINGS.get("target_pct", 0.0)
                 
                 ACTIVE_TRADES[coin_name] = {
                     "entry_price": current_price,
@@ -456,7 +467,8 @@ async def execute_trade_in_background(data: dict):
                     "tf": CURRENT_TIMEFRAME,
                     "settings": SETTINGS.copy()
                 }
-                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC | Target 50% na +{target_pct}% (Investícia: {actual_spent_usdc:.2f}$)")
+                target_str = f"+{target_pct}%" if target_pct > 0 else "MANUÁLNY (Bez automatických %)"
+                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC | Target: {target_str} (Investícia: {actual_spent_usdc:.2f}$)")
                 
                 inline_keyboard = {
                     "inline_keyboard": [
@@ -471,8 +483,7 @@ async def execute_trade_in_background(data: dict):
                     f"<b>Pár:</b> {okx_symbol}\n"
                     f"<b>Vstup:</b> {current_price:.4f}\n"
                     f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
-                    f"🎯 <b>Cieľ pre 50% Scale-Out:</b> +{target_pct}%\n"
-                    f"🛡️ <b>BE (+{SETTINGS['be_trigger_pct']}%):</b> {be_price:.4f}",
+                    f"🎯 <b>Režim:</b> {target_str}",
                     reply_markup=inline_keyboard
                 )
                 
@@ -507,9 +518,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.6.0 spustený s podporou Scaling Out (50/50) a Compounding.")
+    log_event("🚀 Apex Scalper PRO v5.6.0 spustený s podporou 5m/8m manuálu a 500$ tlačidla.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.6.0 pripravený so Scaling Out a Compounding modulom!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.6.0 pripravený s 5m/8m a 500$ tlačidlom!</b>")
     yield
     monitor_task.cancel()
 
@@ -575,7 +586,7 @@ async def toggle_compounding():
 
 @app.post("/api/set-budget/{amount}")
 async def set_budget(amount: int):
-    if amount in [1000, 3000, 5000, 10000]:
+    if amount in [500, 1000, 3000, 5000, 10000]:
         SETTINGS["max_budget_cap"] = float(amount)
         log_event(f"💰 Maximálny rozpočet (strop) zmenený na: {amount} USDC")
         send_telegram_msg(f"💰 <b>Zmena rozpočtu:</b> Maximálny strop pre obchod je teraz <b>{amount} USDC</b>.")
@@ -612,7 +623,7 @@ async def manual_buy(coin: str):
             
             if SETTINGS.get("compounding_enabled", False):
                 safe_budget = min(free_capital * 0.98, budget_cap)
-                log_event(f"🔄 Compounding AKTÍVNY (Manuálny nákup): Používam reálny zostatok ({free_capital:.2f} USDC) do stropu {budget_cap}$")
+                log_event(f"🔄 Compounding AKTÍVNY (Manuálny nákup): Používam zostatok ({free_capital:.2f} USDC) do stropu {budget_cap}$")
             else:
                 safe_budget = min(free_capital * 0.98, budget_cap)
                 log_event(f"⚙️ Compounding VYPNUTÝ (Manuálny nákup): Používam pevný rozpočet {budget_cap}$")
@@ -639,9 +650,9 @@ async def manual_buy(coin: str):
             
             actual_spent_usdc = coin_amount * current_price
             sl_price = current_price * 0.97
-            be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
-            ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0))
-            target_pct = SETTINGS.get("target_pct", 0.9)
+            be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
+            ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
+            target_pct = SETTINGS.get("target_pct", 0.0)
             
             ACTIVE_TRADES[coin_upper] = {
                 "entry_price": current_price,
@@ -728,7 +739,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; }
         body { background-color: var(--bg-color); color: var(--text-main); padding: 16px; min-height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
-        .container { max-width: 1150px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
+        .container { max-width: 1250px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
         .top-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 12px; flex-wrap: wrap; gap: 12px; }
         .brand h1 { font-size: 1.05rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
         .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.8px; display: flex; gap: 12px; flex-wrap: wrap; }
@@ -798,11 +809,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </div>
             <div class="actions">
                 <!-- TF Profily -->
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '5M' %}btn-yellow{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
 
-                <!-- Rozpočet -->
+                <!-- Rozpočet (vložené 500 USDC hneď pred 1K) -->
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
@@ -1033,7 +1047,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     for (let [coin, t] of Object.entries(data.active_trades)) {
                         let pnlClass = t.live_pnl_pct >= 0 ? "text-green" : "text-red";
                         let secondHalfPnl = t.second_half_pnl_usdc || 0;
-                        let statusText = t.partial_sold ? "✅ 50% ODPREDANÉ (TRAIL)" : "⏳ ČAKÁ NA CIEĽ";
+                        let statusText = t.partial_sold ? "✅ 50% ODPREDANÉ (TRAIL)" : (t.settings.target_pct > 0 ? "⏳ ČAKÁ NA CIEĽ" : "🛠️ MANUÁLNY REŽIM");
                         let statusColor = t.partial_sold ? "text-green" : "text-yellow-highlight";
                         
                         html += `<tr>
