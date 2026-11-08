@@ -591,7 +591,7 @@ async def manual_buy(coin: str):
             if not IS_BOT_ACTIVE:
                 return JSONResponse({"status": "error", "message": "Bot je pozastavený."})
             
-            coin_upper = coin.upper()
+            coin_upper = coin.upper().strip()
             if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or coin_upper in ACTIVE_TRADES:
                 return JSONResponse({"status": "error", "message": "Pozícia už je aktívna."})
             
@@ -716,7 +716,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; }
         body { background-color: var(--bg-color); color: var(--text-main); padding: 16px; min-height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
-        .container { max-width: 1050px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
+        .container { max-width: 1100px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
         .top-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; flex-wrap: wrap; gap: 10px; }
         .brand h1 { font-size: 1rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
         .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 1px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -768,6 +768,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .text-green { color: var(--green); font-weight: 700; }
         .text-red { color: var(--red); font-weight: 700; }
         .text-yellow-highlight { color: var(--yellow); font-weight: 700; }
+        
+        .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 4px; border-radius: 4px; }
+        .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 65px; outline: none; text-transform: uppercase; }
     </style>
 </head>
 <body>
@@ -793,9 +796,15 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
 
-                <!-- Manuálne nákupy -->
-                <button class="btn btn-on" onclick="manualBuy('SOL')">🚀 BUY SOL</button>
-                <button class="btn btn-on" onclick="manualBuy('SUI')">🚀 BUY SUI</button>
+                <!-- VSTUP PRE AKÝKOĽVEK TOKEN + TLACIDLO BUY -->
+                <div class="custom-buy-box">
+                    <input type="text" id="custom-coin" class="custom-buy-input" placeholder="BTC/ETH">
+                    <button class="btn btn-on" style="padding: 2px 6px;" onclick="manualBuyCustom()">🚀 BUY</button>
+                </div>
+
+                <!-- Rýchle tlačidlá -->
+                <button class="btn btn-on" onclick="manualBuy('SOL')">SOL</button>
+                <button class="btn btn-on" onclick="manualBuy('SUI')">SUI</button>
 
                 <!-- Prepínače -->
                 <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-yellow{% endif %}" onclick="toggleCompounding()">
@@ -957,6 +966,25 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
             let data = await res.json();
             if (data.status === 'success') {
+                updateState();
+            } else {
+                alert("Chyba pri manuálnom nákupe: " + data.message);
+            }
+        }
+
+        async function manualBuyCustom() {
+            let coinInput = document.getElementById('custom-coin');
+            let coin = coinInput.value.trim().toUpperCase();
+            if (!coin) {
+                alert("Zadajte skratku tokenu (napr. BTC, ETH, ADA)!");
+                return;
+            }
+            if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDC za aktuálne zvolený rozpočet a TF?`)) return;
+            
+            let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
+            let data = await res.json();
+            if (data.status === 'success') {
+                coinInput.value = "";
                 updateState();
             } else {
                 alert("Chyba pri manuálnom nákupe: " + data.message);
