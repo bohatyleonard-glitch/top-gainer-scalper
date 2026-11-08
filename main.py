@@ -241,7 +241,7 @@ async def advanced_risk_monitor_loop():
                     try:
                         order_body = json.dumps({
                             "instId": symbol, "tdMode": "cash", "side": "sell",
-                            "ordType": "market", "sz": str(round(trade["amount"], 4))
+                            "ordType": "market", "sz": str(round(trade["amount"], 2))
                         })
                         okx_request("POST", "/api/v5/trade/order", order_body)
                         pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
@@ -265,8 +265,8 @@ async def advanced_risk_monitor_loop():
                     
                     target_pct = trade_settings.get("target_pct", 0.9)
                     if not trade.get("partial_sold", False) and pnl_pct >= target_pct:
-                        half_amount = round(trade["initial_amount"] / 2.0, 4)
-                        if half_amount >= 0.0001:
+                        half_amount = round(trade["initial_amount"] / 2.0, 2)
+                        if half_amount >= 0.01:
                             part_body = json.dumps({
                                 "instId": symbol, "tdMode": "cash", "side": "sell",
                                 "ordType": "market", "sz": str(half_amount)
@@ -312,7 +312,7 @@ async def advanced_risk_monitor_loop():
                         try:
                             order_body = json.dumps({
                                 "instId": symbol, "tdMode": "cash", "side": "sell",
-                                "ordType": "market", "sz": str(round(trade["amount"], 4))
+                                "ordType": "market", "sz": str(round(trade["amount"], 2))
                             })
                             okx_request("POST", "/api/v5/trade/order", order_body)
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
@@ -328,7 +328,7 @@ async def advanced_risk_monitor_loop():
                         try:
                             order_body = json.dumps({
                                 "instId": symbol, "tdMode": "cash", "side": "sell",
-                                "ordType": "market", "sz": str(round(trade["amount"], 4))
+                                "ordType": "market", "sz": str(round(trade["amount"], 2))
                             })
                             okx_request("POST", "/api/v5/trade/order", order_body)
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
@@ -384,6 +384,7 @@ async def execute_trade_in_background(data: dict):
                 free_capital = fetch_account_capital(stable_ccy)
                 budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
                 
+                # --- AUTO-COMPOUNDING LOGIKA ---
                 if SETTINGS.get("compounding_enabled", False):
                     safe_budget = min(free_capital * 0.98, budget_cap)
                     log_event(f"🔄 Compounding AKTÍVNY: Používam reálny zostatok ({free_capital:.2f} USDC) do stropu {budget_cap}$")
@@ -401,26 +402,23 @@ async def execute_trade_in_background(data: dict):
                     return
                 current_price = safe_float(ticker_res["data"][0]["last"])
                 
-                coin_amount = round(safe_budget / current_price, 4)
+                coin_amount = round(safe_budget / current_price, 2)
                 
-                # OPRAVA: Použitie tgtCcy: quote_ccy pre spoľahlivý nákup podľa USDC sumy
                 order_body = json.dumps({
                     "instId": okx_symbol,
                     "tdMode": "cash",
                     "side": "buy",
                     "ordType": "market",
-                    "tgtCcy": "quote_ccy",
-                    "sz": f"{safe_budget:.2f}"
+                    "sz": f"{coin_amount}"
                 })
                 
                 order_res = okx_request("POST", "/api/v5/trade/order", order_body)
                 if order_res.get("code") != "0":
-                    err_msg = order_res.get('msg', 'Neznáma chyba')
-                    log_event(f"❌ Chyba nákupnej objednávky ({okx_symbol}): {err_msg}")
-                    send_telegram_msg(f"❌ <b>Chyba nákupnej objednávky na OKX ({okx_symbol}):</b> {err_msg}")
+                    log_event(f"❌ Chyba nákupnej objednávky: {order_res}")
+                    send_telegram_msg(f"❌ <b>Chyba nákupnej objednávky na OKX:</b> {order_res.get('msg', 'Neznáma chyba')}")
                     return
                 
-                actual_spent_usdc = safe_budget
+                actual_spent_usdc = coin_amount * current_price
                 
                 sl_price = current_price * 0.97
                 be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
@@ -483,7 +481,7 @@ async def execute_trade_in_background(data: dict):
                     
                     order_body = json.dumps({
                         "instId": pair_to_sell, "tdMode": "cash", "side": "sell",
-                        "ordType": "market", "sz": str(round(trade["amount"], 4))
+                        "ordType": "market", "sz": str(round(trade["amount"], 2))
                     })
                     okx_request("POST", "/api/v5/trade/order", order_body)
                     pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
@@ -593,7 +591,7 @@ async def manual_buy(coin: str):
             if not IS_BOT_ACTIVE:
                 return JSONResponse({"status": "error", "message": "Bot je pozastavený."})
             
-            coin_upper = coin.upper().strip()
+            coin_upper = coin.upper()
             if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or coin_upper in ACTIVE_TRADES:
                 return JSONResponse({"status": "error", "message": "Pozícia už je aktívna."})
             
@@ -617,24 +615,18 @@ async def manual_buy(coin: str):
                 return JSONResponse({"status": "error", "message": f"Nepodarilo sa získať cenu pre {okx_symbol}"})
             
             current_price = safe_float(ticker_res["data"][0]["last"])
-            coin_amount = round(safe_budget / current_price, 4)
+            coin_amount = round(safe_budget / current_price, 2)
             
-            # OPRAVA: Použitie tgtCcy: quote_ccy pre spoľahlivý nákup podľa USDC sumy
             order_body = json.dumps({
-                "instId": okx_symbol, 
-                "tdMode": "cash", 
-                "side": "buy",
-                "ordType": "market",
-                "tgtCcy": "quote_ccy",
-                "sz": f"{safe_budget:.2f}"
+                "instId": okx_symbol, "tdMode": "cash", "side": "buy",
+                "ordType": "market", "sz": f"{coin_amount}"
             })
             
             order_res = okx_request("POST", "/api/v5/trade/order", order_body)
             if order_res.get("code") != "0":
-                err_msg = order_res.get('msg', 'Neznáma chyba OKX')
-                return JSONResponse({"status": "error", "message": err_msg})
+                return JSONResponse({"status": "error", "message": order_res.get("msg", "Neznáma chyba OKX")})
             
-            actual_spent_usdc = safe_budget
+            actual_spent_usdc = coin_amount * current_price
             sl_price = current_price * 0.97
             be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0))
             ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0))
@@ -684,7 +676,7 @@ async def sell_now():
                 
                 order_body = json.dumps({
                     "instId": symbol, "tdMode": "cash", "side": "sell",
-                    "ordType": "market", "sz": str(round(trade["amount"], 4))
+                    "ordType": "market", "sz": str(round(trade["amount"], 2))
                 })
                 okx_request("POST", "/api/v5/trade/order", order_body)
                 pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
@@ -724,7 +716,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; }
         body { background-color: var(--bg-color); color: var(--text-main); padding: 16px; min-height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
-        .container { max-width: 1100px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
+        .container { max-width: 1050px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
         .top-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 10px; flex-wrap: wrap; gap: 10px; }
         .brand h1 { font-size: 1rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
         .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 1px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -776,9 +768,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .text-green { color: var(--green); font-weight: 700; }
         .text-red { color: var(--red); font-weight: 700; }
         .text-yellow-highlight { color: var(--yellow); font-weight: 700; }
-        
-        .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 4px; border-radius: 4px; }
-        .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 65px; outline: none; text-transform: uppercase; }
     </style>
 </head>
 <body>
@@ -804,15 +793,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
 
-                <!-- VSTUP PRE AKÝKOĽVEK TOKEN + TLACIDLO BUY -->
-                <div class="custom-buy-box">
-                    <input type="text" id="custom-coin" class="custom-buy-input" placeholder="BTC/ETH">
-                    <button class="btn btn-on" style="padding: 2px 6px;" onclick="manualBuyCustom()">🚀 BUY</button>
-                </div>
-
-                <!-- Rýchle tlačidlá -->
-                <button class="btn btn-on" onclick="manualBuy('SOL')">SOL</button>
-                <button class="btn btn-on" onclick="manualBuy('SUI')">SUI</button>
+                <!-- Manuálne nákupy -->
+                <button class="btn btn-on" onclick="manualBuy('SOL')">🚀 BUY SOL</button>
+                <button class="btn btn-on" onclick="manualBuy('SUI')">🚀 BUY SUI</button>
 
                 <!-- Prepínače -->
                 <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-yellow{% endif %}" onclick="toggleCompounding()">
@@ -980,25 +963,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             }
         }
 
-        async function manualBuyCustom() {
-            let coinInput = document.getElementById('custom-coin');
-            let coin = coinInput.value.trim().toUpperCase();
-            if (!coin) {
-                alert("Zadajte skratku tokenu (napr. BTC, ETH, ADA)!");
-                return;
-            }
-            if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDC za aktuálne zvolený rozpočet a TF?`)) return;
-            
-            let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
-            let data = await res.json();
-            if (data.status === 'success') {
-                coinInput.value = "";
-                updateState();
-            } else {
-                alert("Chyba pri manuálnom nákupe: " + data.message);
-            }
-        }
-
         async function sellNow() {
             if (!confirm("Naozaj vykonať núdzový okamžitý predaj všetkých pozícií?")) return;
             let res = await fetch('/api/sell-now', {method: 'POST'});
@@ -1037,7 +1001,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <td>${t.entry_price.toFixed(4)}</td>
                             <td>${t.current_price.toFixed(4)}</td>
                             <td><span class="${statusColor}">${statusText}</span></td>
-                            <td>${t.amount.toFixed(4)} ks <span style="font-size:0.6rem; color:var(--text-muted);">(Orig: ${t.initial_amount.toFixed(4)})</span></td>
+                            <td>${t.amount.toFixed(2)} ks <span style="font-size:0.6rem; color:var(--text-muted);">(Orig: ${t.initial_amount.toFixed(2)})</span></td>
                             <td class="text-yellow-highlight">${secondHalfPnl >= 0 ? "+" : ""}${secondHalfPnl.toFixed(2)} $</td>
                             <td class="${pnlClass}">${t.live_pnl_pct >= 0 ? "+" : ""}${t.live_pnl_pct.toFixed(2)}% (${t.live_pnl_usdc >= 0 ? "+" : ""}${t.live_pnl_usdc.toFixed(2)} $)</td>
                         </tr>`;
