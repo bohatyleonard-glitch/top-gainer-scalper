@@ -27,7 +27,7 @@ TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
     "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m (Bez % podmienok)"},
     "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 8m (Bez % podmienok)"},
-    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.6, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"}, # Zmenené na 0.75%
+    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.6, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"}, #[cite: 3]
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.3, "target_pct": 1.2, "desc": "30m trendový"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.8, "ttp_callback_pct": 0.4, "target_pct": 1.5, "desc": "45m strednodobý"},
     "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.5, "ttp_callback_pct": 0.5, "target_pct": 1.7, "desc": "1h hodinový swing"},
@@ -50,7 +50,6 @@ CURRENT_TIMEFRAME = "15M"  # Predvolený TF
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC", "USDT"]
 
-# Dynamický zoznam Top 20 likvidných tokenov (bude sa automaticky aktualizovať)
 TOP_LIQUID_SYMBOLS = ["SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC", "LINK-USDC", "DOGE-USDC"]
 
 SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
@@ -224,14 +223,11 @@ def update_top_symbols():
                 inst_id = t.get("instId", "")
                 if not any(inst_id.endswith(f"-{s}") for s in ALLOWED_STABLES):
                     continue
-                # Vylúčime BTC a ETH
                 if "BTC" in inst_id or "ETH" in inst_id:
                     continue
                 vol_24h = safe_float(t.get("volCcy24h", 0))
                 if vol_24h > 0:
                     valid_pairs.append((inst_id, vol_24h))
-            
-            # Zoradíme zostupne podľa 24h objemu
             valid_pairs.sort(key=lambda x: x[1], reverse=True)
             top_20 = [pair[0] for pair in valid_pairs[:20]]
             if top_20:
@@ -246,7 +242,7 @@ async def top_symbols_scanner_loop():
             update_top_symbols()
         except Exception:
             pass
-        await asyncio.sleep(3600)  # Aktualizácia každú hodinu
+        await asyncio.sleep(3600)
 
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
@@ -254,7 +250,7 @@ async def advanced_risk_monitor_loop():
     while True:
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
-                CURRENT_STAGE = f"STAV: Bot aktívny. Skenujem Top {len(TOP_LIQUID_SYMBOLS)} likvidných altcoinov (Scaling Out +0.75%)..."
+                CURRENT_STAGE = f"STAV: Bot aktívny. Skenujem Top {len(TOP_LIQUID_SYMBOLS)} likvidných altcoinov (Scaling Out +0.75%)..." #[cite: 3]
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -307,7 +303,6 @@ async def advanced_risk_monitor_loop():
                     
                     target_pct = trade_settings.get("target_pct", 0.0)
                     
-                    # Ak je target_pct > 0 (napr. 15m), vykonáva sa automatický Scaling Out a Trailing
                     if target_pct > 0:
                         # --- 🎯 50/50 SCALING OUT LOGIKA ---
                         if not trade.get("partial_sold", False) and pnl_pct >= target_pct:
@@ -322,7 +317,7 @@ async def advanced_risk_monitor_loop():
                                     trade["amount"] = round(trade["amount"] - half_amount, 2)
                                     trade["partial_sold"] = True
                                     part_pnl_usdc = (invested / 2.0) * (pnl_pct / 100.0)
-                                    record_closed_trade(symbol, pnl_pct, part_pnl_usdc, f"Scaling Out 50% (+{target_pct}%)")
+                                    record_closed_trade(symbol, pnl_pct, part_pnl_usdc, f"Scaling Out 50% (+{target_pct}%)") #[cite: 3]
                                     log_event(f"🎯 Scaling Out 50% pre {symbol} pri {pnl_pct:+.2f}% | Odpredaná polovica, zisk uzamknutý!")
                                     send_telegram_msg(f"🎯 <b>SCALING OUT 50% SPLNENÝ</b>\n<b>Pár:</b> {symbol}\n<b>Cieľ:</b> +{target_pct}%\n<b>PnL (50%):</b> +{part_pnl_usdc:.2f} $")
 
@@ -336,7 +331,7 @@ async def advanced_risk_monitor_loop():
                                 trade["break_even_activated"] = True
                                 effective_sl = max(trail_stop_price, trade["entry_price"])
                             else:
-                                effective_sl = trade["entry_price"] * (1 - 0.006)  # Prísny stop-loss -0.6%
+                                effective_sl = trade["entry_price"] * (1 - 0.006)
                                 
                             ttp_trigger = trade_settings.get("ttp_trigger_pct", 0.0)
                             if ttp_trigger > 0:
@@ -356,7 +351,7 @@ async def advanced_risk_monitor_loop():
                             second_half_invested = invested / 2.0 if trade.get("partial_sold") else invested
                             trade["second_half_pnl_usdc"] = second_half_invested * (pnl_pct / 100.0)
                             
-                            partial_status_text = "50% ODPREDANÉ (TRAIL AKTÍVNY)" if trade.get("partial_sold") else f"ČAKÁ NA +{target_pct}%"
+                            partial_status_text = "50% ODPREDANÉ (TRAIL AKTÍVNY)" if trade.get("partial_sold") else f"ČAKÁ NA +{target_pct}%" #[cite: 3]
                             CURRENT_STAGE = f"STAV: {symbol} | Hodnota: {current_total_value:.2f}$ | PnL: {pnl_pct:+.2f}% | {partial_status_text}"
                             
                             # --- 🚨 STOP LOSS / BREAK-EVEN EXEKÚCIA ---
@@ -479,7 +474,7 @@ async def execute_trade_in_background(data: dict):
                     return
                 
                 actual_spent_usdc = coin_amount * current_price
-                sl_price = current_price * (1 - 0.006)  # Prísny stop-loss -0.6% pre 15m
+                sl_price = current_price * (1 - 0.006)
                 be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
                 ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
                 target_pct = SETTINGS.get("target_pct", 0.0)
@@ -506,7 +501,7 @@ async def execute_trade_in_background(data: dict):
                     "settings": SETTINGS.copy()
                 }
                 target_str = f"+{target_pct}%" if target_pct > 0 else "MANUÁLNY (Bez automatických %)"
-                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC | Target: {target_str} (Investícia: {actual_spent_usdc:.2f}$)")
+                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC | Target: {target_str} (Investícia: {actual_spent_usdc:.2f}$)") #[cite: 3]
                 
                 inline_keyboard = {
                     "inline_keyboard": [
@@ -517,7 +512,7 @@ async def execute_trade_in_background(data: dict):
                     ]
                 }
                 send_telegram_msg(
-                    f"🟢 <b>NOVÝ OBCHOD [TF: {CURRENT_TIMEFRAME}]</b>\n"
+                    f"🟢 <b>NOVÝ OBCHOD [TF: {CURRENT_TIMEFRAME}]</b>\n" #[cite: 3]
                     f"<b>Pár:</b> {okx_symbol}\n"
                     f"<b>Vstup:</b> {current_price:.4f}\n"
                     f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
@@ -557,10 +552,10 @@ async def execute_trade_in_background(data: dict):
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_symbols()
-    log_event("🚀 Apex Scalper PRO v5.7 spustený (Target +0.75% pre 15m + Top 20 Likvidný Skener).")
+    log_event("🚀 Apex Scalper PRO v5.7 spustený (Target +0.75% + Top 20 Likvidný Skener).") #[cite: 3]
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(top_symbols_scanner_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.7 pripravený (Target +0.75% + Top 20 Skener)!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.7 pripravený (Target +0.75% + Top 20 Skener)!</b>") #[cite: 3]
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -716,8 +711,8 @@ async def manual_buy(coin: str):
                 "tf": CURRENT_TIMEFRAME,
                 "settings": SETTINGS.copy()
             }
-            log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$")
-            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC")
+            log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$") #[cite: 3]
+            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC") #[cite: 3]
             
             return JSONResponse({"status": "success", "symbol": okx_symbol})
         except Exception as e:
@@ -757,7 +752,7 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
-# --- 🎨 MINIMALISTICKÉ ELEGANTNÉ HTML UI/UX TERMINÁLU ---
+# --- 🎨 ELEGANTNÉ HTML UI/UX TERMINÁLU ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -849,31 +844,26 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </p>
             </div>
             <div class="actions">
-                <!-- TF Profily -->
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '5M' %}btn-yellow{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
 
-                <!-- Rozpočet -->
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
 
-                <!-- Vlastný Manuálny Nákup -->
                 <div class="custom-buy-box">
                     <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL/SUI">
                     <button class="btn btn-on" style="padding: 2px 6px;" onclick="manualBuyCustom()">🚀 BUY</button>
                 </div>
 
-                <!-- Rýchle tlačidlá -->
                 <button class="btn btn-on" onclick="manualBuy('SOL')">SOL</button>
                 <button class="btn btn-on" onclick="manualBuy('SUI')">SUI</button>
 
-                <!-- Prepínače -->
                 <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-yellow{% endif %}" onclick="toggleCompounding()">
                     COMPOUNDING: {% if SETTINGS.compounding_enabled %}ON{% else %}OFF{% endif %}
                 </button>
