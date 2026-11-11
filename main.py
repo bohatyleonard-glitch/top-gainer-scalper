@@ -297,7 +297,7 @@ async def advanced_risk_monitor_loop():
                                 trade["break_even_activated"] = True
                                 effective_sl = max(trail_stop_price, trade["entry_price"])
                             else:
-                                effective_sl = trade["entry_price"] * 0.97
+                                effective_sl = trade["entry_price"] * (1 - 0.006)  # Prísny stop-loss -0.6%
                                 
                             ttp_trigger = trade_settings.get("ttp_trigger_pct", 0.0)
                             if ttp_trigger > 0:
@@ -322,7 +322,7 @@ async def advanced_risk_monitor_loop():
                             
                             # --- 🚨 STOP LOSS / BREAK-EVEN EXEKÚCIA ---
                             if current_price <= effective_sl:
-                                reason = "Break-Even Ochrana (Zvyšok)" if effective_sl >= trade["entry_price"] else "Stop-Loss (-3%)"
+                                reason = "Break-Even Ochrana (Zvyšok)" if effective_sl >= trade["entry_price"] else "Stop-Loss (-0.6%)"
                                 try:
                                     order_body = json.dumps({
                                         "instId": symbol, "tdMode": "cash", "side": "sell",
@@ -441,7 +441,7 @@ async def execute_trade_in_background(data: dict):
                     return
                 
                 actual_spent_usdc = coin_amount * current_price
-                sl_price = current_price * 0.97
+                sl_price = current_price * (1 - 0.006)  # Prísny stop-loss -0.6% pre 15m
                 be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
                 ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
                 target_pct = SETTINGS.get("target_pct", 0.0)
@@ -518,9 +518,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.6.0 spustený s podporou 5m/8m manuálu a 500$ tlačidla.")
+    log_event("🚀 Apex Scalper PRO v5.6.1 spustený s prísnym Stop-Lossom (-0.6%) pre 15M.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.6.0 pripravený s 5m/8m a 500$ tlačidlom!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.6.1 pripravený s prísnym Stop-Lossom (-0.6%)!</b>")
     yield
     monitor_task.cancel()
 
@@ -649,7 +649,7 @@ async def manual_buy(coin: str):
                 return JSONResponse({"status": "error", "message": err_msg})
             
             actual_spent_usdc = coin_amount * current_price
-            sl_price = current_price * 0.97
+            sl_price = current_price * (1 - 0.006)  # Prísny stop-loss -0.6% pre 15m
             be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
             ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
             target_pct = SETTINGS.get("target_pct", 0.0)
@@ -722,7 +722,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper PRO v5.6.0 Terminal</title>
+    <title>Apex Scalper PRO v5.6.1 Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -800,7 +800,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.6.0 (Scaling Out)</h1>
+                <h1>APEX SCALPER // PRO v5.6.1 (Strict SL -0.6%)</h1>
                 <p>
                     <span id="header-pair">Multi-TF · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
@@ -815,14 +815,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
 
-                <!-- Rozpočet (vložené 500 USDC hneď pred 1K) -->
+                <!-- Rozpočet -->
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
 
-                <!-- Vlastný Manuálny Nákup pre Akýkoľvek Token -->
+                <!-- Vlastný Manuálny Nákup -->
                 <div class="custom-buy-box">
                     <input type="text" id="custom-coin" class="custom-buy-input" placeholder="BTC/ETH">
                     <button class="btn btn-on" style="padding: 2px 6px;" onclick="manualBuyCustom()">🚀 BUY</button>
