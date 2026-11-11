@@ -27,7 +27,7 @@ TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
     "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m (Bez % podmienok)"},
     "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 8m (Bez % podmienok)"},
-    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.6, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.65, "desc": "Rýchly 15m scalp (+0.65%)"},
+    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.6, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"}, # Zmenené na 0.75%
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.3, "target_pct": 1.2, "desc": "30m trendový"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.8, "ttp_callback_pct": 0.4, "target_pct": 1.5, "desc": "45m strednodobý"},
     "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.5, "ttp_callback_pct": 0.5, "target_pct": 1.7, "desc": "1h hodinový swing"},
@@ -49,6 +49,9 @@ IS_BOT_ACTIVE = True
 CURRENT_TIMEFRAME = "15M"  # Predvolený TF
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC", "USDT"]
+
+# Dynamický zoznam Top 20 likvidných tokenov (bude sa automaticky aktualizovať)
+TOP_LIQUID_SYMBOLS = ["SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC", "LINK-USDC", "DOGE-USDC"]
 
 SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
 SETTINGS.update({
@@ -209,13 +212,49 @@ def check_btc_health() -> bool:
         pass
     return True
 
+# --- 🔍 DYNAMICKÝ SKENER TOP 20 LIKVIDNÝCH TOKENOV ---
+def update_top_symbols():
+    global TOP_LIQUID_SYMBOLS
+    try:
+        res = okx_request("GET", "/api/v5/market/tickers?instType=SPOT")
+        if res.get("code") == "0" and res.get("data"):
+            tickers = res["data"]
+            valid_pairs = []
+            for t in tickers:
+                inst_id = t.get("instId", "")
+                if not any(inst_id.endswith(f"-{s}") for s in ALLOWED_STABLES):
+                    continue
+                # Vylúčime BTC a ETH
+                if "BTC" in inst_id or "ETH" in inst_id:
+                    continue
+                vol_24h = safe_float(t.get("volCcy24h", 0))
+                if vol_24h > 0:
+                    valid_pairs.append((inst_id, vol_24h))
+            
+            # Zoradíme zostupne podľa 24h objemu
+            valid_pairs.sort(key=lambda x: x[1], reverse=True)
+            top_20 = [pair[0] for pair in valid_pairs[:20]]
+            if top_20:
+                TOP_LIQUID_SYMBOLS = top_20
+                log_event(f"🔍 Dynamický skener aktualizoval Top {len(TOP_LIQUID_SYMBOLS)} likvidných tokenov.")
+    except Exception as e:
+        log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
+
+async def top_symbols_scanner_loop():
+    while True:
+        try:
+            update_top_symbols()
+        except Exception:
+            pass
+        await asyncio.sleep(3600)  # Aktualizácia každú hodinu
+
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
     await asyncio.sleep(3)
     while True:
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
-                CURRENT_STAGE = "STAV: Bot aktívny. Skenujem Multi-TF trh (Scaling Out pripravený)..."
+                CURRENT_STAGE = f"STAV: Bot aktívny. Skenujem Top {len(TOP_LIQUID_SYMBOLS)} likvidných altcoinov (Scaling Out +0.75%)..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -354,7 +393,6 @@ async def advanced_risk_monitor_loop():
                                 del ACTIVE_TRADES[coin]
                                 continue
                     else:
-                        # Pre 5m / 8m (manuálny scalping bez automatických percentuálnych obmedzení)
                         trade["live_pnl_pct"] = pnl_pct
                         trade["live_pnl_usdc"] = pnl_usdc
                         trade["second_half_pnl_usdc"] = pnl_usdc
@@ -518,11 +556,14 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.6.1 spustený s prísnym Stop-Lossom (-0.6%) pre 15M.")
+    update_top_symbols()
+    log_event("🚀 Apex Scalper PRO v5.7 spustený (Target +0.75% pre 15m + Top 20 Likvidný Skener).")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.6.1 pripravený s prísnym Stop-Lossom (-0.6%)!</b>")
+    scanner_task = asyncio.create_task(top_symbols_scanner_loop())
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.7 pripravený (Target +0.75% + Top 20 Skener)!</b>")
     yield
     monitor_task.cancel()
+    scanner_task.cancel()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -616,7 +657,7 @@ async def manual_buy(coin: str):
             if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or coin_upper in ACTIVE_TRADES:
                 return JSONResponse({"status": "error", "message": "Pozícia už je aktívna."})
             
-            okx_symbol = f"{coin_upper}-USDC"
+            okx_symbol = f"{coin_upper}-USDC" if "-" not in coin_upper else coin_upper
             stable_ccy = "USDC"
             free_capital = fetch_account_capital(stable_ccy)
             budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
@@ -649,7 +690,7 @@ async def manual_buy(coin: str):
                 return JSONResponse({"status": "error", "message": err_msg})
             
             actual_spent_usdc = coin_amount * current_price
-            sl_price = current_price * (1 - 0.006)  # Prísny stop-loss -0.6% pre 15m
+            sl_price = current_price * (1 - 0.006)
             be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
             ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
             target_pct = SETTINGS.get("target_pct", 0.0)
@@ -716,13 +757,13 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
-# --- 🎨 MINIMALISTICKÉ ELEGANTHÉ HTML U/UX TERMINÁLU ---
+# --- 🎨 MINIMALISTICKÉ ELEGANTNÉ HTML UI/UX TERMINÁLU ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper PRO v5.6.1 Terminal</title>
+    <title>Apex Scalper PRO v5.7 Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -800,9 +841,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.6.1 (Strict SL -0.6%)</h1>
+                <h1>APEX SCALPER // PRO v5.7 (Target +0.75% + Top 20 Skener)</h1>
                 <p>
-                    <span id="header-pair">Multi-TF · OKX Demo</span>
+                    <span id="header-pair">Top 20 Likvidných Altov · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
                     <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
                 </p>
@@ -824,7 +865,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
                 <!-- Vlastný Manuálny Nákup -->
                 <div class="custom-buy-box">
-                    <input type="text" id="custom-coin" class="custom-buy-input" placeholder="BTC/ETH">
+                    <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL/SUI">
                     <button class="btn btn-on" style="padding: 2px 6px;" onclick="manualBuyCustom()">🚀 BUY</button>
                 </div>
 
@@ -886,7 +927,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">No active positions. Scanning orderbook for triggers...</td></tr>
+                        <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">No active positions. Scanning Top 20 liquid markets for triggers...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1002,7 +1043,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             let coinInput = document.getElementById('custom-coin');
             let coin = coinInput.value.trim().toUpperCase();
             if (!coin) {
-                alert("Zadajte skratku tokenu (napr. BTC, ETH, ADA)!");
+                alert("Zadajte skratku tokenu (napr. SOL, SUI, ADA)!");
                 return;
             }
             if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDC za aktuálne zvolený rozpočet a TF?`)) return;
@@ -1063,7 +1104,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     activeTbody.innerHTML = html;
                     sellBtn.disabled = false;
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">No active positions. Scanning orderbook for triggers...</td></tr>`;
+                    activeTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">No active positions. Scanning Top 20 liquid markets for triggers...</td></tr>`;
                     sellBtn.disabled = true;
                 }
 
