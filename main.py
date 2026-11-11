@@ -36,6 +36,12 @@ TIMEFRAME_PROFILES = {
     "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 7.0, "ttp_callback_pct": 1.5, "target_pct": 3.5, "desc": "4h masívny swing"}
 }
 
+# Top 20 likvidných tokenov pre sledovanie / multi-asset kontext
+TOP_20_TOKENS = [
+    "BTC", "ETH", "SOL", "SUI", "AVAX", "NEAR", "LINK", "DOGE", "XRP", "ADA",
+    "DOT", "MATIC", "UNI", "ATOM", "LTC", "SHIB", "FET", "RENDER", "OP", "ARB"
+]
+
 ACTIVE_TRADES = {}
 DAILY_PNL_CALENDAR = []
 CLOSED_TRADES_HISTORY = []
@@ -55,7 +61,7 @@ SETTINGS.update({
     "use_btc_filter": True, 
     "reentry_cooldown_sec": 120, 
     "use_breakeven": True,
-    "max_budget_cap": 1000.0,
+    "max_budget_cap": 3000.0, # Predvolené nastavenie na 3000 USD podľa vašich preferencií
     "compounding_enabled": False
 })
 
@@ -297,7 +303,7 @@ async def advanced_risk_monitor_loop():
                                 trade["break_even_activated"] = True
                                 effective_sl = max(trail_stop_price, trade["entry_price"])
                             else:
-                                effective_sl = trade["entry_price"] * (1 - 0.006)  # Prísny stop-loss -0.6%
+                                effective_sl = trade["entry_price"] * (1 - 0.006)  # Prísny stop-loss -0.6% pre 15m
                                 
                             ttp_trigger = trade_settings.get("ttp_trigger_pct", 0.0)
                             if ttp_trigger > 0:
@@ -354,7 +360,6 @@ async def advanced_risk_monitor_loop():
                                 del ACTIVE_TRADES[coin]
                                 continue
                     else:
-                        # Pre 5m / 8m (manuálny scalping bez automatických percentuálnych obmedzení)
                         trade["live_pnl_pct"] = pnl_pct
                         trade["live_pnl_usdc"] = pnl_usdc
                         trade["second_half_pnl_usdc"] = pnl_usdc
@@ -404,7 +409,7 @@ async def execute_trade_in_background(data: dict):
                 stable_ccy = "USDC" if "USDC" in okx_symbol else "USDT"
                 
                 free_capital = fetch_account_capital(stable_ccy)
-                budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
+                budget_cap = SETTINGS.get("max_budget_cap", 3000.0)
                 
                 if SETTINGS.get("compounding_enabled", False):
                     safe_budget = min(free_capital * 0.98, budget_cap)
@@ -518,9 +523,9 @@ async def execute_trade_in_background(data: dict):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
-    log_event("🚀 Apex Scalper PRO v5.6.1 spustený s prísnym Stop-Lossom (-0.6%) pre 15M.")
+    log_event("🚀 Apex Scalper PRO v5.7 spustený s podporou Top 20 tokenov a prísnym Stop-Lossom (-0.6%).")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
-    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.6.1 pripravený s prísnym Stop-Lossom (-0.6%)!</b>")
+    send_telegram_msg("🚀 <b>Apex Scalper PRO v5.7 pripravený s Top 20 tokenmi a 3000$ rozpočtom!</b>")
     yield
     monitor_task.cancel()
 
@@ -619,7 +624,7 @@ async def manual_buy(coin: str):
             okx_symbol = f"{coin_upper}-USDC"
             stable_ccy = "USDC"
             free_capital = fetch_account_capital(stable_ccy)
-            budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
+            budget_cap = SETTINGS.get("max_budget_cap", 3000.0)
             
             if SETTINGS.get("compounding_enabled", False):
                 safe_budget = min(free_capital * 0.98, budget_cap)
@@ -716,13 +721,17 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
+@app.get("/api/top-tokens")
+async def get_top_tokens():
+    return JSONResponse({"tokens": TOP_20_TOKENS})
+
 # --- 🎨 MINIMALISTICKÉ ELEGANTHÉ HTML U/UX TERMINÁLU ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper PRO v5.6.1 Terminal</title>
+    <title>Apex Scalper PRO v5.7 Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -794,13 +803,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.01); }
         .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 65px; outline: none; text-transform: uppercase; font-weight: 600; }
+        .select-token { background: var(--card-bg); border: 1px solid var(--border-hover); color: var(--text-main); padding: 4px 8px; font-size: 0.7rem; border-radius: 4px; outline: none; font-weight: 600; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO v5.6.1 (Strict SL -0.6%)</h1>
+                <h1>APEX SCALPER // PRO v5.7 (Top 20 Multi-Asset Ready)</h1>
                 <p>
                     <span id="header-pair">Multi-TF · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
@@ -815,22 +825,23 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
 
-                <!-- Rozpočet -->
+                <!-- Rozpočet (vrátane 3K predvoleného) -->
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
 
+                <!-- Rýchly výber Top Tokenov -->
+                <select id="top-token-select" class="select-token" onchange="buySelectedToken()">
+                    <option value="">-- Top 20 Tokenov --</option>
+                </select>
+
                 <!-- Vlastný Manuálny Nákup -->
                 <div class="custom-buy-box">
                     <input type="text" id="custom-coin" class="custom-buy-input" placeholder="BTC/ETH">
                     <button class="btn btn-on" style="padding: 2px 6px;" onclick="manualBuyCustom()">🚀 BUY</button>
                 </div>
-
-                <!-- Rýchle tlačidlá -->
-                <button class="btn btn-on" onclick="manualBuy('SOL')">SOL</button>
-                <button class="btn btn-on" onclick="manualBuy('SUI')">SUI</button>
 
                 <!-- Prepínače -->
                 <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-yellow{% endif %}" onclick="toggleCompounding()">
@@ -920,6 +931,29 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     </div>
 
     <script>
+        async function loadTopTokens() {
+            try {
+                let res = await fetch('/api/top-tokens');
+                let data = await res.json();
+                let select = document.getElementById('top-token-select');
+                let html = '<option value="">-- Top 20 Tokenov --</option>';
+                data.tokens.forEach(t => {
+                    html += `<option value="${t}">${t}</option>`;
+                });
+                select.innerHTML = html;
+            } catch (err) {
+                console.error("Chyba pri načítaní tokenov:", err);
+            }
+        }
+
+        function buySelectedToken() {
+            let select = document.getElementById('top-token-select');
+            let coin = select.value;
+            if (!coin) return;
+            manualBuy(coin);
+            select.value = "";
+        }
+
         async function toggleBot() {
             let res = await fetch('/api/toggle-bot', {method: 'POST'});
             let data = await res.json();
@@ -988,13 +1022,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
 
         async function manualBuy(coin) {
-            if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDC za aktuálne zvolený rozpočet a TF?`)) return;
+            if (!confirm(`Naozaj vykonať nákup ${coin}-USDC za aktuálne zvolený rozpočet (${document.querySelector('.budget-btn.btn-yellow')?.innerText || '3K'} USDC) a TF (${document.getElementById('header-tf').innerText})?`)) return;
             let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
             let data = await res.json();
             if (data.status === 'success') {
                 updateState();
             } else {
-                alert("Chyba pri manuálnom nákupe: " + data.message);
+                alert("Chyba pri nákupe: " + data.message);
             }
         }
 
@@ -1005,16 +1039,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 alert("Zadajte skratku tokenu (napr. BTC, ETH, ADA)!");
                 return;
             }
-            if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDC za aktuálne zvolený rozpočet a TF?`)) return;
-            
-            let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
-            let data = await res.json();
-            if (data.status === 'success') {
-                coinInput.value = "";
-                updateState();
-            } else {
-                alert("Chyba pri manuálnom nákupe: " + data.message);
-            }
+            manualBuy(coin);
+            coinInput.value = "";
         }
 
         async function sellNow() {
@@ -1091,11 +1117,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 }
                 logsBox.innerHTML = lHtml;
 
-            } catch (err) {
+            } data.history || (err) => {
                 console.error("Chyba pri obnove stavu:", err);
             }
         }
 
+        loadTopTokens();
         setInterval(updateState, 2000);
         updateState();
     </script>
