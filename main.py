@@ -45,9 +45,9 @@ trade_lock = asyncio.Lock()
 IS_BOT_ACTIVE = True
 CURRENT_TIMEFRAME = "15M"
 STORAGE_FILE = "trades_history.json"
-ALLOWED_STABLES = ["USDC", "USDT"]
+ALLOWED_STABLES = ["USDT", "USDC"]  # Prioritne USDT pre OKX Demo
 
-TOP_LIQUID_SYMBOLS = ["SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC", "LINK-USDC", "DOGE-USDC"]
+TOP_LIQUID_SYMBOLS = ["SOL-USDT", "SUI-USDT", "XRP-USDT", "ADA-USDT", "AVAX-USDT", "LINK-USDT", "DOGE-USDT"]
 
 SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
 SETTINGS.update({
@@ -56,7 +56,7 @@ SETTINGS.update({
     "use_breakeven": True,
     "max_budget_cap": 1000.0,
     "compounding_enabled": False,
-    "strategy_mode": "All Green"  # "All Green", "Breakout", "Fibonacci Touch"
+    "strategy_mode": "All Green"
 })
 
 def log_event(message: str):
@@ -126,7 +126,7 @@ def format_tv_ticker(raw_ticker: str):
         if clean.endswith(stable) and clean != stable:
             coin = clean[:-len(stable)]
             return coin, f"{coin}-{stable}"
-    return clean, f"{clean}-USDC"
+    return clean, f"{clean}-USDT"
 
 def calculate_stats():
     total = len(CLOSED_TRADES_HISTORY)
@@ -176,7 +176,7 @@ def okx_request(method: str, path: str, body: str = ""):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-def fetch_account_capital(stable_ccy="USDC") -> float:
+def fetch_account_capital(stable_ccy="USDT") -> float:
     try:
         balance_res = okx_request("GET", "/api/v5/account/balance")
         if balance_res.get("code") == "0":
@@ -189,15 +189,22 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
                         best_val = max(avail, cash, eq)
                         if best_val > 0:
                             return best_val
+            # Fallback ak požadovaná mena nie je, skúsim druhej v poradí
+            for acc in balance_res.get("data", []):
+                for detail in acc.get("details", []):
+                    if detail.get("ccy") in ALLOWED_STABLES:
+                        avail = safe_float(detail.get("availBal", 0))
+                        if avail > 0:
+                            return avail
     except Exception as err:
         log_event(f"⚠️ Chyba pri načítaní zostatku: {err}")
-    return 13000.0
+    return 10000.0
 
 def check_btc_health() -> bool:
     if not SETTINGS["use_btc_filter"]:
         return True
     try:
-        url = "/api/v5/market/candles?instId=BTC-USDC&bar=15m&limit=10"
+        url = "/api/v5/market/candles?instId=BTC-USDT&bar=15m&limit=10"
         res = okx_request("GET", url)
         if res.get("code") == "0" and res.get("data"):
             data = res["data"]
@@ -209,7 +216,6 @@ def check_btc_health() -> bool:
         pass
     return True
 
-# --- 📐 POMOCNÉ MATEMATICKÉ FUNKCIE PRE PINE SCRIPT V PYTHON ---
 def calc_ema(values, length):
     if len(values) < length:
         return [values[-1]] * len(values)
@@ -219,7 +225,6 @@ def calc_ema(values, length):
         ema.append(price * alpha + ema[-1] * (1 - alpha))
     return ema
 
-# --- 🧠 PINE SCRIPT CORE STRATEGY MODUL ---
 def evaluate_pine_script_strategy(symbol: str, bar_tf: str = "15m") -> bool:
     try:
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=50"
@@ -228,28 +233,14 @@ def evaluate_pine_script_strategy(symbol: str, bar_tf: str = "15m") -> bool:
             return False
         
         raw_candles = res["data"]
-        raw_candles.reverse() # Od najstaršej po najnovšiu
+        raw_candles.reverse()
         
-        # Prepočet na Heikin-Ashi Sviečky ako v Pine Scripte
-        ha_closes = []
-        ha_opens = []
-        ha_highs = []
-        ha_lows = []
-        volumes = []
+        ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
         
         for i, c in enumerate(raw_candles):
-            o = safe_float(c[1])
-            h = safe_float(c[2])
-            l = safe_float(c[3])
-            cl = safe_float(c[4])
-            v = safe_float(c[5])
-            
+            o, h, l, cl, v = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4]), safe_float(c[5])
             ha_cl = (o + h + l + cl) / 4.0
-            if i == 0:
-                ha_op = (o + cl) / 2.0
-            else:
-                ha_op = (ha_opens[-1] + ha_closes[-1]) / 2.0
-            
+            ha_op = (o + cl) / 2.0 if i == 0 else (ha_opens[-1] + ha_closes[-1]) / 2.0
             ha_hi = max(h, ha_op, ha_cl)
             ha_lo = min(l, ha_op, ha_cl)
             
@@ -259,45 +250,32 @@ def evaluate_pine_script_strategy(symbol: str, bar_tf: str = "15m") -> bool:
             ha_lows.append(ha_lo)
             volumes.append(v)
             
-        # Objemový Oscilátor Logic
         vol_dirs = [v if ha_closes[i] > ha_opens[i] else -v for i, v in enumerate(volumes)]
         fast_ma = calc_ema(vol_dirs, 5)
         slow_ma = calc_ema(vol_dirs, 20)
         
         oscillator = [f - s for f, s in zip(fast_ma, slow_ma)]
         signal_line = calc_ema(oscillator, 9)
-        
         close_ema_9 = calc_ema(ha_closes, 9)
         
-        # Podmienky
-        curr_osc = oscillator[-1]
-        prev_osc = oscillator[-2]
-        curr_sig = signal_line[-1]
-        prev_sig = signal_line[-2]
+        curr_osc, prev_osc = oscillator[-1], oscillator[-2]
+        curr_sig, prev_sig = signal_line[-1], signal_line[-2]
         
         cond_vol_bullish = curr_osc > 0 and curr_osc > curr_sig
         cond_vol_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
         
-        curr_close = ha_closes[-1]
-        prev_close = ha_closes[-2]
-        curr_ema9 = close_ema_9[-1]
-        prev_ema9 = close_ema_9[-2]
+        curr_close, prev_close = ha_closes[-1], ha_closes[-2]
+        curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
         all_green_cond = cond_vol_bullish and (cond_vol_crossover or close_crossover_ema9)
         breakout_cond = cond_vol_crossover or (cond_vol_bullish and close_crossover_ema9)
         
-        mode = SETTINGS.get("strategy_mode", "All Green")
-        if mode == "Breakout":
-            return breakout_cond
-        else:
-            return all_green_cond
-            
+        return breakout_cond if SETTINGS.get("strategy_mode", "All Green") == "Breakout" else all_green_cond
     except Exception as e:
         log_event(f"⚠️ Chyba pri výpočte stratégie pre {symbol}: {e}")
         return False
 
-# --- 🔍 DYNAMICKÝ SKENER TOP 20 LIKVIDNÝCH TOKENOV ---
 def update_top_symbols():
     global TOP_LIQUID_SYMBOLS
     try:
@@ -322,7 +300,6 @@ def update_top_symbols():
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
-# --- 🤖 AUTONÓMNY STRATÉGIA WORKER (NÁHRADA ZA TRADINGVIEW) ---
 async def autonomous_strategy_scanner_loop():
     await asyncio.sleep(5)
     log_event("🤖 Autonómny Pine Script skener spustený!")
@@ -335,10 +312,9 @@ async def autonomous_strategy_scanner_loop():
                         coin_name = symbol.split("-")[0]
                         now_ts = datetime.now().timestamp()
                         
-                        if coin_name in ACTIVE_TRADES or coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"]):
+                        if coin_name in ACTIVE_TRADES or (coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"])):
                             continue
                             
-                        # Spustíme výpočet Pine Scriptu priamo v Pythone!
                         signal = evaluate_pine_script_strategy(symbol, bar_tf=tf_str)
                         if signal:
                             log_event(f"🚀 PINE SCRIPT SIGNÁL DETEGOVANÝ PRE {symbol}!")
@@ -346,7 +322,7 @@ async def autonomous_strategy_scanner_loop():
                             break
         except Exception as e:
             log_event(f"⚠️ Chyba v autonómnom skeneri: {e}")
-        await asyncio.sleep(60) # Skenovať trh každú minútu
+        await asyncio.sleep(60)
 
 async def top_symbols_scanner_loop():
     while True:
@@ -384,7 +360,6 @@ async def advanced_risk_monitor_loop():
 
                 trade["current_price"] = current_price
 
-                # --- ⏳ GTC 48h Expirácia ---
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
                 if now_time - bought_time > timedelta(hours=48):
                     try:
@@ -416,7 +391,6 @@ async def advanced_risk_monitor_loop():
                     target_pct = trade_settings.get("target_pct", 0.0)
                     
                     if target_pct > 0:
-                        # --- 🎯 50/50 SCALING OUT LOGIKA ---
                         if not trade.get("partial_sold", False) and pnl_pct >= target_pct:
                             half_amount = round(trade["initial_amount"] / 2.0, 2)
                             if half_amount >= 0.01:
@@ -433,7 +407,6 @@ async def advanced_risk_monitor_loop():
                                     log_event(f"🎯 Scaling Out 50% pre {symbol} pri {pnl_pct:+.2f}% | Odpredaná polovica, zisk uzamknutý!")
                                     send_telegram_msg(f"🎯 <b>SCALING OUT 50% SPLNENÝ</b>\n<b>Pár:</b> {symbol}\n<b>Cieľ:</b> +{target_pct}%\n<b>PnL (50%):</b> +{part_pnl_usdc:.2f} $")
 
-                        # --- 🛡️ BREAK-EVEN & TRAILING STOP LOGIKA ---
                         be_trigger = trade_settings.get("be_trigger_pct", 0.0)
                         if be_trigger > 0:
                             be_price = trade["entry_price"] * (1 + (be_trigger / 100.0))
@@ -466,7 +439,6 @@ async def advanced_risk_monitor_loop():
                             partial_status_text = "50% ODPREDANÉ (TRAIL AKTÍVNY)" if trade.get("partial_sold") else f"ČAKÁ NA +{target_pct}%"
                             CURRENT_STAGE = f"STAV: {symbol} | Hodnota: {current_total_value:.2f}$ | PnL: {pnl_pct:+.2f}% | {partial_status_text}"
                             
-                            # --- 🚨 STOP LOSS / BREAK-EVEN EXEKÚCIA ---
                             if current_price <= effective_sl:
                                 reason = "Break-Even Ochrana (Zvyšok)" if effective_sl >= trade["entry_price"] else "Stop-Loss (-0.6%)"
                                 try:
@@ -483,7 +455,6 @@ async def advanced_risk_monitor_loop():
                                 del ACTIVE_TRADES[coin]
                                 continue
                                 
-                            # --- 🎯 TRAILING TAKE PROFIT EXEKÚCIA ---
                             if trade.get("ttp_activated") and current_price <= ttp_stop_level:
                                 reason = "Trailing Take Profit (Zvyšok)"
                                 try:
@@ -542,14 +513,14 @@ async def execute_trade_in_background(data: dict):
                     return
                 
                 LAST_TRADE_TIME[coin_name] = now_ts
-                stable_ccy = "USDC" if "USDC" in okx_symbol else "USDT"
+                stable_ccy = "USDT" if "USDT" in okx_symbol else ("USDC" if "USDC" in okx_symbol else "USDT")
                 
                 free_capital = fetch_account_capital(stable_ccy)
                 budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
                 
                 if SETTINGS.get("compounding_enabled", False):
                     safe_budget = min(free_capital * 0.98, budget_cap)
-                    log_event(f"🔄 Compounding AKTÍVNY: Používam zostatok ({free_capital:.2f} USDC) do stropu {budget_cap}$")
+                    log_event(f"🔄 Compounding AKTÍVNY: Používam zostatok ({free_capital:.2f} {stable_ccy}) do stropu {budget_cap}$")
                 else:
                     safe_budget = min(free_capital * 0.98, budget_cap)
                     log_event(f"⚙️ Compounding VYPNUTÝ: Používam pevný rozpočet {budget_cap}$")
@@ -609,7 +580,7 @@ async def execute_trade_in_background(data: dict):
                     "settings": SETTINGS.copy()
                 }
                 target_str = f"+{target_pct}%" if target_pct > 0 else "MANUÁLNY (Bez automatických %)"
-                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} USDC | Target: {target_str} (Investícia: {actual_spent_usdc:.2f}$)")
+                log_event(f"🛒 Nová pozícia [{CURRENT_TIMEFRAME}]: Nákup {okx_symbol} za {current_price:.4f} | Target: {target_str} (Investícia: {actual_spent_usdc:.2f}$)")
                 
                 inline_keyboard = {
                     "inline_keyboard": [
@@ -623,7 +594,7 @@ async def execute_trade_in_background(data: dict):
                     f"🟢 <b>NOVÝ AUTONÓMNY OBCHOD [TF: {CURRENT_TIMEFRAME}]</b>\n"
                     f"<b>Pár:</b> {okx_symbol}\n"
                     f"<b>Vstup:</b> {current_price:.4f}\n"
-                    f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
+                    f"<b>Investícia:</b> {actual_spent_usdc:.2f}\n"
                     f"🎯 <b>Režim:</b> {target_str}",
                     reply_markup=inline_keyboard
                 )
@@ -730,8 +701,8 @@ async def manual_buy(coin: str):
             if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or coin_upper in ACTIVE_TRADES:
                 return JSONResponse({"status": "error", "message": "Pozícia už je aktívna."})
             
-            okx_symbol = f"{coin_upper}-USDC" if "-" not in coin_upper else coin_upper
-            stable_ccy = "USDC"
+            okx_symbol = f"{coin_upper}-USDT" if "-" not in coin_upper else coin_upper
+            stable_ccy = "USDT" if "USDT" in okx_symbol else "USDC"
             free_capital = fetch_account_capital(stable_ccy)
             budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
             
@@ -872,33 +843,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         th { color: var(--text-muted); font-weight: 500; padding: 9px 12px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
         td { padding: 10px 12px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
         tr:last-child td { border-bottom: none; }
-        
         .scrollable-card { max-height: 180px; overflow-y: auto; }
-        .logs-box { 
-            background: var(--card-bg); 
-            border: 1px solid var(--border-color); 
-            border-radius: 5px; 
-            padding: 10px 12px; 
-            height: 200px; 
-            max-height: 200px;
-            overflow-y: auto; 
-            font-size: 0.7rem; 
-            color: var(--text-muted); 
-            display: flex; 
-            flex-direction: column; 
-            gap: 6px; 
-        }
-        .log-line { 
-            white-space: pre-wrap; 
-            word-break: break-all; 
-            line-height: 1.4;
-            border-bottom: 1px dashed rgba(255,255,255,0.03);
-            padding-bottom: 4px;
-        }
+        .logs-box { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 10px 12px; height: 200px; max-height: 200px; overflow-y: auto; font-size: 0.7rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 6px; }
+        .log-line { white-space: pre-wrap; word-break: break-all; line-height: 1.4; border-bottom: 1px dashed rgba(255,255,255,0.03); padding-bottom: 4px; }
         .text-green { color: var(--green); font-weight: 700; }
         .text-red { color: var(--red); font-weight: 700; }
         .text-yellow-highlight { color: var(--yellow); font-weight: 700; }
-        
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.01); }
         .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 65px; outline: none; text-transform: uppercase; font-weight: 600; }
     </style>
@@ -910,7 +860,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <h1>APEX SCALPER // PRO v5.8 FULL AUTO (Pine Script v Pythone)</h1>
                 <p>
                     <span id="header-pair">Top 20 Likvidných Altov · OKX Demo</span>
-                    <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
+                    <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDT</span></span>
                     <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
                 </p>
             </div>
@@ -1089,7 +1039,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 alert("Zadajte skratku tokenu (napr. SOL, SUI, ADA)!");
                 return;
             }
-            if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDC za aktuálne zvolený rozpočet a TF?`)) return;
+            if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDT za aktuálne zvolený rozpočet a TF?`)) return;
             
             let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
             let data = await res.json();
@@ -1113,7 +1063,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 let res = await fetch('/api/state');
                 let data = await res.json();
                 
-                document.getElementById('header-balance').innerText = data.balance.toFixed(2) + " USDC";
+                document.getElementById('header-balance').innerText = data.balance.toFixed(2) + " USDT";
                 document.getElementById('current-stage').innerText = data.current_stage;
                 
                 let stats = data.stats;
@@ -1189,7 +1139,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    balance = fetch_account_capital("USDC")
+    balance = fetch_account_capital("USDT")
     t = Template(HTML_TEMPLATE_CONTENT)
     return t.render(
         SETTINGS=SETTINGS,
@@ -1201,7 +1151,7 @@ async def dashboard():
 
 @app.get("/api/state")
 async def get_state():
-    balance = fetch_account_capital("USDC")
+    balance = fetch_account_capital("USDT")
     stats = calculate_stats()
     return JSONResponse({
         "balance": balance,
