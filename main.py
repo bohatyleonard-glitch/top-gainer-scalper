@@ -29,7 +29,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
     "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m"},
-    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "desc": "Manuál 8m"},
+    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 8m"},
     "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.5, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"},
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.3, "target_pct": 1.2, "desc": "30m trendový"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.8, "ttp_callback_pct": 0.4, "target_pct": 1.5, "desc": "45m strednodobý"},
@@ -807,62 +807,91 @@ HTML_TEMPLATE_CONTENT = """
     <meta charset="UTF-8">
     <title>Apex Scalper PRO</title>
     <style>
-        :root { --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --text-muted: #94a3b8; --border: #334155; --border-hover: #475569; }
-        body { background: var(--bg); color: var(--text); font-family: sans-serif; margin: 0; padding: 20px; }
+        :root { 
+            --bg: #000000; 
+            --card: #0a0a0a; 
+            --text: #ffffff; 
+            --text-muted: #737373; 
+            --border: #facc15; 
+            --border-hover: #eab308; 
+            --green: #10b981;
+            --red: #ef4444;
+            --yellow: #facc15;
+        }
+        body { background: var(--bg); color: var(--text); font-family: 'Courier New', Courier, monospace, sans-serif; margin: 0; padding: 20px; }
         .container { max-width: 1200px; margin: auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; background: var(--card); padding: 15px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 20px; }
-        .btn { background: var(--border); color: var(--text); border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        .btn-on { background: #10b981; color: white; }
-        .btn-off { background: #ef4444; color: white; }
-        .btn-yellow { background: #f59e0b; color: white; }
-        .btn-sell { background: #dc2626; color: white; }
-        .status-ticker { background: var(--card); padding: 10px 15px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
-        .status-dot { width: 10px; height: 10px; background: #10b981; border-radius: 50%; animation: pulse 1.5s infinite; }
+        .header { display: flex; justify-content: space-between; align-items: center; background: var(--card); padding: 15px; border-radius: 4px; border: 1px solid var(--border); margin-bottom: 20px; }
+        .btn { background: #000000; color: var(--text); border: 1px solid var(--border); padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; font-family: inherit; transition: 0.2s; }
+        .btn:hover { border-color: var(--border-hover); background: #111; }
+        
+        /* Stavy pre zapnuté / vypnuté funkcie presne podľa požiadavky */
+        .btn-on { background: rgba(16, 185, 129, 0.15) !important; color: var(--green) !important; border-color: var(--green) !important; }
+        .btn-off { background: rgba(239, 68, 68, 0.15) !important; color: var(--red) !important; border-color: var(--red) !important; }
+        .btn-yellow { background: rgba(250, 204, 21, 0.15) !important; color: var(--yellow) !important; border-color: var(--yellow) !important; }
+        .btn-sell { background: rgba(239, 68, 68, 0.2); color: var(--red); border-color: var(--red); }
+        .btn-sell:hover { background: var(--red); color: #fff; }
+
+        .status-ticker { background: var(--card); padding: 10px 15px; border-radius: 4px; border: 1px solid var(--border); margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+        .status-dot { width: 10px; height: 10px; background: var(--green); border-radius: 50%; animation: pulse 1.5s infinite; }
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+        
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; }
-        .stat-card { background: var(--card); padding: 15px; border-radius: 8px; border: 1px solid var(--border); }
-        .stat-title { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 5px; }
+        .stat-card { background: var(--card); padding: 15px; border-radius: 4px; border: 1px solid var(--border); }
+        .stat-title { font-size: 0.80rem; color: var(--text-muted); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px; }
         .stat-value { font-size: 1.25rem; font-weight: bold; }
-        .terminal-card { background: var(--card); border-radius: 8px; border: 1px solid var(--border); overflow: hidden; margin-bottom: 20px; }
+        
+        .terminal-card { background: var(--card); border-radius: 4px; border: 1px solid var(--border); overflow: hidden; margin-bottom: 20px; }
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; }
-        th, td { padding: 12px 15px; border-bottom: 1px solid var(--border); }
-        th { background: rgba(255,255,255,0.02); color: var(--text-muted); }
+        th, td { padding: 12px 15px; border-bottom: 1px solid #222; }
+        th { background: rgba(250, 204, 21, 0.05); color: var(--yellow); border-bottom: 1px solid var(--border); text-transform: uppercase; font-size: 0.75rem; letter-spacing: 1px; }
         .scrollable-card { max-height: 300px; overflow-y: auto; }
-        .logs-box { background: #020617; border: 1px solid var(--border); border-radius: 8px; padding: 15px; font-family: monospace; font-size: 0.85rem; max-height: 200px; overflow-y: auto; color: #38bdf8; }
+        
+        .logs-box { background: #000000; border: 1px solid var(--border); border-radius: 4px; padding: 15px; font-family: monospace; font-size: 0.85rem; max-height: 200px; overflow-y: auto; color: var(--green); }
         .log-line { margin-bottom: 4px; }
-        .section-title { font-size: 1rem; font-weight: bold; margin-bottom: 10px; color: var(--text-muted); }
-        .text-green { color: #10b981; }
-        .text-red { color: #ef4444; }
-        .text-yellow-highlight { color: #f59e0b; }
+        .section-title { font-size: 0.9rem; font-weight: bold; margin-bottom: 10px; color: var(--yellow); text-transform: uppercase; letter-spacing: 1px; }
+        
+        .text-green { color: var(--green); }
+        .text-red { color: var(--red); }
+        .text-yellow-highlight { color: var(--yellow); }
+        
         .custom-buy-box { display: flex; gap: 5px; }
-        .custom-buy-input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; width: 70px; }
+        .custom-buy-input { background: #000000; border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 4px; width: 80px; font-family: inherit; }
+        .custom-buy-input:focus { outline: none; border-color: var(--yellow); }
     </style>
 </head>
 <body>
 <div class="container">
     <div class="header">
         <div>
-            <h2>Apex Scalper PRO <span id="header-tf" style="font-size:0.9rem; color:var(--text-muted);">{{ CURRENT_TIMEFRAME }}</span></h2>
+            <h2>APEX SCALPER PRO <span id="header-tf" style="font-size:0.8rem; color:var(--yellow);">[{{ CURRENT_TIMEFRAME }}]</span></h2>
             <div style="font-size: 0.85rem; color: var(--text-muted);">Zostatok: <span id="header-balance" style="color:var(--text); font-weight:bold;">{{ balance | round(2) }} USDC</span></div>
         </div>
         <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-            <div style="display: flex; gap: 2px; align-items: center; border: 1px solid var(--border-hover); padding: 2px 4px; border-radius: 4px; background: rgba(255,255,255,0.01);">
-                <span style="font-size: 0.65rem; color: var(--text-muted); margin-right: 2px;">PARALLEL:</span>
+            
+            <!-- Paralelné obchody -->
+            <div style="display: flex; gap: 2px; align-items: center; border: 1px solid var(--border); padding: 2px 4px; border-radius: 4px; background: #000;">
+                <span style="font-size: 0.65rem; color: var(--yellow); margin-right: 4px;">PARALLEL:</span>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1</button>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2</button>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 3 %}btn-yellow{% endif %}" data-val="3" onclick="setParallel(3)">3</button>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 4 %}btn-yellow{% endif %}" data-val="4" onclick="setParallel(4)">4</button>
             </div>
+
+            <!-- Rozpočet -->
             <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
             <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
             <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
             <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
             <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
+
+            <!-- Vlastný manuálny nákup -->
             <div class="custom-buy-box">
-                <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL/SUI">
-                <button class="btn btn-on" style="padding: 2px 6px;" onclick="manualBuyCustom()">BUY</button>
+                <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL">
+                <button class="btn btn-on" style="padding: 6px 10px;" onclick="manualBuyCustom()">BUY</button>
             </div>
-            <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-yellow{% endif %}" onclick="toggleCompounding()">
+
+            <!-- Prepínače (Zelená = ON / Červená = OFF) -->
+            <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-on{% else %}btn-off{% endif %}" onclick="toggleCompounding()">
                 COMPOUNDING: {% if SETTINGS.compounding_enabled %}ON{% else %}OFF{% endif %}
             </button>
             <button id="btc-btn" class="btn {% if SETTINGS.use_btc_filter %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBtcFilter()">
@@ -871,6 +900,7 @@ HTML_TEMPLATE_CONTENT = """
             <button id="bot-btn" class="btn {% if IS_BOT_ACTIVE %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBot()">
                 {% if IS_BOT_ACTIVE %}ACTIVE{% else %}PAUSED{% endif %}
             </button>
+            
             <button id="sell-btn" class="btn btn-sell" onclick="sellNow()" disabled>EMERGENCY SELL</button>
         </div>
     </div>
@@ -971,10 +1001,10 @@ HTML_TEMPLATE_CONTENT = """
         let data = await res.json();
         let btn = document.getElementById('compounding-btn');
         if (data.compounding_enabled) {
-            btn.className = "btn btn-yellow";
+            btn.className = "btn btn-on";
             btn.innerText = "COMPOUNDING: ON";
         } else {
-            btn.className = "btn";
+            btn.className = "btn btn-off";
             btn.innerText = "COMPOUNDING: OFF";
         }
     }
