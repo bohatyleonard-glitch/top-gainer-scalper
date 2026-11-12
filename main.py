@@ -52,7 +52,12 @@ CURRENT_TIMEFRAME = "15M"
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC"]
 
-TOP_LIQUID_SYMBOLS = ["SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC", "LINK-USDC", "DOGE-USDC", "PEPE-USDC", "NEAR-USDC", "RUNE-USDC", "RENDER-USDC"]
+TOP_LIQUID_SYMBOLS = [
+    "SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC",
+    "LINK-USDC", "DOGE-USDC", "PEPE-USDC", "NEAR-USDC", "RUNE-USDC",
+    "RENDER-USDC", "APT-USDC", "ARB-USDC", "OP-USDC", "INJ-USDC",
+    "TIA-USDC", "SEI-USDC", "DOT-USDC", "ATOM-USDC", "UNI-USDC"
+]
 
 SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
 SETTINGS.update({
@@ -249,8 +254,11 @@ def update_top_liquid_symbols():
                     valid.append((inst_id, vol))
             valid.sort(key=lambda x: x[1], reverse=True)
             top_20 = [item[0] for item in valid[:20]]
-            if top_20:
+            if len(top_20) >= 5:
                 TOP_LIQUID_SYMBOLS = top_20
+            elif top_20:
+                merged = list(dict.fromkeys(top_20 + TOP_LIQUID_SYMBOLS))
+                TOP_LIQUID_SYMBOLS = merged[:20]
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
@@ -311,7 +319,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m") -> bool:
 
 async def autonomous_scanner_loop():
     await asyncio.sleep(5)
-    log_event("🤖 Autonómny Pine Script skener (All Green) úspešne spustený!")
+    log_event(f"🤖 Autonómny Pine Script skener (All Green) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             max_allowed = SETTINGS.get("max_parallel", 1)
