@@ -42,7 +42,6 @@ CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na autonómny signál..."
 LAST_TRADE_TIME = {}
-MAX_PARALLEL_TRADES = 1
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
@@ -59,7 +58,8 @@ SETTINGS.update({
     "reentry_cooldown_sec": 120, 
     "use_breakeven": True,
     "max_budget_cap": 1000.0,
-    "compounding_enabled": False
+    "compounding_enabled": False,
+    "max_parallel": 1  # Predvolený počet paralelných obchodov (nastaviteľný z UI)
 })
 
 def log_event(message: str):
@@ -171,7 +171,6 @@ def okx_request(method: str, path: str, body: str = ""):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# 🛠️ POMOCNÉ FUNKCIE PRE LOTSZ A MINSZ
 def get_instrument_rules(symbol: str):
     try:
         res = okx_request("GET", f"/api/v5/public/instruments?instType=SPOT&instId={symbol}")
@@ -244,7 +243,6 @@ def update_top_liquid_symbols():
                 if coin in ["BTC", "ETH"]:
                     continue
                 vol = safe_float(t.get("volCcy24h", 0))
-                # Filter minimálneho 24h objemu na 500k USDC, aby sa eliminovali nelikvidné coiny
                 if vol >= 500000.0:
                     valid.append((inst_id, vol))
             valid.sort(key=lambda x: x[1], reverse=True)
@@ -269,7 +267,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m") -> bool:
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=50"
         res = okx_request("GET", url)
         if res.get("code") != "0" or not res.get("data"):
-            return False
+            return false
         
         candles = res["data"]
         candles.reverse()
@@ -317,7 +315,8 @@ async def autonomous_scanner_loop():
     log_event("🤖 Autonómny Pine Script skener (All Green) úspešne spustený!")
     while True:
         try:
-            if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < MAX_PARALLEL_TRADES:
+            max_allowed = SETTINGS.get("max_parallel", 1)
+            if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
                 if check_btc_health():
                     tf_str = CURRENT_TIMEFRAME.lower()
                     for symbol in TOP_LIQUID_SYMBOLS:
@@ -349,8 +348,9 @@ async def execute_autonomous_buy(okx_symbol: str):
     async with trade_lock:
         coin_name = okx_symbol.split("-")[0]
         now_ts = datetime.now().timestamp()
+        max_allowed = SETTINGS.get("max_parallel", 1)
         
-        if coin_name in ACTIVE_TRADES or len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES:
+        if coin_name in ACTIVE_TRADES or len(ACTIVE_TRADES) >= max_allowed:
             return
             
         LAST_TRADE_TIME[coin_name] = now_ts
@@ -359,13 +359,15 @@ async def execute_autonomous_buy(okx_symbol: str):
         free_capital = fetch_account_capital(stable_ccy)
         budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
         
-        # LOGIKA COMPOUNDING vs PEVNÝ ROZPOČET
+        # Inteligentné rozdelenie kapitálu podľa počtu paralelných obchodov a s 98% rezervou (necháva 2% na burze)
+        allocated_capital_base = free_capital / max_allowed
+        
         if SETTINGS.get("compounding_enabled", False):
-            safe_budget = min(free_capital * 0.98, free_capital)
-            log_event(f"🔄 Compounding AKTÍVNY: Reinvestujem plný zostatok účtu ({safe_budget:.2f} USDC)")
+            safe_budget = min(allocated_capital_base * 0.98, allocated_capital_base)
+            log_event(f"🔄 Compounding AKTÍVNY (Alokácia pre {max_allowed} pozície, 98% vybitia): {safe_budget:.2f} USDC")
         else:
-            safe_budget = min(free_capital * 0.98, budget_cap)
-            log_event(f"⚙️ Compounding VYPNUTÝ: Používam pevný rozpočet {budget_cap} USDC")
+            safe_budget = min(allocated_capital_base * 0.98, budget_cap)
+            log_event(f"⚙️ Compounding VYPNUTÝ (Alokácia pre {max_allowed} pozície, strop {budget_cap} USDC): {safe_budget:.2f} USDC")
 
         if safe_budget < 5.0:
             log_event(f"❌ Nedostatok USDC prostriedkov: {free_capital}")
@@ -456,7 +458,8 @@ async def advanced_risk_monitor_loop():
     while True:
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
-                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny. Skenujem Top {len(TOP_LIQUID_SYMBOLS)} altcoinov (USDC) cez Pine Script..."
+                max_p = SETTINGS.get("max_parallel", 1)
+                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem Top {len(TOP_LIQUID_SYMBOLS)} altcoinov cez Pine Script..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -551,7 +554,7 @@ async def advanced_risk_monitor_loop():
                             
                             trade["live_pnl_pct"] = pnl_pct
                             trade["live_pnl_usdc"] = pnl_usdc
-                            CURRENT_STAGE = f"STAV: {symbol} | Hodnota: {current_total_value:.2f}$ | PnL: {pnl_pct:+.2f}%"
+                            CURRENT_STAGE = f"STAV: Aktívnych pozícií: {len(ACTIVE_TRADES)} | Posledná: {symbol} ({pnl_pct:+.2f}%)"
                             
                             if current_price <= effective_sl:
                                 reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else "Stop-Loss (-0.6%)"
@@ -596,11 +599,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.2 spustený (Pine Script v Pythone, TF 15M, TP 0.75%).")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.3 spustený (S podporou dynamických paralelných obchodov a 98% alokácie).")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 <b>Autonómny Apex Scalper PRO v5.6.2 plne pripravený a beží!</b>")
+    send_telegram_msg("🚀 <b>Autonómny Apex Scalper PRO v5.6.3 plne pripravený a beží!</b>")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -659,6 +662,15 @@ async def set_budget(amount: int):
         return JSONResponse({"status": "success", "max_budget_cap": amount})
     return JSONResponse({"status": "error", "message": "Neplatná hodnota rozpočtu."})
 
+@app.post("/api/set-parallel/{count}")
+async def set_parallel(count: int):
+    if count in [1, 2, 3, 4]:
+        SETTINGS["max_parallel"] = count
+        log_event(f"⚙️ Maximálny počet paralelných obchodov zmenený na: {count}")
+        send_telegram_msg(f"⚙️ <b>Zmena nastavenia:</b> Bot môže teraz otvoriť naraz max. <b>{count} obchody</b> (kapitál sa rozdelí).")
+        return JSONResponse({"status": "success", "max_parallel": count})
+    return JSONResponse({"status": "error", "message": "Neplatná hodnota."})
+
 @app.post("/api/set-tf/{tf_val}")
 async def set_tf(tf_val: str):
     global CURRENT_TIMEFRAME, SETTINGS
@@ -679,18 +691,22 @@ async def manual_buy(coin: str):
                 return JSONResponse({"status": "error", "message": "Bot je pozastavený."})
             
             coin_upper = coin.upper().strip()
-            if len(ACTIVE_TRADES) >= MAX_PARALLEL_TRADES or coin_upper in ACTIVE_TRADES:
-                return JSONResponse({"status": "error", "message": "Pozícia už je aktívna."})
+            max_allowed = SETTINGS.get("max_parallel", 1)
+            
+            if len(ACTIVE_TRADES) >= max_allowed or coin_upper in ACTIVE_TRADES:
+                return JSONResponse({"status": "error", "message": "Dosiahnutý limit paralelných pozícií alebo minca už je aktívna."})
             
             okx_symbol = f"{coin_upper}-USDC"
             stable_ccy = "USDC"
             free_capital = fetch_account_capital(stable_ccy)
             budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
             
+            allocated_capital_base = free_capital / max_allowed
+            
             if SETTINGS.get("compounding_enabled", False):
-                safe_budget = min(free_capital * 0.98, free_capital)
+                safe_budget = min(allocated_capital_base * 0.98, allocated_capital_base)
             else:
-                safe_budget = min(free_capital * 0.98, budget_cap)
+                safe_budget = min(allocated_capital_base * 0.98, budget_cap)
 
             if safe_budget < 5.0:
                 return JSONResponse({"status": "error", "message": "Nedostatok prostriedkov."})
@@ -795,7 +811,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper PRO v5.6.2 Terminal</title>
+    <title>Apex Scalper PRO v5.6.3 Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -863,6 +879,15 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <!-- TF Profily -->
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
+
+                <!-- Paralelné obchody (1, 2, 3, 4) -->
+                <div style="display: flex; gap: 2px; align-items: center; border: 1px solid var(--border-hover); padding: 2px 4px; border-radius: 4px; background: rgba(255,255,255,0.01);">
+                    <span style="font-size: 0.65rem; color: var(--text-muted); margin-right: 2px;">PARALLEL:</span>
+                    <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1</button>
+                    <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2</button>
+                    <button class="parallel-btn btn {% if SETTINGS.max_parallel == 3 %}btn-yellow{% endif %}" data-val="3" onclick="setParallel(3)">3</button>
+                    <button class="parallel-btn btn {% if SETTINGS.max_parallel == 4 %}btn-yellow{% endif %}" data-val="4" onclick="setParallel(4)">4</button>
+                </div>
 
                 <!-- Rozpočet -->
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
@@ -1002,6 +1027,19 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 document.querySelectorAll('.budget-btn').forEach(b => {
                     b.classList.remove('btn-yellow');
                     if (parseInt(b.getAttribute('data-val')) === amount) {
+                        b.classList.add('btn-yellow');
+                    }
+                });
+            }
+        }
+
+        async function setParallel(count) {
+            let res = await fetch(`/api/set-parallel/${count}`, {method: 'POST'});
+            let data = await res.json();
+            if (data.status === 'success') {
+                document.querySelectorAll('.parallel-btn').forEach(b => {
+                    b.classList.remove('btn-yellow');
+                    if (parseInt(b.getAttribute('data-val')) === count) {
                         b.classList.add('btn-yellow');
                     }
                 });
