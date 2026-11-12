@@ -252,7 +252,7 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
-# --- 🧠 PINE SCRIPT LOGIKA (ALL GREEN) V PYTHONE ---
+# --- 🧠 PINE SCRIPT LOGIKA (ALL GREEN) V PYTHONE (ZOSÚLADENÉ S VÁŠIM SKRIPTOM) ---
 def calc_ema(values, length):
     if len(values) < length:
         return [values[-1]] * len(values)
@@ -267,23 +267,18 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m") -> bool:
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=50"
         res = okx_request("GET", url)
         if res.get("code") != "0" or not res.get("data"):
-            return false
+            return False
         
         candles = res["data"]
         candles.reverse()
         
-        ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
+        ha_closes, ha_opens, volumes = [], [], []
         for i, c in enumerate(candles):
             o, h, l, cl, v = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4]), safe_float(c[5])
             ha_cl = (o + h + l + cl) / 4.0
             ha_op = (o + cl) / 2.0 if i == 0 else (ha_opens[-1] + ha_closes[-1]) / 2.0
-            ha_hi = max(h, ha_op, ha_cl)
-            ha_lo = min(l, ha_op, ha_cl)
-            
             ha_closes.append(ha_cl)
             ha_opens.append(ha_op)
-            ha_highs.append(ha_hi)
-            ha_lows.append(ha_lo)
             volumes.append(v)
             
         vol_dirs = [v if ha_closes[i] > ha_opens[i] else -v for i, v in enumerate(volumes)]
@@ -297,14 +292,15 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m") -> bool:
         curr_osc, prev_osc = oscillator[-1], oscillator[-2]
         curr_sig, prev_sig = signal_line[-1], signal_line[-2]
         
-        cond_vol_bullish = curr_osc > 0 and curr_osc > curr_sig
-        cond_vol_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
+        # Presná podmienka All Green z vášho Pine Scriptu
+        cond_volume_bullish = curr_osc > 0 and curr_osc > curr_sig
+        cond_volume_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
         
         curr_close, prev_close = ha_closes[-1], ha_closes[-2]
         curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
-        all_green_condition = cond_vol_bullish and (cond_vol_crossover or close_crossover_ema9)
+        all_green_condition = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
         return all_green_condition
     except Exception:
         return False
@@ -509,7 +505,6 @@ async def advanced_risk_monitor_loop():
                     pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
                     invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
                     pnl_usdc = invested * (pnl_pct / 100.0)
-                    current_total_value = invested + pnl_usdc
                     
                     target_pct = trade_settings.get("target_pct", 0.75)
                     
