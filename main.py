@@ -796,7 +796,7 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
-# --- VIZUÁLNA HTML ŠABLÓNA (ČIERNA + ŽLTÉ OKRAJE + ZELENÉ/ČERVENÉ STAVY) ---
+# --- VIZUÁLNA HTML ŠABLÓNA (JEMNÉ ŠEDÉ OKRAJE BEZ ŽTOJCH RÁMIKOV) ---
 
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
@@ -809,8 +809,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         :root {
             --bg-color: #000000;
             --card-bg: #0c0c0c;
-            --border-color: #facc15;
-            --border-hover: #eab308;
+            --border-color: #2e3440;
+            --border-hover: #4c566a;
             --text-main: #ffffff;
             --text-muted: #888888;
             --accent-white: #ffffff;
@@ -828,7 +828,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
         
         .btn { background: #000000; border: 1px solid var(--border-color); color: var(--text-main); padding: 6px 12px; font-size: 0.7rem; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px; }
-        .btn:hover { background: #1a1a1a; }
+        .btn:hover { background: #1a1a1a; border-color: var(--border-hover); }
         
         .btn-on { background: rgba(16, 185, 129, 0.2) !important; color: var(--green) !important; border-color: var(--green) !important; }
         .btn-off { background: rgba(239, 68, 68, 0.2) !important; color: var(--red) !important; border-color: var(--red) !important; }
@@ -846,12 +846,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .stat-title { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; }
         .stat-value { font-size: 1.15rem; font-weight: 700; margin-top: 4px; color: var(--accent-white); }
         
-        .section-title { font-size: 0.72rem; text-transform: uppercase; color: var(--yellow); letter-spacing: 1px; margin-top: 8px; margin-bottom: 5px; font-weight: 600; }
+        .section-title { font-size: 0.72rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-top: 8px; margin-bottom: 5px; font-weight: 600; }
         .terminal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
         
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.75rem; }
-        th { color: var(--yellow); font-weight: 600; padding: 10px 14px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; background: rgba(250, 204, 21, 0.05); position: sticky; top: 0; z-index: 2; }
-        td { padding: 10px 14px; border-bottom: 1px solid #222; color: var(--text-main); }
+        th { color: var(--text-muted); font-weight: 600; padding: 10px 14px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; background: rgba(255, 255, 255, 0.02); position: sticky; top: 0; z-index: 2; }
+        td { padding: 10px 14px; border-bottom: 1px solid #1f232b; color: var(--text-main); }
         tr:last-child td { border-bottom: none; }
         
         .scrollable-card { max-height: 180px; overflow-y: auto; }
