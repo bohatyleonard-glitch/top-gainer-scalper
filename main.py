@@ -29,7 +29,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
     "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m"},
-    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 8m"},
+    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "desc": "Manuál 8m"},
     "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.5, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"},
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.3, "target_pct": 1.2, "desc": "30m trendový"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.8, "ttp_callback_pct": 0.4, "target_pct": 1.5, "desc": "45m strednodobý"},
@@ -843,7 +843,7 @@ HTML_TEMPLATE_CONTENT = """
     <div class="header">
         <div>
             <h2>Apex Scalper PRO <span id="header-tf" style="font-size:0.9rem; color:var(--text-muted);">{{ CURRENT_TIMEFRAME }}</span></h2>
-            <div style="font-size: 0.85rem; color: var(--text-muted);">Zostatok: <span id="header-balance" style="color:var(--text); font-weight:bold;">{{ balance:.2f }} USDC</span></div>
+            <div style="font-size: 0.85rem; color: var(--text-muted);">Zostatok: <span id="header-balance" style="color:var(--text); font-weight:bold;">{{ balance | round(2) }} USDC</span></div>
         </div>
         <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
             <div style="display: flex; gap: 2px; align-items: center; border: 1px solid var(--border-hover); padding: 2px 4px; border-radius: 4px; background: rgba(255,255,255,0.01);">
