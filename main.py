@@ -170,7 +170,7 @@ def okx_request(method: str, path: str, body: str = ""):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# 🛠️ OPRAVA ALL OPERATIONS FAILED: POMOCNÉ FUNKCIE PRE LOTSZ A MINSZ
+# 🛠️ ROBUSTNÁ OPRAVA LOTSZ A MINSZ PRE OKX SPOT API
 def get_instrument_rules(symbol: str):
     try:
         res = okx_request("GET", f"/api/v5/public/instruments?instType=SPOT&instId={symbol}")
@@ -186,13 +186,24 @@ def get_instrument_rules(symbol: str):
 def format_amount(amount: float, lot_sz: float, min_sz: float) -> str:
     if amount < min_sz:
         return ""
+    # Určenie presného počtu desatinných miest z lotSz
     precision = 0
     if lot_sz < 1:
-        precision = len(str(lot_sz).split('.')[1]) if '.' in str(lot_sz) else 0
-    steps = math.floor(amount / lot_sz)
-    valid_amount = round(steps * lot_sz, precision)
+        parts = f"{lot_sz:.8f}".rstrip('0').split('.')
+        if len(parts) > 1:
+            precision = len(parts[1])
+            
+    # Výpočet zaokrúhlenia podľa lotSz krokovania
+    steps = round(amount / lot_sz)
+    valid_amount = steps * lot_sz
+    
+    if valid_amount < min_sz:
+        # Ak sme zaokrúhlením klesli pod minSz, skúsime ísť o jeden krok nahor
+        valid_amount = (steps + 1) * lot_sz
+        
     if valid_amount < min_sz:
         return ""
+        
     return f"{valid_amount:.{precision}f}"
 
 def fetch_account_capital(stable_ccy="USDC") -> float:
@@ -376,7 +387,6 @@ async def execute_autonomous_buy(okx_symbol: str):
         current_price = safe_float(ticker_res["data"][0]["last"])
         raw_amount = safe_budget / current_price
         
-        # 🛠️ DYNAMICKÝ REŠPEKT PRE LOTSZ A MINSZ
         lot_sz, min_sz = get_instrument_rules(okx_symbol)
         formatted_sz = format_amount(raw_amount, lot_sz, min_sz)
         
