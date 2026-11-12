@@ -18,22 +18,22 @@ OKX_SECRET = os.getenv("OKX_SECRET", "FBD5C8332D88E3ED5662470CA9C3E813")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Novyzeland111/")
 WEBHOOK_SECRET = "moje_tajne_heslo_123"
 
-# --- 📱 TELEGRAM NOTIFIKÁCIE & INTERAKTÍVNE BOT OVLÁDANIE ---
+# --- 📱 TELEGRAM NOTIFIKÁCIE & INTERAKTÍVNY BOT ---
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
 # --- 📊 DYNAMICKÉ PROFILY PRE ČASOVÉ RÁMCE ---
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
-    "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m (Bez % podmienok)"},
-    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 8m (Bez % podmienok)"},
+    "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m"},
+    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 8m"},
     "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.5, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"},
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.3, "target_pct": 1.2, "desc": "30m trendový"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.8, "ttp_callback_pct": 0.4, "target_pct": 1.5, "desc": "45m strednodobý"},
-    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.5, "ttp_callback_pct": 0.5, "target_pct": 1.7, "desc": "1h hodinový swing"},
-    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.5, "ttp_callback_pct": 0.7, "target_pct": 2.0, "desc": "2h dvojhodinový trend"},
+    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.5, "ttp_callback_pct": 0.5, "target_pct": 1.7, "desc": "1h swing"},
+    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.5, "ttp_callback_pct": 0.7, "target_pct": 2.0, "desc": "2h trend"},
     "3h": {"trail_pct": 4.0, "be_trigger_pct": 3.0, "ttp_trigger_pct": 5.0, "ttp_callback_pct": 1.0, "target_pct": 3.0, "desc": "3h pozičný"},
-    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 7.0, "ttp_callback_pct": 1.5, "target_pct": 3.5, "desc": "4h masívny swing"}
+    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 7.0, "ttp_callback_pct": 1.5, "target_pct": 3.5, "desc": "4h swing"}
 }
 
 ACTIVE_TRADES = {}
@@ -46,11 +46,12 @@ MAX_PARALLEL_TRADES = 1
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
-CURRENT_TIMEFRAME = "15M"  # Predvolený TF
+CURRENT_TIMEFRAME = "15M"
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC"]
 
-TOP_LIQUID_SYMBOLS = ["SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC", "LINK-USDC", "DOGE-USDC", "PEPE-USDC"]
+# Top likvidné symboly pre skenovanie (s 24h objemovým filtrom)
+TOP_LIQUID_SYMBOLS = ["SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC", "LINK-USDC", "DOGE-USDC", "PEPE-USDC", "NEAR-USDC", "RUNE-USDC", "RENDER-USDC"]
 
 SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
 SETTINGS.update({
@@ -170,7 +171,7 @@ def okx_request(method: str, path: str, body: str = ""):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-# 🛠️ ROBUSTNÁ OPRAVA LOTSZ A MINSZ PRE OKX SPOT API
+# 🛠️ POMOCNÉ FUNKCIE PRE LOTSZ A MINSZ
 def get_instrument_rules(symbol: str):
     try:
         res = okx_request("GET", f"/api/v5/public/instruments?instType=SPOT&instId={symbol}")
@@ -186,24 +187,13 @@ def get_instrument_rules(symbol: str):
 def format_amount(amount: float, lot_sz: float, min_sz: float) -> str:
     if amount < min_sz:
         return ""
-    # Určenie presného počtu desatinných miest z lotSz
     precision = 0
     if lot_sz < 1:
-        parts = f"{lot_sz:.8f}".rstrip('0').split('.')
-        if len(parts) > 1:
-            precision = len(parts[1])
-            
-    # Výpočet zaokrúhlenia podľa lotSz krokovania
-    steps = round(amount / lot_sz)
-    valid_amount = steps * lot_sz
-    
-    if valid_amount < min_sz:
-        # Ak sme zaokrúhlením klesli pod minSz, skúsime ísť o jeden krok nahor
-        valid_amount = (steps + 1) * lot_sz
-        
+        precision = len(str(lot_sz).split('.')[1]) if '.' in str(lot_sz) else 0
+    steps = math.floor(amount / lot_sz)
+    valid_amount = round(steps * lot_sz, precision)
     if valid_amount < min_sz:
         return ""
-        
     return f"{valid_amount:.{precision}f}"
 
 def fetch_account_capital(stable_ccy="USDC") -> float:
@@ -254,7 +244,8 @@ def update_top_liquid_symbols():
                 if coin in ["BTC", "ETH"]:
                     continue
                 vol = safe_float(t.get("volCcy24h", 0))
-                if vol > 0:
+                # Filter minimálneho 24h objemu na 500k USDC, aby sa eliminovali nelikvidné coiny
+                if vol >= 500000.0:
                     valid.append((inst_id, vol))
             valid.sort(key=lambda x: x[1], reverse=True)
             top_20 = [item[0] for item in valid[:20]]
@@ -368,12 +359,13 @@ async def execute_autonomous_buy(okx_symbol: str):
         free_capital = fetch_account_capital(stable_ccy)
         budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
         
+        # LOGIKA COMPOUNDING vs PEVNÝ ROZPOČET
         if SETTINGS.get("compounding_enabled", False):
-            safe_budget = min(free_capital * 0.98, budget_cap)
-            log_event(f"🔄 Compounding AKTÍVNY: Používam zostatok ({free_capital:.2f} USDC) do stropu {budget_cap}$")
+            safe_budget = min(free_capital * 0.98, free_capital)
+            log_event(f"🔄 Compounding AKTÍVNY: Reinvestujem plný zostatok účtu ({safe_budget:.2f} USDC)")
         else:
             safe_budget = min(free_capital * 0.98, budget_cap)
-            log_event(f"⚙️ Compounding VYPNUTÝ: Používam pevný rozpočet {budget_cap}$")
+            log_event(f"⚙️ Compounding VYPNUTÝ: Používam pevný rozpočet {budget_cap} USDC")
 
         if safe_budget < 5.0:
             log_event(f"❌ Nedostatok USDC prostriedkov: {free_capital}")
@@ -438,7 +430,7 @@ async def execute_autonomous_buy(okx_symbol: str):
         }
         
         target_str = f"+{target_pct}%"
-        log_event(f"🛒 Autonómny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Target: {target_str}")
+        log_event(f"🛒 Autonómny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Investícia: {actual_spent_usdc:.2f} USDC")
         
         inline_keyboard = {
             "inline_keyboard": [
@@ -532,6 +524,7 @@ async def advanced_risk_monitor_loop():
                                     trade["amount"] = round(trade["amount"] - float(half_sz), 6)
                                     trade["partial_sold"] = True
                                     part_pnl_usdc = (invested / 2.0) * (pnl_pct / 100.0)
+                                    trade["second_half_pnl_usdc"] = part_pnl_usdc
                                     record_closed_trade(symbol, pnl_pct, part_pnl_usdc, f"Scaling Out 50% (+{target_pct}%)")
                                     log_event(f"🎯 Scaling Out 50% pre {symbol} pri {pnl_pct:+.2f}% | Polovica odpredaná!")
                                     send_telegram_msg(f"🎯 <b>SCALING OUT 50% SPLNENÝ</b>\n<b>Pár:</b> {symbol}\n<b>Cieľ:</b> +{target_pct}%")
@@ -603,11 +596,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.1 spustený (Pine Script v Pythone, TF 15M, TP 0.75%).")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.2 spustený (Pine Script v Pythone, TF 15M, TP 0.75%).")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 <b>Autonómny Apex Scalper PRO v5.6.1 plne pripravený a beží!</b>")
+    send_telegram_msg("🚀 <b>Autonómny Apex Scalper PRO v5.6.2 plne pripravený a beží!</b>")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -694,7 +687,11 @@ async def manual_buy(coin: str):
             free_capital = fetch_account_capital(stable_ccy)
             budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
             
-            safe_budget = min(free_capital * 0.98, budget_cap)
+            if SETTINGS.get("compounding_enabled", False):
+                safe_budget = min(free_capital * 0.98, free_capital)
+            else:
+                safe_budget = min(free_capital * 0.98, budget_cap)
+
             if safe_budget < 5.0:
                 return JSONResponse({"status": "error", "message": "Nedostatok prostriedkov."})
             
@@ -798,7 +795,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper PRO v5.6.1 Terminal</title>
+    <title>Apex Scalper PRO v5.6.2 Terminal</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -857,7 +854,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="brand">
                 <h1>APEX SCALPER // AUTO-PILOT (Pine Script All Green)</h1>
                 <p>
-                    <span id="header-pair">Top 20 USDC · OKX Demo</span>
+                    <span id="header-pair">Top USDC · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
                     <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span> (TP +0.75%)</span>
                 </p>
@@ -934,7 +931,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Autonómny skener priebežne vyhodnocuje Top 20 likvidných USDC párov...</td></tr>
+                        <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Autonómny skener priebežne vyhodnocuje Top likvidné USDC páry...</td></tr>
                     </tbody>
                 </table>
             </div>
