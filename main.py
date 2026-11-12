@@ -318,7 +318,10 @@ async def autonomous_scanner_loop():
             if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
                 if check_btc_health():
                     tf_str = CURRENT_TIMEFRAME.lower()
-                    for symbol in TOP_LIQUID_SYMBOLS:
+                    for symbol in list(TOP_LIQUID_SYMBOLS):
+                        if not IS_BOT_ACTIVE or len(ACTIVE_TRADES) >= SETTINGS.get("max_parallel", 1):
+                            break
+
                         coin_name = symbol.split("-")[0]
                         now_ts = datetime.now().timestamp()
 
@@ -329,7 +332,8 @@ async def autonomous_scanner_loop():
                         if signal_met:
                             log_event(f"🚀 PINE SCRIPT 'ALL GREEN' SIGNÁL DETEGOVANÝ PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
-                            break
+                            
+                        await asyncio.sleep(0.3)
         except Exception as e:
             log_event(f"⚠️ Chyba v autonómnom skeneri: {e}")
         await asyncio.sleep(30)
