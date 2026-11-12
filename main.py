@@ -52,7 +52,6 @@ CURRENT_TIMEFRAME = "15M"
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC"]
 
-# Top likvidné symboly pre skenovanie (s 24h objemovým filtrom)
 TOP_LIQUID_SYMBOLS = ["SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC", "LINK-USDC", "DOGE-USDC", "PEPE-USDC", "NEAR-USDC", "RUNE-USDC", "RENDER-USDC"]
 
 SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
@@ -62,7 +61,7 @@ SETTINGS.update({
     "use_breakeven": True,
     "max_budget_cap": 1000.0,
     "compounding_enabled": False,
-    "max_parallel": 1  # Predvolený počet paralelných obchodov (nastaviteľný z UI)
+    "max_parallel": 1
 })
 
 def log_event(message: str):
@@ -595,7 +594,7 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.3 spustený (S podporou dynamických paralelných obchodov a 98% alokácie).")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.3 spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
@@ -663,7 +662,7 @@ async def set_parallel(count: int):
     if count in [1, 2, 3, 4]:
         SETTINGS["max_parallel"] = count
         log_event(f"⚙️ Maximálny počet paralelných obchodov zmenený na: {count}")
-        send_telegram_msg(f"⚙️ Zmena nastavenia: Bot môže teraz otvoriť naraz max. {count} obchody (kapitál sa rozdelí).")
+        send_telegram_msg(f"⚙️ Zmena nastavenia: Bot môže teraz otvoriť naraz max. {count} obchody.")
         return JSONResponse({"status": "success", "max_parallel": count})
     return JSONResponse({"status": "error", "message": "Neplatná hodnota."})
 
@@ -685,18 +684,16 @@ async def manual_buy(coin: str):
         try:
             if not IS_BOT_ACTIVE:
                 return JSONResponse({"status": "error", "message": "Bot je pozastavený."})
-
+            
             coin_upper = coin.upper().strip()
             max_allowed = SETTINGS.get("max_parallel", 1)
-            
             if len(ACTIVE_TRADES) >= max_allowed or coin_upper in ACTIVE_TRADES:
-                return JSONResponse({"status": "error", "message": "Dosiahnutý limit paralelných pozícií alebo minca už je aktívna."})
+                return JSONResponse({"status": "error", "message": "Dosiahnutý limit paralelných pozícií alebo pozícia už existuje."})
             
             okx_symbol = f"{coin_upper}-USDC"
             stable_ccy = "USDC"
             free_capital = fetch_account_capital(stable_ccy)
             budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
-            
             allocated_capital_base = free_capital / max_allowed
             
             if SETTINGS.get("compounding_enabled", False):
@@ -713,11 +710,11 @@ async def manual_buy(coin: str):
             
             current_price = safe_float(ticker_res["data"][0]["last"])
             raw_amount = safe_budget / current_price
+            
             lot_sz, min_sz = get_instrument_rules(okx_symbol)
             formatted_sz = format_amount(raw_amount, lot_sz, min_sz)
-            
             if not formatted_sz:
-                return JSONResponse({"status": "error", "message": f"Nedosahuje minimálnu veľkosť pre OKX ({min_sz})"})
+                return JSONResponse({"status": "error", "message": f"Množstvo pod minimom minSz ({min_sz})"})
             
             order_body = json.dumps({
                 "instId": okx_symbol, "tdMode": "cash", "side": "buy",
@@ -726,8 +723,7 @@ async def manual_buy(coin: str):
             
             order_res = okx_request("POST", "/api/v5/trade/order", order_body)
             if order_res.get("code") != "0":
-                err_msg = order_res.get('msg', 'Neznáma chyba OKX')
-                return JSONResponse({"status": "error", "message": err_msg})
+                return JSONResponse({"status": "error", "message": order_res.get('msg', 'Neznáma chyba OKX')})
             
             coin_amount = float(formatted_sz)
             actual_spent_usdc = coin_amount * current_price
@@ -777,7 +773,7 @@ async def sell_now():
             try:
                 ticker_res = okx_request("GET", f"/api/v5/market/ticker?instId={symbol}")
                 curr_p = safe_float(ticker_res['data'][0]['last']) if ticker_res.get('code') == '0' and ticker_res.get('data') else trade["entry_price"]
-
+                
                 fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
                 if fmt_sz:
                     order_body = json.dumps({
@@ -800,331 +796,411 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
-HTML_TEMPLATE_CONTENT = """
-<!DOCTYPE html>
+# --- VIZUÁLNA HTML ŠABLÓNA (ČIERNA + ŽLTÉ OKRAJE + ZELENÉ/ČERVENÉ STAVY) ---
+
+HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
-    <title>Apex Scalper PRO</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apex Scalper PRO Terminal</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        :root { --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --text-muted: #94a3b8; --border: #334155; --border-hover: #475569; }
-        body { background: var(--bg); color: var(--text); font-family: sans-serif; margin: 0; padding: 20px; }
-        .container { max-width: 1200px; margin: auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; background: var(--card); padding: 15px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 20px; }
-        .btn { background: var(--border); color: var(--text); border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; }
-        .btn-on { background: #10b981; color: white; }
-        .btn-off { background: #ef4444; color: white; }
-        .btn-yellow { background: #f59e0b; color: white; }
-        .btn-sell { background: #dc2626; color: white; }
-        .status-ticker { background: var(--card); padding: 10px 15px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
-        .status-dot { width: 10px; height: 10px; background: #10b981; border-radius: 50%; animation: pulse 1.5s infinite; }
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
-        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; }
-        .stat-card { background: var(--card); padding: 15px; border-radius: 8px; border: 1px solid var(--border); }
-        .stat-title { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 5px; }
-        .stat-value { font-size: 1.25rem; font-weight: bold; }
-        .terminal-card { background: var(--card); border-radius: 8px; border: 1px solid var(--border); overflow: hidden; margin-bottom: 20px; }
-        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; }
-        th, td { padding: 12px 15px; border-bottom: 1px solid var(--border); }
-        th { background: rgba(255,255,255,0.02); color: var(--text-muted); }
-        .scrollable-card { max-height: 300px; overflow-y: auto; }
-        .logs-box { background: #020617; border: 1px solid var(--border); border-radius: 8px; padding: 15px; font-family: monospace; font-size: 0.85rem; max-height: 200px; overflow-y: auto; color: #38bdf8; }
-        .log-line { margin-bottom: 4px; }
-        .section-title { font-size: 1rem; font-weight: bold; margin-bottom: 10px; color: var(--text-muted); }
-        .text-green { color: #10b981; }
-        .text-red { color: #ef4444; }
-        .text-yellow-highlight { color: #f59e0b; }
-        .custom-buy-box { display: flex; gap: 5px; }
-        .custom-buy-input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; width: 70px; }
+        :root {
+            --bg-color: #000000;
+            --card-bg: #0c0c0c;
+            --border-color: #facc15;
+            --border-hover: #eab308;
+            --text-main: #ffffff;
+            --text-muted: #888888;
+            --accent-white: #ffffff;
+            --green: #10b981;
+            --red: #ef4444;
+            --yellow: #facc15;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; }
+        body { background-color: var(--bg-color); color: var(--text-main); padding: 16px; min-height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
+        .container { max-width: 1250px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
+        .top-bar { display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--border-color); background: var(--card-bg); padding: 15px 20px; border-radius: 6px; flex-wrap: wrap; gap: 12px; }
+        .brand h1 { font-size: 1.05rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
+        .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.8px; display: flex; gap: 12px; flex-wrap: wrap; }
+        .balance-tag { color: var(--yellow); font-weight: 700; }
+        .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+        
+        .btn { background: #000000; border: 1px solid var(--border-color); color: var(--text-main); padding: 6px 12px; font-size: 0.7rem; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px; }
+        .btn:hover { background: #1a1a1a; }
+        
+        .btn-on { background: rgba(16, 185, 129, 0.2) !important; color: var(--green) !important; border-color: var(--green) !important; }
+        .btn-off { background: rgba(239, 68, 68, 0.2) !important; color: var(--red) !important; border-color: var(--red) !important; }
+        .btn-yellow { background: rgba(250, 204, 21, 0.2) !important; color: var(--yellow) !important; border-color: var(--yellow) !important; font-weight: 700 !important; }
+        
+        .btn-sell { background: rgba(239, 68, 68, 0.2); color: var(--red); border-color: var(--red); font-weight: 700; }
+        .btn-sell:hover { background: var(--red); color: #fff; }
+        .btn-sell:disabled { opacity: 0.25; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
+        
+        .status-ticker { font-size: 0.75rem; color: var(--yellow); background: var(--card-bg); border: 1px solid var(--border-color); padding: 10px 18px; border-radius: 6px; display: flex; align-items: center; gap: 10px; font-weight: 600; }
+        .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
+        
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+        .stat-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 12px 16px; }
+        .stat-title { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; }
+        .stat-value { font-size: 1.15rem; font-weight: 700; margin-top: 4px; color: var(--accent-white); }
+        
+        .section-title { font-size: 0.72rem; text-transform: uppercase; color: var(--yellow); letter-spacing: 1px; margin-top: 8px; margin-bottom: 5px; font-weight: 600; }
+        .terminal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
+        
+        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.75rem; }
+        th { color: var(--yellow); font-weight: 600; padding: 10px 14px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; background: rgba(250, 204, 21, 0.05); position: sticky; top: 0; z-index: 2; }
+        td { padding: 10px 14px; border-bottom: 1px solid #222; color: var(--text-main); }
+        tr:last-child td { border-bottom: none; }
+        
+        .scrollable-card { max-height: 180px; overflow-y: auto; }
+        .logs-box { 
+            background: var(--card-bg); 
+            border: 1px solid var(--border-color); 
+            border-radius: 6px; 
+            padding: 12px 16px; 
+            height: 200px; 
+            max-height: 200px;
+            overflow-y: auto; 
+            font-size: 0.7rem; 
+            color: var(--green); 
+            display: flex; 
+            flex-direction: column; 
+            gap: 6px; 
+        }
+        .log-line { 
+            white-space: pre-wrap; 
+            word-break: break-all; 
+            line-height: 1.4;
+            border-bottom: 1px dashed rgba(255,255,255,0.05);
+            padding-bottom: 4px;
+        }
+        .text-green { color: var(--green); font-weight: 700; }
+        .text-red { color: var(--red); font-weight: 700; }
+        .text-yellow-highlight { color: var(--yellow); font-weight: 700; }
+        
+        .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-color); padding: 2px 6px; border-radius: 4px; background: #000; }
+        .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 65px; outline: none; text-transform: uppercase; font-weight: 600; }
     </style>
 </head>
 <body>
-<div class="container">
-    <div class="header">
+    <div class="container">
+        <div class="top-bar">
+            <div class="brand">
+                <h1>APEX SCALPER // PRO TERMINAL</h1>
+                <p>
+                    <span id="header-pair">Multi-TF · OKX Demo</span>
+                    <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
+                    <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
+                </p>
+            </div>
+            <div class="actions">
+                <!-- TF Profily -->
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '5M' %}btn-yellow{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
+
+                <!-- Rozpočet -->
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
+
+                <!-- Paralelné pozície -->
+                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
+                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
+                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 3 %}btn-yellow{% endif %}" data-val="3" onclick="setParallel(3)">3x</button>
+
+                <!-- Vlastný Manuálny Nákup -->
+                <div class="custom-buy-box">
+                    <input type="text" id="custom-coin" class="custom-buy-input" placeholder="BTC/ETH">
+                    <button class="btn btn-on" style="padding: 2px 6px;" onclick="manualBuyCustom()">🚀 BUY</button>
+                </div>
+
+                <!-- Rýchle tlačidlá -->
+                <button class="btn btn-on" onclick="manualBuy('SOL')">SOL</button>
+                <button class="btn btn-on" onclick="manualBuy('SUI')">SUI</button>
+
+                <!-- Prepínače -->
+                <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-on{% else %}btn-off{% endif %}" onclick="toggleCompounding()">
+                    COMPOUNDING: {% if SETTINGS.compounding_enabled %}ON{% else %}OFF{% endif %}
+                </button>
+                <button id="btc-btn" class="btn {% if SETTINGS.use_btc_filter %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBtcFilter()">
+                    BTC: {% if SETTINGS.use_btc_filter %}ON{% else %}OFF{% endif %}
+                </button>
+                <button id="bot-btn" class="btn {% if IS_BOT_ACTIVE %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBot()">
+                    {% if IS_BOT_ACTIVE %}ACTIVE{% else %}PAUSED{% endif %}
+                </button>
+                <button id="sell-btn" class="btn btn-sell" onclick="sellNow()" disabled>EMERGENCY SELL</button>
+            </div>
+        </div>
+
+        <div class="status-ticker">
+            <div class="status-dot"></div>
+            <span id="current-stage">{{ CURRENT_STAGE }}</span>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-title">Win Rate</div>
+                <div class="stat-value" id="stat-winrate">0.0%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-title">Total Trades</div>
+                <div class="stat-value" id="stat-trades">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-title">Win / Loss</div>
+                <div class="stat-value" id="stat-winloss">0W / 0L</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-title">Net PnL</div>
+                <div class="stat-value" id="stat-pnl">+0.00 $</div>
+            </div>
+        </div>
+
         <div>
-            <h2>Apex Scalper PRO <span id="header-tf" style="font-size:0.9rem; color:var(--text-muted);">{{ CURRENT_TIMEFRAME }}</span></h2>
-            <div style="font-size: 0.85rem; color: var(--text-muted);">Zostatok: <span id="header-balance" style="color:var(--text); font-weight:bold;">{{ balance | round(2) }} USDC</span></div>
-        </div>
-        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-
-            <!-- Paralelné obchody (1, 2, 3, 4) -->
-            <div style="display: flex; gap: 2px; align-items: center; border: 1px solid var(--border-hover); padding: 2px 4px; border-radius: 4px; background: rgba(255,255,255,0.01);">
-                <span style="font-size: 0.65rem; color: var(--text-muted); margin-right: 2px;">PARALLEL:</span>
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1</button>
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2</button>
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 3 %}btn-yellow{% endif %}" data-val="3" onclick="setParallel(3)">3</button>
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 4 %}btn-yellow{% endif %}" data-val="4" onclick="setParallel(4)">4</button>
+            <div class="section-title">Active Positions & Autonomous Scanner Matrix</div>
+            <div class="terminal-card">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Pair / TF</th>
+                            <th>Entry Price</th>
+                            <th>Current Price</th>
+                            <th>Invested</th>
+                            <th>Live PnL (%)</th>
+                            <th>Live PnL ($)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="active-position-tbody">
+                        <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">No active positions. Scanning markets...</td></tr>
+                    </tbody>
+                </table>
             </div>
+        </div>
 
-            <!-- Rozpočet -->
-            <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
-            <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
-            <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
-            <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
-            <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
-
-            <!-- Vlastný Manuálny Nákup -->
-            <div class="custom-buy-box">
-                <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL/SUI">
-                <button class="btn btn-on" style="padding: 2px 6px;" onclick="manualBuyCustom()">🚀 BUY</button>
+        <div>
+            <div class="section-title">Execution History (3-Month Persistent Storage)</div>
+            <div class="terminal-card scrollable-card">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Pair</th>
+                            <th>Trigger Reason</th>
+                            <th>Net PnL</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-tbody">
+                        <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No closed trades recorded yet.</td></tr>
+                    </tbody>
+                </table>
             </div>
+        </div>
 
-            <!-- Prepínače -->
-            <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-yellow{% endif %}" onclick="toggleCompounding()">
-                COMPOUNDING: {% if SETTINGS.compounding_enabled %}ON{% else %}OFF{% endif %}
-            </button>
-            <button id="btc-btn" class="btn {% if SETTINGS.use_btc_filter %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBtcFilter()">
-                BTC: {% if SETTINGS.use_btc_filter %}ON{% else %}OFF{% endif %}
-            </button>
-            <button id="bot-btn" class="btn {% if IS_BOT_ACTIVE %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBot()">
-                {% if IS_BOT_ACTIVE %}● ACTIVE{% else %}○ PAUSED{% endif %}
-            </button>
-            <button id="sell-btn" class="btn btn-sell" onclick="sellNow()" disabled>⚡ EMERGENCY SELL</button>
+        <div>
+            <div class="section-title">System Execution Logs</div>
+            <div class="logs-box" id="logs-container">
+                <div class="log-line">[System Initialized] Čakám na prvé udalosti...</div>
+            </div>
         </div>
     </div>
 
-    <div class="status-ticker">
-        <div class="status-dot"></div>
-        <span id="current-stage">{{ CURRENT_STAGE }}</span>
-    </div>
-
-    <div class="stats-grid">
-        <div class="stat-card">
-            <div class="stat-title">Win Rate</div>
-            <div class="stat-value" id="stat-winrate">0.0%</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-title">Total Trades</div>
-            <div class="stat-value" id="stat-trades">0</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-title">Win / Loss</div>
-            <div class="stat-value" id="stat-winloss">0W / 0L</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-title">Net PnL</div>
-            <div class="stat-value" id="stat-pnl">+0.00 $</div>
-        </div>
-    </div>
-
-    <div>
-        <div class="section-title">Active Position Matrix (100% Exit)</div>
-        <div class="terminal-card">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Pair / TF</th>
-                        <th>Entry</th>
-                        <th>Current</th>
-                        <th>Status</th>
-                        <th>Position Size</th>
-                        <th>Live PnL (%)</th>
-                        <th>Total PnL (USDC)</th>
-                    </tr>
-                </thead>
-                <tbody id="active-position-tbody">
-                    <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Autonómny skener priebežne vyhodnocuje Top likvidné USDC páry...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <div>
-        <div class="section-title">Execution History (3-Month Persistent Storage)</div>
-        <div class="terminal-card scrollable-card">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Timestamp</th>
-                        <th>Pair</th>
-                        <th>Trigger Reason</th>
-                        <th>Net PnL</th>
-                    </tr>
-                </thead>
-                <tbody id="history-tbody">
-                    <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Zatiaľ žiadne ukončené obchody.</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <div>
-        <div class="section-title">System Execution Logs</div>
-        <div class="logs-box" id="logs-container">
-            <div class="log-line">[System Initialized] Autonómny režim pripravený.</div>
-        </div>
-    </div>
-</div>
-
-<script>
-    async function toggleBot() {
-        let res = await fetch('/api/toggle-bot', {method: 'POST'});
-        let data = await res.json();
-        let btn = document.getElementById('bot-btn');
-        btn.className = data.is_bot_active ? "btn btn-on" : "btn btn-off";
-        btn.innerText = data.is_bot_active ? "● ACTIVE" : "○ PAUSED";
-        updateState();
-    }
-
-    async function toggleBtcFilter() {
-        let res = await fetch('/api/toggle-btc-filter', {method: 'POST'});
-        let data = await res.json();
-        let btn = document.getElementById('btc-btn');
-        btn.className = data.use_btc_filter ? "btn btn-on" : "btn btn-off";
-        btn.innerText = data.use_btc_filter ? "BTC: ON" : "BTC: OFF";
-    }
-
-    async function toggleCompounding() {
-        let res = await fetch('/api/toggle-compounding', {method: 'POST'});
-        let data = await res.json();
-        let btn = document.getElementById('compounding-btn');
-        if (data.compounding_enabled) {
-            btn.className = "btn btn-yellow";
-            btn.innerText = "COMPOUNDING: ON";
-        } else {
-            btn.className = "btn";
-            btn.innerText = "COMPOUNDING: OFF";
-        }
-    }
-
-    async function setBudget(amount) {
-        let res = await fetch(`/api/set-budget/${amount}`, {method: 'POST'});
-        let data = await res.json();
-        if (data.status === 'success') {
-            document.querySelectorAll('.budget-btn').forEach(b => {
-                b.classList.remove('btn-yellow');
-                if (parseInt(b.getAttribute('data-val')) === amount) {
-                    b.classList.add('btn-yellow');
-                }
-            });
-        }
-    }
-
-    async function setParallel(count) {
-        let res = await fetch(`/api/set-parallel/${count}`, {method: 'POST'});
-        let data = await res.json();
-        if (data.status === 'success') {
-            document.querySelectorAll('.parallel-btn').forEach(b => {
-                b.classList.remove('btn-yellow');
-                if (parseInt(b.getAttribute('data-val')) === count) {
-                    b.classList.add('btn-yellow');
-                }
-            });
-        }
-    }
-
-    async function setTf(tfVal) {
-        let res = await fetch(`/api/set-tf/${tfVal}`, {method: 'POST'});
-        let data = await res.json();
-        if (data.status === 'success') {
-            document.querySelectorAll('.tf-btn').forEach(b => {
-                b.classList.remove('btn-yellow');
-                if (b.getAttribute('data-tf') === tfVal) {
-                    b.classList.add('btn-yellow');
-                }
-            });
-            document.getElementById('header-tf').innerText = data.tf;
-        }
-    }
-
-    async function manualBuyCustom() {
-        let coinInput = document.getElementById('custom-coin');
-        let coin = coinInput.value.trim().toUpperCase();
-        if (!coin) {
-            alert("Zadajte skratku tokenu (napr. SOL, SUI, XRP)!");
-            return;
-        }
-        if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDC za aktuálne zvolený rozpočet a TF?`)) return;
-        
-        let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
-        let data = await res.json();
-        if (data.status === 'success') {
-            coinInput.value = "";
-            updateState();
-        } else {
-            alert("Chyba pri manuálnom nákupe: " + data.message);
-        }
-    }
-
-    async function sellNow() {
-        if (!confirm("Naozaj vykonať núdzový okamžitý predaj všetkých pozícií?")) return;
-        await fetch('/api/sell-now', {method: 'POST'});
-        updateState();
-    }
-
-    async function updateState() {
-        try {
-            let res = await fetch('/api/state');
+    <script>
+        async function toggleBot() {
+            let res = await fetch('/api/toggle-bot', {method: 'POST'});
             let data = await res.json();
-            
-            document.getElementById('header-balance').innerText = data.balance.toFixed(2) + " USDC";
-            document.getElementById('current-stage').innerText = data.current_stage;
-            
-            let stats = data.stats;
-            document.getElementById('stat-winrate').innerText = stats.win_rate.toFixed(1) + "%";
-            document.getElementById('stat-trades').innerText = stats.total_trades;
-            document.getElementById('stat-winloss').innerText = stats.wins + "W / " + stats.losses + "L";
-            let pnlEl = document.getElementById('stat-pnl');
-            pnlEl.innerText = (stats.total_pnl >= 0 ? "+" : "") + stats.total_pnl.toFixed(2) + " $";
-            pnlEl.className = "stat-value " + (stats.total_pnl >= 0 ? "text-green" : "text-red");
-
-            let activeTbody = document.getElementById('active-position-tbody');
-            let sellBtn = document.getElementById('sell-btn');
-            if (Object.keys(data.active_trades).length > 0) {
-                let html = "";
-                for (let [coin, t] of Object.entries(data.active_trades)) {
-                    let pnlClass = t.live_pnl_pct >= 0 ? "text-green" : "text-red";
-                    let statusText = "⏳ V TRHU (ČAKÁ NA TP)";
-                    
-                    html += `<tr>
-                        <td><b>${t.market_pair}</b><br><span style="font-size:0.6rem; color:var(--text-muted);">TF: ${t.tf}</span></td>
-                        <td>${t.entry_price.toFixed(4)}</td>
-                        <td>${t.current_price.toFixed(4)}</td>
-                        <td><span class="text-yellow-highlight">${statusText}</span></td>
-                        <td>${t.amount.toFixed(2)} ks</td>
-                        <td class="${pnlClass}">${t.live_pnl_pct >= 0 ? "+" : ""}${t.live_pnl_pct.toFixed(2)}%</td>
-                        <td class="${pnlClass}">${t.live_pnl_usdc >= 0 ? "+" : ""}${t.live_pnl_usdc.toFixed(2)} $</td>
-                    </tr>`;
-                }
-                activeTbody.innerHTML = html;
-                sellBtn.disabled = false;
+            let btn = document.getElementById('bot-btn');
+            if (data.is_bot_active) {
+                btn.className = "btn btn-on";
+                btn.innerText = "ACTIVE";
             } else {
-                activeTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script All Green signály...</td></tr>`;
-                sellBtn.disabled = true;
+                btn.className = "btn btn-off";
+                btn.innerText = "PAUSED";
             }
-
-            let historyTbody = document.getElementById('history-tbody');
-            if (data.history.length > 0) {
-                let hHtml = "";
-                for (let h of data.history) {
-                    let pnlClass = h.pnl_usdc >= 0 ? "text-green" : "text-red";
-                    hHtml += `<tr>
-                        <td>${h.time}</td>
-                        <td><b>${h.pair}</b></td>
-                        <td>${h.reason}</td>
-                        <td class="${pnlClass}">${h.pnl_usdc >= 0 ? "+" : ""}${h.pnl_usdc.toFixed(2)} $ (${h.pnl_pct >= 0 ? "+" : ""}${h.pnl_pct.toFixed(2)}%)</td>
-                    </tr>`;
-                }
-                historyTbody.innerHTML = hHtml;
-            } else {
-                historyTbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Zatiaľ žiadne ukončené obchody.</td></tr>`;
-            }
-
-            let logsBox = document.getElementById('logs-container');
-            let lHtml = "";
-            for (let log of data.logs) {
-                lHtml += `<div class="log-line">${log}</div>`;
-            }
-            logsBox.innerHTML = lHtml;
-
-        } catch (err) {
-            console.error("Chyba pri obnove stavu:", err);
+            updateState();
         }
-    }
 
-    setInterval(updateState, 2000);
-    updateState();
-</script>
+        async function toggleBtcFilter() {
+            let res = await fetch('/api/toggle-btc-filter', {method: 'POST'});
+            let data = await res.json();
+            let btn = document.getElementById('btc-btn');
+            if (data.use_btc_filter) {
+                btn.className = "btn btn-on";
+                btn.innerText = "BTC: ON";
+            } else {
+                btn.className = "btn btn-off";
+                btn.innerText = "BTC: OFF";
+            }
+        }
+
+        async function toggleCompounding() {
+            let res = await fetch('/api/toggle-compounding', {method: 'POST'});
+            let data = await res.json();
+            let btn = document.getElementById('compounding-btn');
+            if (data.compounding_enabled) {
+                btn.className = "btn btn-on";
+                btn.innerText = "COMPOUNDING: ON";
+            } else {
+                btn.className = "btn btn-off";
+                btn.innerText = "COMPOUNDING: OFF";
+            }
+        }
+
+        async function setBudget(amount) {
+            let res = await fetch(`/api/set-budget/${amount}`, {method: 'POST'});
+            let data = await res.json();
+            if (data.status === 'success') {
+                document.querySelectorAll('.budget-btn').forEach(b => {
+                    b.classList.remove('btn-yellow');
+                    if (parseInt(b.getAttribute('data-val')) === amount) {
+                        b.classList.add('btn-yellow');
+                    }
+                });
+            }
+        }
+
+        async function setParallel(count) {
+            let res = await fetch(`/api/set-parallel/${count}`, {method: 'POST'});
+            let data = await res.json();
+            if (data.status === 'success') {
+                document.querySelectorAll('.parallel-btn').forEach(b => {
+                    b.classList.remove('btn-yellow');
+                    if (parseInt(b.getAttribute('data-val')) === count) {
+                        b.classList.add('btn-yellow');
+                    }
+                });
+            }
+        }
+
+        async function setTf(tfVal) {
+            let res = await fetch(`/api/set-tf/${tfVal}`, {method: 'POST'});
+            let data = await res.json();
+            if (data.status === 'success') {
+                document.querySelectorAll('.tf-btn').forEach(b => {
+                    b.classList.remove('btn-yellow');
+                    if (b.getAttribute('data-tf') === tfVal) {
+                        b.classList.add('btn-yellow');
+                    }
+                });
+                document.getElementById('header-tf').innerText = data.tf;
+            }
+        }
+
+        async function manualBuy(coin) {
+            if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDC za zvolený rozpočet?`)) return;
+            let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
+            let data = await res.json();
+            if (data.status === 'success') {
+                updateState();
+            } else {
+                alert("Chyba pri manuálnom nákupe: " + data.message);
+            }
+        }
+
+        async function manualBuyCustom() {
+            let coinInput = document.getElementById('custom-coin');
+            let coin = coinInput.value.trim().toUpperCase();
+            if (!coin) {
+                alert("Zadajte skratku tokenu (napr. BTC, ETH, ADA)!");
+                return;
+            }
+            if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDC?`)) return;
+            
+            let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
+            let data = await res.json();
+            if (data.status === 'success') {
+                coinInput.value = "";
+                updateState();
+            } else {
+                alert("Chyba pri manuálnom nákupe: " + data.message);
+            }
+        }
+
+        async function sellNow() {
+            if (!confirm("Naozaj vykonať núdzový predaj všetkých pozícií?")) return;
+            let res = await fetch('/api/sell-now', {method: 'POST'});
+            let data = await res.json();
+            updateState();
+        }
+
+        async function updateState() {
+            try {
+                let res = await fetch('/api/state');
+                let data = await res.json();
+                
+                document.getElementById('header-balance').innerText = data.balance.toFixed(2) + " USDC";
+                document.getElementById('current-stage').innerText = data.current_stage;
+                
+                let stats = data.stats;
+                document.getElementById('stat-winrate').innerText = stats.win_rate.toFixed(1) + "%";
+                document.getElementById('stat-trades').innerText = stats.total_trades;
+                document.getElementById('stat-winloss').innerText = stats.wins + "W / " + stats.losses + "L";
+                let pnlEl = document.getElementById('stat-pnl');
+                pnlEl.innerText = (stats.total_pnl >= 0 ? "+" : "") + stats.total_pnl.toFixed(2) + " $";
+                pnlEl.className = "stat-value " + (stats.total_pnl >= 0 ? "text-green" : "text-red");
+
+                let activeTbody = document.getElementById('active-position-tbody');
+                let sellBtn = document.getElementById('sell-btn');
+                if (Object.keys(data.active_trades).length > 0) {
+                    let html = "";
+                    for (let [coin, t] of Object.entries(data.active_trades)) {
+                        let pnlClass = t.live_pnl_pct >= 0 ? "text-green" : "text-red";
+                        let usdcClass = t.live_pnl_usdc >= 0 ? "text-green" : "text-red";
+                        
+                        html += `<tr>
+                            <td><b>${t.market_pair}</b><br><span style="font-size:0.6rem; color:var(--text-muted);">TF: ${t.tf}</span></td>
+                            <td>${t.entry_price.toFixed(4)}</td>
+                            <td>${t.current_price.toFixed(4)}</td>
+                            <td>${t.invested_usdc.toFixed(2)} USDC</td>
+                            <td class="${pnlClass}">${t.live_pnl_pct >= 0 ? "+" : ""}${t.live_pnl_pct.toFixed(2)}%</td>
+                            <td class="${usdcClass}">${t.live_pnl_usdc >= 0 ? "+" : ""}${t.live_pnl_usdc.toFixed(2)} $</td>
+                        </tr>`;
+                    }
+                    activeTbody.innerHTML = html;
+                    sellBtn.disabled = false;
+                } else {
+                    activeTbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">No active positions. Scanning markets...</td></tr>`;
+                    sellBtn.disabled = true;
+                }
+
+                let historyTbody = document.getElementById('history-tbody');
+                if (data.history.length > 0) {
+                    let hHtml = "";
+                    for (let h of data.history) {
+                        let pnlClass = h.pnl_usdc >= 0 ? "text-green" : "text-red";
+                        hHtml += `<tr>
+                            <td>${h.time}</td>
+                            <td><b>${h.pair}</b></td>
+                            <td>${h.reason}</td>
+                            <td class="${pnlClass}">${h.pnl_usdc >= 0 ? "+" : ""}${h.pnl_usdc.toFixed(2)} $ (${h.pnl_pct >= 0 ? "+" : ""}${h.pnl_pct.toFixed(2)}%)</td>
+                        </tr>`;
+                    }
+                    historyTbody.innerHTML = hHtml;
+                } else {
+                    historyTbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No closed trades recorded yet.</td></tr>`;
+                }
+
+                let logsBox = document.getElementById('logs-container');
+                let lHtml = "";
+                for (let log of data.logs) {
+                    lHtml += `<div class="log-line">${log}</div>`;
+                }
+                logsBox.innerHTML = lHtml;
+
+            } catch (err) {
+                console.error("Chyba pri obnove stavu:", err);
+            }
+        }
+
+        setInterval(updateState, 2000);
+        updateState();
+    </script>
 </body>
 </html>
 """
