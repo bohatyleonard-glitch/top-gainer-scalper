@@ -29,7 +29,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
     "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m"},
-    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "desc": "Manuál 8m"},
+    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 8m"},
     "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.5, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"},
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.3, "target_pct": 1.2, "desc": "30m trendový"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.8, "ttp_callback_pct": 0.4, "target_pct": 1.5, "desc": "45m strednodobý"},
@@ -45,7 +45,8 @@ CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na autonómny signál..."
 LAST_TRADE_TIME = {}
-UNSUPPORTED_DEMO_SYMBOLS = set()  # Pamäť na symboly, ktoré demo burza odmietla
+UNSUPPORTED_DEMO_SYMBOLS = set()
+MARKET_SCANNER_CACHE = {} # Živá cache pre stav všetkých skenovaných tokenov
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
@@ -274,7 +275,8 @@ def calc_ema(values, length):
         ema.append(price * alpha + ema[-1] * (1 - alpha))
     return ema
 
-def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m") -> bool:
+def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
+    global MARKET_SCANNER_CACHE
     try:
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=50"
         res = okx_request("GET", url)
@@ -312,6 +314,21 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m") -> bool:
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
         all_green_condition = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
+        
+        # Uloženie detailného stavu pre živú tabuľku 20 tokenov
+        coin_key = symbol.split("-")[0]
+        status_text = "🟢 ALL GREEN" if all_green_condition else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH")
+        if symbol in UNSUPPORTED_DEMO_SYMBOLS:
+            status_text = "⛔ DEMO NEPODPORUJE"
+
+        MARKET_SCANNER_CACHE[coin_key] = {
+            "symbol": symbol,
+            "price": curr_close,
+            "oscillator": round(curr_osc, 2),
+            "signal": status_text,
+            "is_green": all_green_condition
+        }
+
         return all_green_condition
     except Exception:
         return False
@@ -972,6 +989,26 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </div>
         </div>
 
+        <!-- NOVÁ ŽIVÁ TABUĽKA VŠETKÝCH 20 SKENOVANÝCH TOKENOV -->
+        <div>
+            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs)</div>
+            <div class="terminal-card scrollable-card" style="max-height: 220px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Token / Pár</th>
+                            <th>Aktuálna Cena</th>
+                            <th>Objemový Oscilátor</th>
+                            <th>Pine Script Stav</th>
+                        </tr>
+                    </thead>
+                    <tbody id="scanner-tbody">
+                        <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Načítavam stav skenera...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
         <div>
             <div class="section-title">Execution History (3-Month Persistent Storage)</div>
             <div class="terminal-card scrollable-card">
@@ -1129,6 +1166,25 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     sellBtn.disabled = true;
                 }
 
+                // Renderovanie živej tabuľky 20 tokenov
+                let scannerTbody = document.getElementById('scanner-tbody');
+                let scannerData = data.scanner_cache || {};
+                if (Object.keys(scannerData).length > 0) {
+                    let sHtml = "";
+                    for (let [coin, info] of Object.entries(scannerData)) {
+                        let oscClass = info.oscillator >= 0 ? "text-green" : "text-red";
+                        sHtml += `<tr>
+                            <td><b>${info.symbol}</b></td>
+                            <td>${info.price ? info.price.toFixed(4) : '--'}</td>
+                            <td class="${oscClass}">${info.oscillator}</td>
+                            <td>${info.signal}</td>
+                        </tr>`;
+                    }
+                    scannerTbody.innerHTML = sHtml;
+                } else {
+                    scannerTbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Prebieha úvodné skenovanie trhu...</td></tr>`;
+                }
+
                 let historyTbody = document.getElementById('history-tbody');
                 if (data.history.length > 0) {
                     let hHtml = "";
@@ -1187,6 +1243,7 @@ async def get_state():
         "current_stage": CURRENT_STAGE,
         "stats": stats,
         "active_trades": ACTIVE_TRADES,
+        "scanner_cache": MARKET_SCANNER_CACHE,
         "history": CLOSED_TRADES_HISTORY[:20],
         "logs": SYSTEM_LOGS
     })
