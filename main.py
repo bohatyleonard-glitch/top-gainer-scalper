@@ -263,12 +263,15 @@ def update_top_liquid_symbols():
                 if coin in ["BTC", "ETH"]:
                     continue
                 vol = safe_float(t.get("volCcy24h", 0))
-                if vol >= 100000.0:  # Znížený prah na 100k, aby zoznam nikdy neostal prázdny
+                if vol >= 100000.0:
                     valid.append((inst_id, vol))
             valid.sort(key=lambda x: x[1], reverse=True)
             top_20 = [item[0] for item in valid[:20]]
             if len(top_20) >= 5:
                 TOP_LIQUID_SYMBOLS = top_20
+            elif top_20:
+                merged = list(dict.fromkeys(top_20 + TOP_LIQUID_SYMBOLS))
+                TOP_LIQUID_SYMBOLS = merged[:20]
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
@@ -411,10 +414,10 @@ async def autonomous_scanner_loop():
                             log_event(f"🚀 PINE SCRIPT 'ALL GREEN' SYNCHRONIZOVANÝ SIGNÁL PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
                             
-                        await asyncio.sleep(0.2)
+                        await asyncio.sleep(0.3)
         except Exception as e:
             log_event(f"⚠️ Chyba v autonómnom skeneri: {e}")
-        await asyncio.sleep(10)
+        await asyncio.sleep(15)
 
 async def top_symbols_updater_loop():
     while True:
@@ -422,7 +425,7 @@ async def top_symbols_updater_loop():
             update_top_liquid_symbols()
         except Exception:
             pass
-        await asyncio.sleep(1800)
+        await asyncio.sleep(3600)
 
 async def execute_autonomous_buy(okx_symbol: str):
     global ACTIVE_TRADES, LAST_TRADE_TIME
@@ -677,11 +680,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.7 (100% TV Sync Mode) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.8 (100% TV Sync Mode) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.7 (100% TV Sync) pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.8 (100% TV Sync) pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
