@@ -46,7 +46,7 @@ SYSTEM_LOGS = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na autonómny signál..."
 LAST_TRADE_TIME = {}
 UNSUPPORTED_DEMO_SYMBOLS = set()
-MARKET_SCANNER_CACHE = {} # Živá cache pre stav všetkých skenovaných tokenov
+MARKET_SCANNER_CACHE = {} 
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
@@ -277,10 +277,29 @@ def calc_ema(values, length):
 
 def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     global MARKET_SCANNER_CACHE
+    coin_key = symbol.split("-")[0]
+    
+    if symbol in UNSUPPORTED_DEMO_SYMBOLS:
+        MARKET_SCANNER_CACHE[coin_key] = {
+            "symbol": symbol,
+            "price": 0.0,
+            "oscillator": 0.0,
+            "signal": "⛔ DEMO NEPODPORUJE",
+            "is_green": False
+        }
+        return False
+
     try:
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=50"
         res = okx_request("GET", url)
         if res.get("code") != "0" or not res.get("data"):
+            MARKET_SCANNER_CACHE[coin_key] = {
+                "symbol": symbol,
+                "price": 0.0,
+                "oscillator": 0.0,
+                "signal": "⚠️ CHYBA DÁT",
+                "is_green": False
+            }
             return False
 
         candles = res["data"]
@@ -315,11 +334,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         
         all_green_condition = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
         
-        # Uloženie detailného stavu pre živú tabuľku 20 tokenov
-        coin_key = symbol.split("-")[0]
         status_text = "🟢 ALL GREEN" if all_green_condition else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH")
-        if symbol in UNSUPPORTED_DEMO_SYMBOLS:
-            status_text = "⛔ DEMO NEPODPORUJE"
 
         MARKET_SCANNER_CACHE[coin_key] = {
             "symbol": symbol,
@@ -330,13 +345,20 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         }
 
         return all_green_condition
-    except Exception:
+    except Exception as e:
+        MARKET_SCANNER_CACHE[coin_key] = {
+            "symbol": symbol,
+            "price": 0.0,
+            "oscillator": 0.0,
+            "signal": "⚠️ VÝNIMKA",
+            "is_green": False
+        }
         return False
 
 # --- AUTONOMNA SKENOVACIA SLUCKA ---
 
 async def autonomous_scanner_loop():
-    await asyncio.sleep(5)
+    await asyncio.sleep(3)
     log_event(f"🤖 Autonómny Pine Script skener (All Green) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
@@ -354,6 +376,8 @@ async def autonomous_scanner_loop():
                         now_ts = datetime.now().timestamp()
 
                         if coin_name in ACTIVE_TRADES or (coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"])):
+                            # Stále vyhodnotíme stratégiu, aby sa aktualizovala tabuľka pre tento coin, aj keď práve neobchoduje
+                            evaluate_pine_strategy(symbol, bar_tf=tf_str)
                             continue
                             
                         signal_met = evaluate_pine_strategy(symbol, bar_tf=tf_str)
@@ -364,7 +388,7 @@ async def autonomous_scanner_loop():
                         await asyncio.sleep(0.3)
         except Exception as e:
             log_event(f"⚠️ Chyba v autonómnom skeneri: {e}")
-        await asyncio.sleep(30)
+        await asyncio.sleep(15)
 
 async def top_symbols_updater_loop():
     while True:
@@ -989,7 +1013,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             </div>
         </div>
 
-        <!-- NOVÁ ŽIVÁ TABUĽKA VŠETKÝCH 20 SKENOVANÝCH TOKENOV -->
+        <!-- ŽIVÁ TABUĽKA VŠETKÝCH 20 SKENOVANÝCH TOKENOV -->
         <div>
             <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs)</div>
             <div class="terminal-card scrollable-card" style="max-height: 220px;">
