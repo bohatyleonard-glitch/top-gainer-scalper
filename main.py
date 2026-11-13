@@ -29,7 +29,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
     "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m"},
-    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 8m"},
+    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "desc": "Manuál 8m"},
     "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.5, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"},
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.3, "target_pct": 1.2, "desc": "30m trendový"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.8, "ttp_callback_pct": 0.4, "target_pct": 1.5, "desc": "45m strednodobý"},
@@ -45,6 +45,7 @@ CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na autonómny signál..."
 LAST_TRADE_TIME = {}
+UNSUPPORTED_DEMO_SYMBOLS = set()  # Pamäť na symboly, ktoré demo burza odmietla
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
@@ -181,7 +182,7 @@ def okx_request(method: str, path: str, body: str = ""):
 def get_instrument_rules(symbol: str):
     try:
         res = okx_request("GET", f"/api/v5/public/instruments?instType=SPOT&instId={symbol}")
-        if res.get("code") == "0" and res.get("data"):
+        if res.get("code") == "0" and res.get("data") and len(res["data"]) > 0:
             inst = res["data"][0]
             lot_sz = safe_float(inst.get("lotSz"), 0.01)
             min_sz = safe_float(inst.get("minSz"), 0.01)
@@ -329,6 +330,8 @@ async def autonomous_scanner_loop():
                     for symbol in list(TOP_LIQUID_SYMBOLS):
                         if not IS_BOT_ACTIVE or len(ACTIVE_TRADES) >= SETTINGS.get("max_parallel", 1):
                             break
+                        if symbol in UNSUPPORTED_DEMO_SYMBOLS:
+                            continue
 
                         coin_name = symbol.split("-")[0]
                         now_ts = datetime.now().timestamp()
@@ -355,7 +358,7 @@ async def top_symbols_updater_loop():
         await asyncio.sleep(3600)
 
 async def execute_autonomous_buy(okx_symbol: str):
-    global ACTIVE_TRADES, LAST_TRADE_TIME
+    global ACTIVE_TRADES, LAST_TRADE_TIME, UNSUPPORTED_DEMO_SYMBOLS
     async with trade_lock:
         coin_name = okx_symbol.split("-")[0]
         now_ts = datetime.now().timestamp()
@@ -374,7 +377,7 @@ async def execute_autonomous_buy(okx_symbol: str):
         
         if SETTINGS.get("compounding_enabled", False):
             safe_budget = min(allocated_capital_base * 0.98, allocated_capital_base)
-            log_event(f"🔄 Compounding AKTÍVNY (Alokácia pre {max_allowed} pozície, 98% vybitia): {safe_budget:.2f} USDC")
+            log_event(f"🔄 Compounding AKTÍVNY (Alokácia pre {max_allowed} pozície): {safe_budget:.2f} USDC")
         else:
             safe_budget = min(allocated_capital_base * 0.98, budget_cap)
             log_event(f"⚙️ Compounding VYPNUTÝ (Alokácia pre {max_allowed} pozície, strop {budget_cap} USDC): {safe_budget:.2f} USDC")
@@ -406,8 +409,8 @@ async def execute_autonomous_buy(okx_symbol: str):
         order_res = okx_request("POST", "/api/v5/trade/order", order_body)
         if order_res.get("code") != "0":
             err_msg = order_res.get('msg', 'Neznáma chyba OKX')
-            log_event(f"❌ Chyba nákupnej objednávky ({okx_symbol}): {err_msg}")
-            send_telegram_msg(f"❌ <b>Chyba nákupu ({okx_symbol}):</b> {err_msg}")
+            log_event(f"⚠️ Pár {okx_symbol} nie je plne podporovaný v Demo režime ({err_msg}). Dočasne ho preskakujem.")
+            UNSUPPORTED_DEMO_SYMBOLS.add(okx_symbol)
             return
             
         coin_amount = float(formatted_sz)
@@ -468,7 +471,7 @@ async def advanced_risk_monitor_loop():
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
                 max_p = SETTINGS.get("max_parallel", 1)
-                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem Top {len(TOP_LIQUID_SYMBOLS)} altcoinov cez Pine Script..."
+                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem trh cez Pine Script..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -691,7 +694,7 @@ async def set_tf(tf_val: str):
 
 @app.post("/api/manual-buy/{coin}")
 async def manual_buy(coin: str):
-    global ACTIVE_TRADES, LAST_TRADE_TIME
+    global ACTIVE_TRADES, LAST_TRADE_TIME, UNSUPPORTED_DEMO_SYMBOLS
     async with trade_lock:
         try:
             if not IS_BOT_ACTIVE:
@@ -735,7 +738,9 @@ async def manual_buy(coin: str):
             
             order_res = okx_request("POST", "/api/v5/trade/order", order_body)
             if order_res.get("code") != "0":
-                return JSONResponse({"status": "error", "message": order_res.get('msg', 'Neznáma chyba OKX')})
+                err_msg = order_res.get('msg', 'Neznáma chyba OKX')
+                UNSUPPORTED_DEMO_SYMBOLS.add(okx_symbol)
+                return JSONResponse({"status": "error", "message": f"OKX odmietlo príkaz ({err_msg})"})
             
             coin_amount = float(formatted_sz)
             actual_spent_usdc = coin_amount * current_price
@@ -896,7 +901,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 3 %}btn-yellow{% endif %}" data-val="3" onclick="setParallel(3)">3x</button>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 4 %}btn-yellow{% endif %}" data-val="4" onclick="setParallel(4)">4x</button>
 
-                <!-- Rozpočet (vrátane 5K a 10K) -->
+                <!-- Rozpočet -->
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
