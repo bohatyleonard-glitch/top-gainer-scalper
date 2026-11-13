@@ -724,7 +724,7 @@ async def set_tf(tf_val: str):
     if tf_lower in TIMEFRAME_PROFILES:
         CURRENT_TIMEFRAME = tf_val.upper()
         SETTINGS.update(TIMEFRAME_PROFILES[tf_lower])
-        MARKET_SCANNER_CACHE.clear()  # Vymažeme starú cache, aby sa načítali čerstvé dáta pre nový TF
+        MARKET_SCANNER_CACHE.clear()
         log_event(f"⏱️ Časový rámec (TF) manuálne zmenený na: {CURRENT_TIMEFRAME}")
         return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
     return JSONResponse({"status": "error", "message": "Neplatný časový rámec."})
@@ -1222,7 +1222,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 }
                 logsBox.innerHTML = lHtml;
 
-            } కథ (err) {
+            } catch (err) {
                 console.error("Chyba pri obnove stavu:", err);
             }
         }
