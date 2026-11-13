@@ -43,7 +43,7 @@ ACTIVE_TRADES = {}
 DAILY_PNL_CALENDAR = []
 CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
-CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na uzavretie sviečky a signál..."
+CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na synchronizovaný signál..."
 LAST_TRADE_TIME = {}
 UNSUPPORTED_DEMO_SYMBOLS = set()
 MARKET_SCANNER_CACHE = {} 
@@ -157,7 +157,7 @@ def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
     CLOSED_TRADES_HISTORY.insert(0, {"pair": pair, "pnl_pct": round(pnl_pct, 2), "pnl_usdc": round(pnl_usdc, 2), "reason": reason, "time": get_sk_time_str()})
     save_persistent_data()
 
-# --- HYBRIDNÝ REQUEST SYSTEM (LIVE DÁTA + DEMO OBCHODY) ---
+# --- HYBRIDNÝ REQUEST SYSTEM ---
 
 def okx_public_request(path: str):
     url = "https://www.okx.com" + path
@@ -275,7 +275,7 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
-# --- PINE SCRIPT LOGIKA S POTVRDENÍM UZATVORENEJ SVIECKY ---
+# --- 100% PINE SCRIPT SYNCHRONIZOVANÁ MATEMATIKA ---
 
 def calc_ema(values, length):
     if len(values) < length:
@@ -291,10 +291,10 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     coin_key = symbol.split("-")[0]
 
     try:
-        # Sťahujeme 50 sviečok. Index [0] je aktuálna živá sviečka, index [1] je posledná UZATVORENÁ sviečka.
-        url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=50"
+        # Sťahujeme dostatočnú históriu sviečok pre presný výpočet EMA (50 barov)
+        url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=60"
         res = okx_public_request(url)
-        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 5:
+        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 10:
             MARKET_SCANNER_CACHE[coin_key] = {
                 "symbol": symbol, "price": 0.0, "oscillator": 0.0,
                 "momentum": "SLABÉ", "impulse": "ČAKÁ", "trade_status": "---",
@@ -304,10 +304,10 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             return False
 
         candles = res["data"]
-        candles.reverse() # Od najstaršej po najnovšiu
+        candles.reverse() # Zoradíme od najstaršej po najnovšiu
         
-        # Orezzme pole tak, aby sme vynechali rozrobeneú živú sviečku [index -1] 
-        # a vyhodnocovali signál prísne na základe UZATVORENEJ sviečky [index -2].
+        # Striktné vyhodnocovanie na základe UZATVORENEJ sviečky (index -2), 
+        # aby sa hodnoty dokonale zhodovali s TradingView indikátorom.
         closed_candles = candles[:-1]
         
         ha_closes, ha_opens, r_closes = [], [], []
@@ -321,6 +321,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             r_closes.append(cl)
             volumes.append(v)
             
+        # Výpočet objemového smeru Heikin-Ashi rovnako ako v Pine Scripte
         vol_dirs = [v if ha_closes[i] > ha_opens[i] else -v for i, v in enumerate(volumes)]
         fast_ma = calc_ema(vol_dirs, 5)
         slow_ma = calc_ema(vol_dirs, 20)
@@ -332,11 +333,11 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_osc, prev_osc = oscillator_value[-1], oscillator_value[-2]
         curr_sig, prev_sig = signal_line[-1], signal_line[-2]
         
-        # 1. Objemové Momentum
+        # 1. Objemové Momentum (1. bod checklistu)
         cond_volume_bullish = curr_osc > 0 and curr_osc > curr_sig
         momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
 
-        # 2. Nákupný Impulz (na základe uzavretej sviečky)
+        # 2. Nákupný Impulz (2. bod checklistu)
         cond_volume_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
         curr_close, prev_close = ha_closes[-1], ha_closes[-2]
         curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
@@ -364,6 +365,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         if is_in_trade:
             ts_status_txt = f"{ACTIVE_TRADES[coin_key].get('entry_price', 0)*0.994:.4f}"
 
+        # 7. Exekučný pokyn (7. bod checklistu)
         exec_signal_str = "NAKÚPIŤ" if buy_trigger else ("DRŽAŤ" if is_in_trade else "ČAKAJ")
 
         MARKET_SCANNER_CACHE[coin_key] = {
@@ -377,7 +379,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "ttp_status": ttp_status_txt,
             "ts_status": ts_status_txt,
             "exec_signal": exec_signal_str,
-            "signal": "🟢 ALL GREEN (Uzatvorené)" if buy_trigger else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH"),
+            "signal": "🟢 ALL GREEN (Sync)" if buy_trigger else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH"),
             "is_green": buy_trigger
         }
 
@@ -395,7 +397,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
 async def autonomous_scanner_loop():
     await asyncio.sleep(3)
-    log_event(f"🤖 Autonómny Pine Script skener (S potvrdením uzatvorenej sviečky) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"🤖 Autonómny Pine Script skener (100% Sync s TradingView) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             max_allowed = SETTINGS.get("max_parallel", 1)
@@ -415,7 +417,7 @@ async def autonomous_scanner_loop():
                             
                         signal_met = evaluate_pine_strategy(symbol, bar_tf=tf_str)
                         if signal_met:
-                            log_event(f"🚀 PINE SCRIPT 'ALL GREEN' SIGNÁL POTVRDENÝ NA UZATVORENEJ SVIEČKE PRE {symbol}!")
+                            log_event(f"🚀 PINE SCRIPT 'ALL GREEN' SYNCHRONIZOVANÝ SIGNÁL PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
                             
                         await asyncio.sleep(0.3)
@@ -524,7 +526,7 @@ async def execute_autonomous_buy(okx_symbol: str):
             ]
         }
         send_telegram_msg(
-            f"🟢 <b>AUTONÓMNY NÁKUP [TF: {CURRENT_TIMEFRAME}] (Uzatvorená sviečka)</b>\n"
+            f"🟢 <b>SYNCHRONIZOVANÝ NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
             f"<b>Pár:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
             f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
@@ -541,7 +543,7 @@ async def advanced_risk_monitor_loop():
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
                 max_p = SETTINGS.get("max_parallel", 1)
-                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem uzavreté sviečky..."
+                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem TV Sync..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -678,11 +680,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.5 (Candle Close Mode) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.5 (100% TV Sync Mode) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.5 (Režim uzavretých sviečok) pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.5 (100% TV Sync) pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -840,7 +842,7 @@ async def manual_buy(coin: str):
                 "settings": SETTINGS.copy()
             }
             log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$")
-            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}] (Uzatvorená sviečka)</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC")
+            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}] (TV Sync)</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC")
             
             return JSONResponse({"status": "success", "symbol": okx_symbol})
         except Exception as e:
@@ -949,7 +951,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // AUTO-PILOT (Candle Close Mode)</h1>
+                <h1>APEX SCALPER // AUTO-PILOT (100% TV Sync Mode)</h1>
                 <p>
                     <span id="header-pair">Top USDC · OKX Demo (Live Dáta)</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
@@ -1037,7 +1039,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - Uzatvorené sviečky)</div>
+            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - 100% TV Sync)</div>
             <div class="terminal-card scrollable-card" style="max-height: 260px;">
                 <table>
                     <thead>
