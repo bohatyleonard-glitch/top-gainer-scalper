@@ -27,16 +27,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 # --- DYNAMICKE PROFILY PRE CASOVE RAMCE ---
 
 TIMEFRAME_PROFILES = {
-    "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
-    "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m"},
-    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 8m"},
-    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.5, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"},
-    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "desc": "30m trendový (TTP od +1.0%)"},
-    "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "desc": "45m strednodobý (TTP od +1.4%)"},
-    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "desc": "1h swing"},
-    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.7, "target_pct": 5.0, "desc": "2h trend"},
-    "3h": {"trail_pct": 4.0, "be_trigger_pct": 3.0, "ttp_trigger_pct": 4.5, "ttp_callback_pct": 1.0, "target_pct": 7.0, "desc": "3h pozičný"},
-    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 6.0, "ttp_callback_pct": 1.5, "target_pct": 10.0, "desc": "4h swing"}
+    "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "sl_pct": 0.6, "desc": "Skalper 1m"},
+    "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "sl_pct": 0.6, "desc": "Manuál 5m"},
+    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.75, "sl_pct": 0.6, "desc": "Skalper 8m"},
+    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "sl_pct": 0.6, "desc": "Rýchly 15m scalp (+0.75%)"},
+    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "sl_pct": 0.6, "desc": "30m trendový (TTP od +1.0%)"},
+    "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "sl_pct": 0.6, "desc": "45m strednodobý (TTP od +1.4%)"},
+    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "sl_pct": 0.6, "desc": "1h swing"},
+    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.7, "target_pct": 5.0, "sl_pct": 0.6, "desc": "2h trend"},
+    "3h": {"trail_pct": 4.0, "be_trigger_pct": 3.0, "ttp_trigger_pct": 4.5, "ttp_callback_pct": 1.0, "target_pct": 7.0, "sl_pct": 0.6, "desc": "3h pozičný"},
+    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 6.0, "ttp_callback_pct": 1.5, "target_pct": 10.0, "sl_pct": 0.6, "desc": "4h swing"}
 }
 
 ACTIVE_TRADES = {}
@@ -291,7 +291,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     coin_key = symbol.split("-")[0]
 
     try:
-        # Sťahujeme dostatočnú históriu sviečok pre presný výpočet EMA (50 barov)
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=60"
         res = okx_public_request(url)
         if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 10:
@@ -304,10 +303,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             return False
 
         candles = res["data"]
-        candles.reverse() # Zoradíme od najstaršej po najnovšiu
-        
-        # Striktné vyhodnocovanie na základe UZATVORENEJ sviečky (index -2), 
-        # aby sa hodnoty dokonale zhodovali s TradingView indikátorom.
+        candles.reverse() 
         closed_candles = candles[:-1]
         
         ha_closes, ha_opens, r_closes = [], [], []
@@ -321,7 +317,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             r_closes.append(cl)
             volumes.append(v)
             
-        # Výpočet objemového smeru Heikin-Ashi rovnako ako v Pine Scripte
         vol_dirs = [v if ha_closes[i] > ha_opens[i] else -v for i, v in enumerate(volumes)]
         fast_ma = calc_ema(vol_dirs, 5)
         slow_ma = calc_ema(vol_dirs, 20)
@@ -333,11 +328,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_osc, prev_osc = oscillator_value[-1], oscillator_value[-2]
         curr_sig, prev_sig = signal_line[-1], signal_line[-2]
         
-        # 1. Objemové Momentum (1. bod checklistu)
         cond_volume_bullish = curr_osc > 0 and curr_osc > curr_sig
         momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
 
-        # 2. Nákupný Impulz (2. bod checklistu)
         cond_volume_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
         curr_close, prev_close = ha_closes[-1], ha_closes[-2]
         curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
@@ -365,7 +358,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         if is_in_trade:
             ts_status_txt = f"{ACTIVE_TRADES[coin_key].get('entry_price', 0)*0.994:.4f}"
 
-        # 7. Exekučný pokyn (7. bod checklistu)
         exec_signal_str = "NAKÚPIŤ" if buy_trigger else ("DRŽAŤ" if is_in_trade else "ČAKAJ")
 
         MARKET_SCANNER_CACHE[coin_key] = {
@@ -487,10 +479,16 @@ async def execute_autonomous_buy(okx_symbol: str):
             
         coin_amount = float(formatted_sz)
         actual_spent_usdc = coin_amount * current_price
-        sl_price = current_price * (1 - 0.006)
-        be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
+        
+        # Aplikovanie živých nastavení alebo fallback na profil
+        sl_pct_val = SETTINGS.get("sl_pct", 0.6)
+        be_pct_val = SETTINGS.get("be_trigger_pct", 0.35)
+        tp_pct_val = SETTINGS.get("target_pct", 0.75)
+
+        sl_price = current_price * (1 - (sl_pct_val / 100.0))
+        be_price = current_price * (1 + (be_pct_val / 100.0)) if be_pct_val > 0 else 0
         ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
-        target_pct = SETTINGS.get("target_pct", 0.75)
+        target_pct = tp_pct_val
         
         ACTIVE_TRADES[coin_name] = {
             "entry_price": current_price,
@@ -614,7 +612,8 @@ async def advanced_risk_monitor_loop():
                         del ACTIVE_TRADES[coin]
                         continue
 
-                    be_trigger = trade_settings.get("be_trigger_pct", 0.5)
+                    be_trigger = trade_settings.get("be_trigger_pct", 0.35)
+                    sl_pct_val = trade_settings.get("sl_pct", 0.6)
                     if be_trigger > 0:
                         trail_stop_price = trade["highest_price"] * (1 - (trade_settings["trail_pct"] / 100.0))
                         
@@ -622,7 +621,7 @@ async def advanced_risk_monitor_loop():
                             trade["break_even_activated"] = True
                             effective_sl = max(trail_stop_price, trade["entry_price"])
                         else:
-                            effective_sl = trade["entry_price"] * (1 - 0.006)
+                            effective_sl = trade["entry_price"] * (1 - (sl_pct_val / 100.0))
                             
                         ttp_trigger = trade_settings.get("ttp_trigger_pct", 0.0)
                         if ttp_trigger > 0:
@@ -638,7 +637,7 @@ async def advanced_risk_monitor_loop():
                         CURRENT_STAGE = f"STAV: Aktívnych pozícií: {len(ACTIVE_TRADES)} | Posledná: {symbol} ({pnl_pct:+.2f}%)"
                         
                         if current_price <= effective_sl:
-                            reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else "Stop-Loss (-0.6%)"
+                            reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else f"Stop-Loss (-{sl_pct_val}%)"
                             try:
                                 fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
                                 if fmt_sz:
@@ -680,11 +679,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.5 (100% TV Sync Mode) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.6 (100% TV Sync Mode) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.5 (100% TV Sync) pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.6 (100% TV Sync) pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -758,11 +757,37 @@ async def set_tf(tf_val: str):
     tf_lower = tf_val.lower()
     if tf_lower in TIMEFRAME_PROFILES:
         CURRENT_TIMEFRAME = tf_val.upper()
+        # Zachováme custom parametre, ak boli nastavené, inak načítame profil
+        custom_tp = SETTINGS.get("target_pct")
+        custom_be = SETTINGS.get("be_trigger_pct")
+        custom_sl = SETTINGS.get("sl_pct")
+        
         SETTINGS.update(TIMEFRAME_PROFILES[tf_lower])
+        
+        if custom_tp is not None: SETTINGS["target_pct"] = custom_tp
+        if custom_be is not None: SETTINGS["be_trigger_pct"] = custom_be
+        if custom_sl is not None: SETTINGS["sl_pct"] = custom_sl
+
         MARKET_SCANNER_CACHE.clear()
         log_event(f"⏱️ Časový rámec (TF) manuálne zmenený na: {CURRENT_TIMEFRAME}")
-        return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
+        return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME, "settings": SETTINGS})
     return JSONResponse({"status": "error", "message": "Neplatný časový rámec."})
+
+@app.post("/api/update-params")
+async def update_params(request: Request):
+    try:
+        data = await request.json()
+        if "target_pct" in data:
+            SETTINGS["target_pct"] = float(data["target_pct"])
+        if "be_trigger_pct" in data:
+            SETTINGS["be_trigger_pct"] = float(data["be_trigger_pct"])
+        if "sl_pct" in data:
+            SETTINGS["sl_pct"] = float(data["sl_pct"])
+        
+        log_event(f"🛠️ Živé nastavenie aktualizované: TP={SETTINGS['target_pct']}%, BE={SETTINGS['be_trigger_pct']}%, SL={SETTINGS['sl_pct']}%")
+        return JSONResponse({"status": "success", "settings": SETTINGS})
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)})
 
 @app.post("/api/manual-buy/{coin}")
 async def manual_buy(coin: str):
@@ -815,10 +840,15 @@ async def manual_buy(coin: str):
             
             coin_amount = float(formatted_sz)
             actual_spent_usdc = coin_amount * current_price
-            sl_price = current_price * (1 - 0.006)
-            be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
+            
+            sl_pct_val = SETTINGS.get("sl_pct", 0.6)
+            be_pct_val = SETTINGS.get("be_trigger_pct", 0.35)
+            tp_pct_val = SETTINGS.get("target_pct", 0.75)
+
+            sl_price = current_price * (1 - (sl_pct_val / 100.0))
+            be_price = current_price * (1 + (be_pct_val / 100.0)) if be_pct_val > 0 else 0
             ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
-            target_pct = SETTINGS.get("target_pct", 0.75)
+            target_pct = tp_pct_val
             
             ACTIVE_TRADES[coin_upper] = {
                 "entry_price": current_price,
@@ -945,6 +975,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .text-yellow { color: var(--yellow); font-weight: 700; }
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.01); }
         .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
+        
+        .settings-bar { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 8px 12px; display: flex; gap: 15px; align-items: center; flex-wrap: wrap; font-size: 0.7rem; }
+        .setting-item { display: flex; align-items: center; gap: 6px; }
+        .setting-item label { color: var(--text-muted); text-transform: uppercase; font-weight: 600; font-size: 0.65rem; }
+        .setting-input { background: var(--bg-color); border: 1px solid var(--border-hover); color: var(--yellow); padding: 3px 6px; border-radius: 4px; width: 65px; font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; font-weight: 700; text-align: center; outline: none; }
+        .setting-input:focus { border-color: var(--yellow); }
     </style>
 </head>
 <body>
@@ -992,6 +1028,24 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </button>
                 <button id="sell-btn" class="btn btn-sell" onclick="sellNow()" disabled>⚡ SELL</button>
             </div>
+        </div>
+
+        <!-- ŽIVÉ NASTAVENIA PARAMETROV (TP, BE, SL) -->
+        <div class="settings-bar">
+            <span style="color: var(--accent-white); font-weight: 700; text-transform: uppercase;">⚙️ Živé Parametre pre 8M/15M:</span>
+            <div class="setting-item">
+                <label>Take Profit (%):</label>
+                <input type="number" id="input-tp" class="setting-input" step="0.05" value="{{ SETTINGS.target_pct }}" onchange="updateParams()">
+            </div>
+            <div class="setting-item">
+                <label>Break-Even (%):</label>
+                <input type="number" id="input-be" class="setting-input" step="0.05" value="{{ SETTINGS.be_trigger_pct }}" onchange="updateParams()">
+            </div>
+            <div class="setting-item">
+                <label>Stop-Loss (%):</label>
+                <input type="number" id="input-sl" class="setting-input" step="0.05" value="{{ SETTINGS.sl_pct }}" onchange="updateParams()">
+            </div>
+            <span id="settings-status" style="color: var(--green); font-weight: 600; display: none;">✓ Uložené</span>
         </div>
 
         <div class="status-ticker">
@@ -1157,7 +1211,30 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     }
                 });
                 document.getElementById('header-tf').innerText = data.tf;
+                if (data.settings) {
+                    document.getElementById('input-tp').value = data.settings.target_pct;
+                    document.getElementById('input-be').value = data.settings.be_trigger_pct;
+                    document.getElementById('input-sl').value = data.settings.sl_pct;
+                }
                 updateState();
+            }
+        }
+
+        async function updateParams() {
+            let tp = parseFloat(document.getElementById('input-tp').value);
+            let be = parseFloat(document.getElementById('input-be').value);
+            let sl = parseFloat(document.getElementById('input-sl').value);
+
+            let res = await fetch('/api/update-params', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({target_pct: tp, be_trigger_pct: be, sl_pct: sl})
+            });
+            let data = await res.json();
+            if (data.status === 'success') {
+                let statusEl = document.getElementById('settings-status');
+                statusEl.style.display = 'inline';
+                setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
             }
         }
 
