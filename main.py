@@ -27,16 +27,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 # --- DYNAMICKE PROFILY PRE CASOVE RAMCE ---
 
 TIMEFRAME_PROFILES = {
-    "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "sl_pct": 0.6, "desc": "Skalper 1m"},
-    "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "sl_pct": 0.6, "desc": "Manuál 5m"},
-    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.75, "sl_pct": 0.6, "desc": "Skalper 8m"},
-    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "sl_pct": 0.6, "desc": "Rýchly 15m scalp (+0.75%)"},
-    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "sl_pct": 0.6, "desc": "30m trendový (TTP od +1.0%)"},
-    "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "sl_pct": 0.6, "desc": "45m strednodobý (TTP od +1.4%)"},
-    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "sl_pct": 0.6, "desc": "1h swing"},
-    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.7, "target_pct": 5.0, "sl_pct": 0.6, "desc": "2h trend"},
-    "3h": {"trail_pct": 4.0, "be_trigger_pct": 3.0, "ttp_trigger_pct": 4.5, "ttp_callback_pct": 1.0, "target_pct": 7.0, "sl_pct": 0.6, "desc": "3h pozičný"},
-    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 6.0, "ttp_callback_pct": 1.5, "target_pct": 10.0, "sl_pct": 0.6, "desc": "4h swing"}
+    "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
+    "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m"},
+    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "desc": "Manuál 8m"},
+    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.5, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"},
+    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "desc": "30m trendový (TTP od +1.0%)"},
+    "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "desc": "45m strednodobý (TTP od +1.4%)"},
+    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "desc": "1h swing"},
+    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.7, "target_pct": 5.0, "desc": "2h trend"},
+    "3h": {"trail_pct": 4.0, "be_trigger_pct": 3.0, "ttp_trigger_pct": 4.5, "ttp_callback_pct": 1.0, "target_pct": 7.0, "desc": "3h pozičný"},
+    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 6.0, "ttp_callback_pct": 1.5, "target_pct": 10.0, "desc": "4h swing"}
 }
 
 ACTIVE_TRADES = {}
@@ -263,7 +263,7 @@ def update_top_liquid_symbols():
                 if coin in ["BTC", "ETH"]:
                     continue
                 vol = safe_float(t.get("volCcy24h", 0))
-                if vol >= 100000.0:
+                if vol >= 500000.0:
                     valid.append((inst_id, vol))
             valid.sort(key=lambda x: x[1], reverse=True)
             top_20 = [item[0] for item in valid[:20]]
@@ -303,10 +303,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             return False
 
         candles = res["data"]
-        candles.reverse() 
+        candles.reverse()
+        
         closed_candles = candles[:-1]
-        if not closed_candles:
-            return False
         
         ha_closes, ha_opens, r_closes = [], [], []
         volumes = []
@@ -362,6 +361,11 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
         exec_signal_str = "NAKÚPIŤ" if buy_trigger else ("DRŽAŤ" if is_in_trade else "ČAKAJ")
 
+        # Ak je symbol označený ako nepodporovaný v demo režime, zobrazíme to priamo v stĺpci signálu, ale token sa stále skenuje!
+        signal_display = "🟢 ALL GREEN (Sync)" if buy_trigger else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH")
+        if symbol in UNSUPPORTED_DEMO_SYMBOLS:
+            signal_display = "⛔ DEMO (Len skener)"
+
         MARKET_SCANNER_CACHE[coin_key] = {
             "symbol": symbol,
             "price": curr_close,
@@ -373,7 +377,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "ttp_status": ttp_status_txt,
             "ts_status": ts_status_txt,
             "exec_signal": exec_signal_str,
-            "signal": "🟢 ALL GREEN (Sync)" if buy_trigger else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH"),
+            "signal": signal_display,
             "is_green": buy_trigger
         }
 
@@ -391,30 +395,30 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
 async def autonomous_scanner_loop():
     await asyncio.sleep(3)
-    log_event(f"🤖 Autonómny Pine Script skener (100% Sync s TradingView) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"🤖 Autonómny Pine Script skener (100% Sync) spustený pre vsetkých {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
+            tf_str = CURRENT_TIMEFRAME.lower()
             max_allowed = SETTINGS.get("max_parallel", 1)
-            if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
-                if check_btc_health():
-                    tf_str = CURRENT_TIMEFRAME.lower()
-                    for symbol in list(TOP_LIQUID_SYMBOLS):
-                        if not IS_BOT_ACTIVE or len(ACTIVE_TRADES) >= SETTINGS.get("max_parallel", 1):
-                            break
+            
+            for symbol in list(TOP_LIQUID_SYMBOLS):
+                coin_name = symbol.split("-")[0]
+                now_ts = datetime.now().timestamp()
 
-                        coin_name = symbol.split("-")[0]
-                        now_ts = datetime.now().timestamp()
+                # Vždy najprv vyhodnotíme stratégiu a aktualizujeme tabuľku pre VŠETKY tokeny!
+                evaluate_pine_strategy(symbol, bar_tf=tf_str)
 
-                        if coin_name in ACTIVE_TRADES or (coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"])):
-                            evaluate_pine_strategy(symbol, bar_tf=tf_str)
-                            continue
-                            
-                        signal_met = evaluate_pine_strategy(symbol, bar_tf=tf_str)
-                        if signal_met:
-                            log_event(f"🚀 PINE SCRIPT 'ALL GREEN' SYNCHRONIZOVANÝ SIGNÁL PRE {symbol}!")
-                            await execute_autonomous_buy(symbol)
-                            
-                        await asyncio.sleep(0.3)
+                # Ak je bot zapnutý a podmienky nákupu sedia, skúsime otvoriť pozíciu
+                if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
+                    if symbol not in UNSUPPORTED_DEMO_SYMBOLS:
+                        if check_btc_health():
+                            if coin_name not in ACTIVE_TRADES and not (coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"])):
+                                # Zistíme najnovší stav z cache
+                                if coin_name in MARKET_SCANNER_CACHE and MARKET_SCANNER_CACHE[coin_name].get("is_green", False):
+                                    log_event(f"🚀 PINE SCRIPT 'ALL GREEN' SYNCHRONIZOVANÝ SIGNÁL PRE {symbol}!")
+                                    await execute_autonomous_buy(symbol)
+                
+                await asyncio.sleep(0.3)
         except Exception as e:
             log_event(f"⚠️ Chyba v autonómnom skeneri: {e}")
         await asyncio.sleep(15)
@@ -428,7 +432,7 @@ async def top_symbols_updater_loop():
         await asyncio.sleep(3600)
 
 async def execute_autonomous_buy(okx_symbol: str):
-    global ACTIVE_TRADES, LAST_TRADE_TIME
+    global ACTIVE_TRADES, LAST_TRADE_TIME, UNSUPPORTED_DEMO_SYMBOLS
     async with trade_lock:
         coin_name = okx_symbol.split("-")[0]
         now_ts = datetime.now().timestamp()
@@ -476,20 +480,16 @@ async def execute_autonomous_buy(okx_symbol: str):
         order_res = okx_request("POST", "/api/v5/trade/order", order_body)
         if order_res.get("code") != "0":
             err_msg = order_res.get('msg', 'Neznáma chyba OKX')
-            log_event(f"⚠️ Pár {okx_symbol} odmietnutý v Demo režime ({err_msg}).")
+            log_event(f"⚠️ Pár {okx_symbol} odmietnutý v Demo režime ({err_msg}). Token zostáva v skeneri, ale obchod sa neotvorí.")
+            UNSUPPORTED_DEMO_SYMBOLS.add(okx_symbol)
             return
             
         coin_amount = float(formatted_sz)
         actual_spent_usdc = coin_amount * current_price
-        
-        sl_pct_val = SETTINGS.get("sl_pct", 0.6)
-        be_pct_val = SETTINGS.get("be_trigger_pct", 0.35)
-        tp_pct_val = SETTINGS.get("target_pct", 0.75)
-
-        sl_price = current_price * (1 - (sl_pct_val / 100.0))
-        be_price = current_price * (1 + (be_pct_val / 100.0)) if be_pct_val > 0 else 0
+        sl_price = current_price * (1 - 0.006)
+        be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
         ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
-        target_pct = tp_pct_val
+        target_pct = SETTINGS.get("target_pct", 0.75)
         
         ACTIVE_TRADES[coin_name] = {
             "entry_price": current_price,
@@ -613,8 +613,7 @@ async def advanced_risk_monitor_loop():
                         del ACTIVE_TRADES[coin]
                         continue
 
-                    be_trigger = trade_settings.get("be_trigger_pct", 0.35)
-                    sl_pct_val = trade_settings.get("sl_pct", 0.6)
+                    be_trigger = trade_settings.get("be_trigger_pct", 0.5)
                     if be_trigger > 0:
                         trail_stop_price = trade["highest_price"] * (1 - (trade_settings["trail_pct"] / 100.0))
                         
@@ -622,7 +621,7 @@ async def advanced_risk_monitor_loop():
                             trade["break_even_activated"] = True
                             effective_sl = max(trail_stop_price, trade["entry_price"])
                         else:
-                            effective_sl = trade["entry_price"] * (1 - (sl_pct_val / 100.0))
+                            effective_sl = trade["entry_price"] * (1 - 0.006)
                             
                         ttp_trigger = trade_settings.get("ttp_trigger_pct", 0.0)
                         if ttp_trigger > 0:
@@ -638,7 +637,7 @@ async def advanced_risk_monitor_loop():
                         CURRENT_STAGE = f"STAV: Aktívnych pozícií: {len(ACTIVE_TRADES)} | Posledná: {symbol} ({pnl_pct:+.2f}%)"
                         
                         if current_price <= effective_sl:
-                            reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else f"Stop-Loss (-{sl_pct_val}%)"
+                            reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else "Stop-Loss (-0.6%)"
                             try:
                                 fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
                                 if fmt_sz:
@@ -680,11 +679,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.8 (100% TV Sync Mode) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.6 (TV Sync + Všetkých 20 tokenov v skeneri) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.8 (100% TV Sync) pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.6 pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -758,40 +757,15 @@ async def set_tf(tf_val: str):
     tf_lower = tf_val.lower()
     if tf_lower in TIMEFRAME_PROFILES:
         CURRENT_TIMEFRAME = tf_val.upper()
-        custom_tp = SETTINGS.get("target_pct")
-        custom_be = SETTINGS.get("be_trigger_pct")
-        custom_sl = SETTINGS.get("sl_pct")
-        
         SETTINGS.update(TIMEFRAME_PROFILES[tf_lower])
-        
-        if custom_tp is not None: SETTINGS["target_pct"] = custom_tp
-        if custom_be is not None: SETTINGS["be_trigger_pct"] = custom_be
-        if custom_sl is not None: SETTINGS["sl_pct"] = custom_sl
-
         MARKET_SCANNER_CACHE.clear()
         log_event(f"⏱️ Časový rámec (TF) manuálne zmenený na: {CURRENT_TIMEFRAME}")
-        return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME, "settings": SETTINGS})
+        return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
     return JSONResponse({"status": "error", "message": "Neplatný časový rámec."})
-
-@app.post("/api/update-params")
-async def update_params(request: Request):
-    try:
-        data = await request.json()
-        if "target_pct" in data:
-            SETTINGS["target_pct"] = float(data["target_pct"])
-        if "be_trigger_pct" in data:
-            SETTINGS["be_trigger_pct"] = float(data["be_trigger_pct"])
-        if "sl_pct" in data:
-            SETTINGS["sl_pct"] = float(data["sl_pct"])
-        
-        log_event(f"🛠️ Živé nastavenie aktualizované: TP={SETTINGS['target_pct']}%, BE={SETTINGS['be_trigger_pct']}%, SL={SETTINGS['sl_pct']}%")
-        return JSONResponse({"status": "success", "settings": SETTINGS})
-    except Exception as e:
-        return JSONResponse({"status": "error", "message": str(e)})
 
 @app.post("/api/manual-buy/{coin}")
 async def manual_buy(coin: str):
-    global ACTIVE_TRADES, LAST_TRADE_TIME
+    global ACTIVE_TRADES, LAST_TRADE_TIME, UNSUPPORTED_DEMO_SYMBOLS
     async with trade_lock:
         try:
             if not IS_BOT_ACTIVE:
@@ -836,19 +810,15 @@ async def manual_buy(coin: str):
             order_res = okx_request("POST", "/api/v5/trade/order", order_body)
             if order_res.get("code") != "0":
                 err_msg = order_res.get('msg', 'Neznáma chyba OKX')
+                UNSUPPORTED_DEMO_SYMBOLS.add(okx_symbol)
                 return JSONResponse({"status": "error", "message": f"OKX odmietlo príkaz ({err_msg})"})
             
             coin_amount = float(formatted_sz)
             actual_spent_usdc = coin_amount * current_price
-            
-            sl_pct_val = SETTINGS.get("sl_pct", 0.6)
-            be_pct_val = SETTINGS.get("be_trigger_pct", 0.35)
-            tp_pct_val = SETTINGS.get("target_pct", 0.75)
-
-            sl_price = current_price * (1 - (sl_pct_val / 100.0))
-            be_price = current_price * (1 + (be_pct_val / 100.0)) if be_pct_val > 0 else 0
+            sl_price = current_price * (1 - 0.006)
+            be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
             ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
-            target_pct = tp_pct_val
+            target_pct = SETTINGS.get("target_pct", 0.75)
             
             ACTIVE_TRADES[coin_upper] = {
                 "entry_price": current_price,
@@ -975,12 +945,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .text-yellow { color: var(--yellow); font-weight: 700; }
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.01); }
         .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
-        
-        .settings-bar { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 8px 12px; display: flex; gap: 15px; align-items: center; flex-wrap: wrap; font-size: 0.7rem; }
-        .setting-item { display: flex; align-items: center; gap: 6px; }
-        .setting-item label { color: var(--text-muted); text-transform: uppercase; font-weight: 600; font-size: 0.65rem; }
-        .setting-input { background: var(--bg-color); border: 1px solid var(--border-hover); color: var(--yellow); padding: 3px 6px; border-radius: 4px; width: 65px; font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; font-weight: 700; text-align: center; outline: none; }
-        .setting-input:focus { border-color: var(--yellow); }
     </style>
 </head>
 <body>
@@ -1028,24 +992,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </button>
                 <button id="sell-btn" class="btn btn-sell" onclick="sellNow()" disabled>⚡ SELL</button>
             </div>
-        </div>
-
-        <!-- ŽIVÉ NASTAVENIA PARAMETROV (TP, BE, SL) -->
-        <div class="settings-bar">
-            <span style="color: var(--accent-white); font-weight: 700; text-transform: uppercase;">⚙️ Živé Parametre pre 8M/15M:</span>
-            <div class="setting-item">
-                <label>Take Profit (%):</label>
-                <input type="number" id="input-tp" class="setting-input" step="0.05" value="{{ SETTINGS.target_pct }}" onchange="updateParams()">
-            </div>
-            <div class="setting-item">
-                <label>Break-Even (%):</label>
-                <input type="number" id="input-be" class="setting-input" step="0.05" value="{{ SETTINGS.be_trigger_pct }}" onchange="updateParams()">
-            </div>
-            <div class="setting-item">
-                <label>Stop-Loss (%):</label>
-                <input type="number" id="input-sl" class="setting-input" step="0.05" value="{{ SETTINGS.sl_pct }}" onchange="updateParams()">
-            </div>
-            <span id="settings-status" style="color: var(--green); font-weight: 600; display: none;">✓ Uložené</span>
         </div>
 
         <div class="status-ticker">
@@ -1211,30 +1157,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     }
                 });
                 document.getElementById('header-tf').innerText = data.tf;
-                if (data.settings) {
-                    document.getElementById('input-tp').value = data.settings.target_pct;
-                    document.getElementById('input-be').value = data.settings.be_trigger_pct;
-                    document.getElementById('input-sl').value = data.settings.sl_pct;
-                }
                 updateState();
-            }
-        }
-
-        async function updateParams() {
-            let tp = parseFloat(document.getElementById('input-tp').value);
-            let be = parseFloat(document.getElementById('input-be').value);
-            let sl = parseFloat(document.getElementById('input-sl').value);
-
-            let res = await fetch('/api/update-params', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({target_pct: tp, be_trigger_pct: be, sl_pct: sl})
-            });
-            let data = await res.json();
-            if (data.status === 'success') {
-                let statusEl = document.getElementById('settings-status');
-                statusEl.style.display = 'inline';
-                setTimeout(() => { statusEl.style.display = 'none'; }, 2000);
             }
         }
 
