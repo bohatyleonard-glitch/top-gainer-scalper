@@ -24,12 +24,12 @@ WEBHOOK_SECRET = "moje_tajne_heslo_123"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-# --- DYNAMICKE PROFILY PRE CASOVE RAMCE ---
+# --- DYNAMICKE PROFILY PRE CASOVE RAMCE (Vrátane 8m a 15m s možnosťou úpravy) ---
 
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
     "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m"},
-    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "desc": "Manuál 8m"},
+    "8m": {"trail_pct": 0.6, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.7, "ttp_callback_pct": 0.18, "target_pct": 0.60, "desc": "Špeciálny 8m scalp"},
     "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.5, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"},
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "desc": "30m trendový (TTP od +1.0%)"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "desc": "45m strednodobý (TTP od +1.4%)"},
@@ -361,7 +361,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
         exec_signal_str = "NAKÚPIŤ" if buy_trigger else ("DRŽAŤ" if is_in_trade else "ČAKAJ")
 
-        # Ak je symbol označený ako nepodporovaný v demo režime, zobrazíme to priamo v stĺpci signálu, ale token sa stále skenuje!
         signal_display = "🟢 ALL GREEN (Sync)" if buy_trigger else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH")
         if symbol in UNSUPPORTED_DEMO_SYMBOLS:
             signal_display = "⛔ DEMO (Len skener)"
@@ -395,7 +394,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
 async def autonomous_scanner_loop():
     await asyncio.sleep(3)
-    log_event(f"🤖 Autonómny Pine Script skener (100% Sync) spustený pre vsetkých {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"🤖 Autonómny Pine Script skener (100% Sync) spustený pre všetkých {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             tf_str = CURRENT_TIMEFRAME.lower()
@@ -405,15 +404,12 @@ async def autonomous_scanner_loop():
                 coin_name = symbol.split("-")[0]
                 now_ts = datetime.now().timestamp()
 
-                # Vždy najprv vyhodnotíme stratégiu a aktualizujeme tabuľku pre VŠETKY tokeny!
                 evaluate_pine_strategy(symbol, bar_tf=tf_str)
 
-                # Ak je bot zapnutý a podmienky nákupu sedia, skúsime otvoriť pozíciu
                 if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
                     if symbol not in UNSUPPORTED_DEMO_SYMBOLS:
                         if check_btc_health():
                             if coin_name not in ACTIVE_TRADES and not (coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"])):
-                                # Zistíme najnovší stav z cache
                                 if coin_name in MARKET_SCANNER_CACHE and MARKET_SCANNER_CACHE[coin_name].get("is_green", False):
                                     log_event(f"🚀 PINE SCRIPT 'ALL GREEN' SYNCHRONIZOVANÝ SIGNÁL PRE {symbol}!")
                                     await execute_autonomous_buy(symbol)
@@ -679,11 +675,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.6 (TV Sync + Všetkých 20 tokenov v skeneri) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.7 (8m & 15m upraviteľné) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.6 pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -760,8 +756,22 @@ async def set_tf(tf_val: str):
         SETTINGS.update(TIMEFRAME_PROFILES[tf_lower])
         MARKET_SCANNER_CACHE.clear()
         log_event(f"⏱️ Časový rámec (TF) manuálne zmenený na: {CURRENT_TIMEFRAME}")
-        return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
+        return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME, "settings": SETTINGS})
     return JSONResponse({"status": "error", "message": "Neplatný časový rámec."})
+
+# --- NOVÉ: Endpoint na úpravu parametrov (Trail, BE, TTP, TP) pre aktuálny TF ---
+@app.post("/api/update-param/{param_name}/{val}")
+async def update_param(param_name: str, val: float):
+    global SETTINGS, TIMEFRAME_PROFILES, CURRENT_TIMEFRAME
+    allowed_params = ["trail_pct", "be_trigger_pct", "ttp_trigger_pct", "ttp_callback_pct", "target_pct"]
+    if param_name in allowed_params:
+        SETTINGS[param_name] = float(val)
+        tf_key = CURRENT_TIMEFRAME.lower()
+        if tf_key in TIMEFRAME_PROFILES:
+            TIMEFRAME_PROFILES[tf_key][param_name] = float(val)
+        log_event(f"⚙️ Paraméter {param_name} pre {CURRENT_TIMEFRAME} zmenený na: {val}%")
+        return JSONResponse({"status": "success", "settings": SETTINGS})
+    return JSONResponse({"status": "error", "message": "Neplatný parameter."})
 
 @app.post("/api/manual-buy/{coin}")
 async def manual_buy(coin: str):
@@ -887,7 +897,7 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
-# --- HTML ŠABLÓNA ---
+# --- HTML ŠABLÓNA S OVLÁDANÍM PARAMETROV PRE 8M / 15M ---
 
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
@@ -932,6 +942,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .stat-title { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; }
         .stat-value { font-size: 1.15rem; font-weight: 700; margin-top: 4px; color: var(--accent-white); }
         .section-title { font-size: 0.72rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-top: 8px; margin-bottom: 5px; font-weight: 600; }
+        
+        /* Panel nastavení pre aktuálny TF */
+        .settings-panel { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 10px 14px; display: flex; gap: 15px; align-items: center; flex-wrap: wrap; font-size: 0.72rem; }
+        .setting-item { display: flex; align-items: center; gap: 6px; }
+        .setting-item label { color: var(--text-muted); text-transform: uppercase; font-size: 0.65rem; }
+        .setting-item input { background: var(--bg-color); border: 1px solid var(--border-hover); color: var(--yellow); padding: 3px 6px; width: 65px; border-radius: 3px; font-family: 'JetBrains Mono', monospace; font-weight: 600; text-align: center; }
+
         .terminal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; overflow: hidden; }
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.72rem; }
         th { color: var(--text-muted); font-weight: 500; padding: 9px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.62rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
@@ -951,7 +968,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // AUTO-PILOT (100% TV Sync Mode)</h1>
+                <h1>APEX SCALPER // AUTO-PILOT (8M & 15M Custom Sync)</h1>
                 <p>
                     <span id="header-pair">Top USDC · OKX Demo (Live Dáta)</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
@@ -959,6 +976,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </p>
             </div>
             <div class="actions">
+                <!-- Tlačidlá časových rámcov (vrátane 8M a 15M) -->
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '5M' %}btn-yellow{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
@@ -991,6 +1009,31 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     {% if IS_BOT_ACTIVE %}● ACTIVE{% else %}○ PAUSED{% endif %}
                 </button>
                 <button id="sell-btn" class="btn btn-sell" onclick="sellNow()" disabled>⚡ SELL</button>
+            </div>
+        </div>
+
+        <!-- INTERAKTÍVNY PANEL NA ÚPRAVU PARAMETROV PRE AKTÍVNY TF -->
+        <div class="settings-panel">
+            <span style="color: var(--yellow); font-weight: 700;">⚙️ ÚPRAVA PARAMETROV PRE <span id="panel-tf-label">{{ CURRENT_TIMEFRAME }}</span>:</span>
+            <div class="setting-item">
+                <label>TP (%):</label>
+                <input type="number" step="0.05" id="input-target" onchange="updateParam('target_pct', this.value)">
+            </div>
+            <div class="setting-item">
+                <label>BE Trigger (%):</label>
+                <input type="number" step="0.05" id="input-be" onchange="updateParam('be_trigger_pct', this.value)">
+            </div>
+            <div class="setting-item">
+                <label>Trail Stop (%):</label>
+                <input type="number" step="0.05" id="input-trail" onchange="updateParam('trail_pct', this.value)">
+            </div>
+            <div class="setting-item">
+                <label>TTP Trigger (%):</label>
+                <input type="number" step="0.05" id="input-ttp-trig" onchange="updateParam('ttp_trigger_pct', this.value)">
+            </div>
+            <div class="setting-item">
+                <label>TTP Callback (%):</label>
+                <input type="number" step="0.05" id="input-ttp-call" onchange="updateParam('ttp_callback_pct', this.value)">
             </div>
         </div>
 
@@ -1157,8 +1200,27 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     }
                 });
                 document.getElementById('header-tf').innerText = data.tf;
+                document.getElementById('panel-tf-label').innerText = data.tf;
+                updateSettingsInputs(data.settings);
                 updateState();
             }
+        }
+
+        async function updateParam(paramName, val) {
+            let res = await fetch(`/api/update-param/${paramName}/${val}`, {method: 'POST'});
+            let data = await res.json();
+            if (data.status === 'success') {
+                updateSettingsInputs(data.settings);
+            }
+        }
+
+        function updateSettingsInputs(s) {
+            if (!s) return;
+            document.getElementById('input-target').value = s.target_pct;
+            document.getElementById('input-be').value = s.be_trigger_pct;
+            document.getElementById('input-trail').value = s.trail_pct;
+            document.getElementById('input-ttp-trig').value = s.ttp_trigger_pct;
+            document.getElementById('input-ttp-call').value = s.ttp_callback_pct;
         }
 
         async function manualBuyCustom() {
@@ -1191,6 +1253,11 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 document.getElementById('header-balance').innerText = data.balance.toFixed(2) + " USDC";
                 document.getElementById('current-stage').innerText = data.current_stage;
                 document.getElementById('header-tf').innerText = data.current_tf;
+                document.getElementById('panel-tf-label').innerText = data.current_tf;
+                
+                if (data.settings) {
+                    updateSettingsInputs(data.settings);
+                }
                 
                 let stats = data.stats;
                 document.getElementById('stat-winrate').innerText = stats.win_rate.toFixed(1) + "%";
@@ -1305,6 +1372,7 @@ async def get_state():
         "current_stage": CURRENT_STAGE,
         "current_tf": CURRENT_TIMEFRAME,
         "stats": stats,
+        "settings": SETTINGS,
         "active_trades": ACTIVE_TRADES,
         "scanner_cache": MARKET_SCANNER_CACHE,
         "history": CLOSED_TRADES_HISTORY[:20],
