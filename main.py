@@ -43,7 +43,7 @@ ACTIVE_TRADES = {}
 DAILY_PNL_CALENDAR = []
 CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
-CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na autonómny signál..."
+CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na uzavretie sviečky a signál..."
 LAST_TRADE_TIME = {}
 UNSUPPORTED_DEMO_SYMBOLS = set()
 MARKET_SCANNER_CACHE = {} 
@@ -275,7 +275,7 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
-# --- PRESNÁ PINE SCRIPT LOGIKA Z VÁŠHO INDIKÁTORA ---
+# --- PINE SCRIPT LOGIKA S POTVRDENÍM UZATVORENEJ SVIECKY ---
 
 def calc_ema(values, length):
     if len(values) < length:
@@ -291,9 +291,10 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     coin_key = symbol.split("-")[0]
 
     try:
+        # Sťahujeme 50 sviečok. Index [0] je aktuálna živá sviečka, index [1] je posledná UZATVORENÁ sviečka.
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=50"
         res = okx_public_request(url)
-        if res.get("code") != "0" or not res.get("data"):
+        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 5:
             MARKET_SCANNER_CACHE[coin_key] = {
                 "symbol": symbol, "price": 0.0, "oscillator": 0.0,
                 "momentum": "SLABÉ", "impulse": "ČAKÁ", "trade_status": "---",
@@ -303,11 +304,15 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             return False
 
         candles = res["data"]
-        candles.reverse()
+        candles.reverse() # Od najstaršej po najnovšiu
+        
+        # Orezzme pole tak, aby sme vynechali rozrobeneú živú sviečku [index -1] 
+        # a vyhodnocovali signál prísne na základe UZATVORENEJ sviečky [index -2].
+        closed_candles = candles[:-1]
         
         ha_closes, ha_opens, r_closes = [], [], []
         volumes = []
-        for i, c in enumerate(candles):
+        for i, c in enumerate(closed_candles):
             o, h, l, cl, v = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4]), safe_float(c[5])
             ha_cl = (o + h + l + cl) / 4.0
             ha_op = (o + cl) / 2.0 if i == 0 else (ha_opens[-1] + ha_closes[-1]) / 2.0
@@ -316,7 +321,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             r_closes.append(cl)
             volumes.append(v)
             
-        # Heikin-Ashi objemový smer presne ako v Pine Scripte
         vol_dirs = [v if ha_closes[i] > ha_opens[i] else -v for i, v in enumerate(volumes)]
         fast_ma = calc_ema(vol_dirs, 5)
         slow_ma = calc_ema(vol_dirs, 20)
@@ -328,11 +332,11 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_osc, prev_osc = oscillator_value[-1], oscillator_value[-2]
         curr_sig, prev_sig = signal_line[-1], signal_line[-2]
         
-        # 1. Objemové Momentum podmienka
+        # 1. Objemové Momentum
         cond_volume_bullish = curr_osc > 0 and curr_osc > curr_sig
         momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
 
-        # 2. Nákupný Impulz podmienka (crossover alebo EMA crossover)
+        # 2. Nákupný Impulz (na základe uzavretej sviečky)
         cond_volume_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
         curr_close, prev_close = ha_closes[-1], ha_closes[-2]
         curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
@@ -340,20 +344,15 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         
         buy_trigger = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
         
-        # Ak máme otvorený obchod pre tento coin, stav impulzu je aktívny v trhu
         is_in_trade = coin_key in ACTIVE_TRADES
         impuls_active = buy_trigger or is_in_trade
         impulse_str = "AKTÍVNY (V TRHU)" if impuls_active else "ČAKÁ"
 
-        # Stav obchodu (bod 3 v tabuľke)
         trade_status_txt = f"{ACTIVE_TRADES[coin_key]['entry_price']:.4f}" if is_in_trade else "---"
-
-        # Break-Even status (bod 4)
         be_status_txt = "VYPNUTÝ"
         if is_in_trade:
             be_status_txt = f"{ACTIVE_TRADES[coin_key]['entry_price']:.4f}" if ACTIVE_TRADES[coin_key].get("break_even_activated") else "ČAKÁ"
 
-        # Trailing TP status (bod 5)
         ttp_status_txt = "VYPNUTÝ"
         if is_in_trade:
             if ACTIVE_TRADES[coin_key].get("ttp_activated"):
@@ -361,12 +360,10 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             else:
                 ttp_status_txt = "V TRHU"
 
-        # Trailing Stop status (bod 6)
         ts_status_txt = "VYPNUTÝ"
         if is_in_trade:
             ts_status_txt = f"{ACTIVE_TRADES[coin_key].get('entry_price', 0)*0.994:.4f}"
 
-        # 7. Exekučný pokyn
         exec_signal_str = "NAKÚPIŤ" if buy_trigger else ("DRŽAŤ" if is_in_trade else "ČAKAJ")
 
         MARKET_SCANNER_CACHE[coin_key] = {
@@ -380,7 +377,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "ttp_status": ttp_status_txt,
             "ts_status": ts_status_txt,
             "exec_signal": exec_signal_str,
-            "signal": "🟢 ALL GREEN" if buy_trigger else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH"),
+            "signal": "🟢 ALL GREEN (Uzatvorené)" if buy_trigger else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH"),
             "is_green": buy_trigger
         }
 
@@ -398,7 +395,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
 async def autonomous_scanner_loop():
     await asyncio.sleep(3)
-    log_event(f"🤖 Autonómny Pine Script skener (All Green - Live dáta) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"🤖 Autonómny Pine Script skener (S potvrdením uzatvorenej sviečky) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             max_allowed = SETTINGS.get("max_parallel", 1)
@@ -418,7 +415,7 @@ async def autonomous_scanner_loop():
                             
                         signal_met = evaluate_pine_strategy(symbol, bar_tf=tf_str)
                         if signal_met:
-                            log_event(f"🚀 PINE SCRIPT 'ALL GREEN' SIGNÁL DETEGOVANÝ PRE {symbol}!")
+                            log_event(f"🚀 PINE SCRIPT 'ALL GREEN' SIGNÁL POTVRDENÝ NA UZATVORENEJ SVIEČKE PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
                             
                         await asyncio.sleep(0.3)
@@ -527,7 +524,7 @@ async def execute_autonomous_buy(okx_symbol: str):
             ]
         }
         send_telegram_msg(
-            f"🟢 <b>AUTONÓMNY NÁKUP [TF: {CURRENT_TIMEFRAME}] (Live dáta)</b>\n"
+            f"🟢 <b>AUTONÓMNY NÁKUP [TF: {CURRENT_TIMEFRAME}] (Uzatvorená sviečka)</b>\n"
             f"<b>Pár:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
             f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
@@ -544,7 +541,7 @@ async def advanced_risk_monitor_loop():
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
                 max_p = SETTINGS.get("max_parallel", 1)
-                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem Live trh..."
+                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem uzavreté sviečky..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -681,11 +678,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.5 (Live Market Data) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.5 (Candle Close Mode) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.5 s Live dátami pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.5 (Režim uzavretých sviečok) pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -843,7 +840,7 @@ async def manual_buy(coin: str):
                 "settings": SETTINGS.copy()
             }
             log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$")
-            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}] (Live dáta)</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC")
+            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}] (Uzatvorená sviečka)</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC")
             
             return JSONResponse({"status": "success", "symbol": okx_symbol})
         except Exception as e:
@@ -888,7 +885,7 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
-# --- HTML ŠABLÓNA S KOMPLETNÝM CHECKLISTOM ---
+# --- HTML ŠABLÓNA ---
 
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
@@ -952,7 +949,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // AUTO-PILOT (Live Market Data)</h1>
+                <h1>APEX SCALPER // AUTO-PILOT (Candle Close Mode)</h1>
                 <p>
                     <span id="header-pair">Top USDC · OKX Demo (Live Dáta)</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
@@ -1040,7 +1037,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - Pine Script Checklist)</div>
+            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - Uzatvorené sviečky)</div>
             <div class="terminal-card scrollable-card" style="max-height: 260px;">
                 <table>
                     <thead>
