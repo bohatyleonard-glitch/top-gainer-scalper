@@ -237,7 +237,8 @@ def check_btc_health() -> bool:
     if not SETTINGS["use_btc_filter"]:
         return True
     try:
-        url = "/api/v5/market/candles?instId=BTC-USDC&bar=15m&limit=10"
+        tf_str = CURRENT_TIMEFRAME.lower()
+        url = f"/api/v5/market/candles?instId=BTC-USDC&bar={tf_str}&limit=10"
         res = okx_public_request(url)
         if res.get("code") == "0" and res.get("data"):
             data = res["data"]
@@ -644,11 +645,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.4 (Live Market Data) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.5 (Live Market Data) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.4 s Live dátami pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.5 s Live dátami pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -718,11 +719,12 @@ async def set_parallel(count: int):
 
 @app.post("/api/set-tf/{tf_val}")
 async def set_tf(tf_val: str):
-    global CURRENT_TIMEFRAME, SETTINGS
+    global CURRENT_TIMEFRAME, SETTINGS, MARKET_SCANNER_CACHE
     tf_lower = tf_val.lower()
     if tf_lower in TIMEFRAME_PROFILES:
         CURRENT_TIMEFRAME = tf_val.upper()
         SETTINGS.update(TIMEFRAME_PROFILES[tf_lower])
+        MARKET_SCANNER_CACHE.clear()  # Vymažeme starú cache, aby sa načítali čerstvé dáta pre nový TF
         log_event(f"⏱️ Časový rámec (TF) manuálne zmenený na: {CURRENT_TIMEFRAME}")
         return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
     return JSONResponse({"status": "error", "message": "Neplatný časový rámec."})
@@ -921,11 +923,11 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </p>
             </div>
             <div class="actions">
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '5M' %}btn-yellow{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '5M' %}btn-yellow{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
 
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
@@ -1109,11 +1111,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             if (data.status === 'success') {
                 document.querySelectorAll('.tf-btn').forEach(b => {
                     b.classList.remove('btn-yellow');
-                    if (b.getAttribute('data-tf') === tfVal) {
+                    if (b.getAttribute('data-tf').toLowerCase() === tfVal.toLowerCase()) {
                         b.classList.add('btn-yellow');
                     }
                 });
                 document.getElementById('header-tf').innerText = data.tf;
+                updateState();
             }
         }
 
@@ -1146,6 +1149,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 
                 document.getElementById('header-balance').innerText = data.balance.toFixed(2) + " USDC";
                 document.getElementById('current-stage').innerText = data.current_stage;
+                document.getElementById('header-tf').innerText = data.current_tf;
                 
                 let stats = data.stats;
                 document.getElementById('stat-winrate').innerText = stats.win_rate.toFixed(1) + "%";
@@ -1218,7 +1222,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 }
                 logsBox.innerHTML = lHtml;
 
-            } catch (err) {
+            } కథ (err) {
                 console.error("Chyba pri obnove stavu:", err);
             }
         }
@@ -1250,6 +1254,7 @@ async def get_state():
         "balance": balance,
         "is_bot_active": IS_BOT_ACTIVE,
         "current_stage": CURRENT_STAGE,
+        "current_tf": CURRENT_TIMEFRAME,
         "stats": stats,
         "active_trades": ACTIVE_TRADES,
         "scanner_cache": MARKET_SCANNER_CACHE,
