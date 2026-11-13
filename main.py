@@ -31,12 +31,12 @@ TIMEFRAME_PROFILES = {
     "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m"},
     "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 8m"},
     "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.5, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"},
-    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.3, "target_pct": 1.2, "desc": "30m trendový"},
-    "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.8, "ttp_callback_pct": 0.4, "target_pct": 1.5, "desc": "45m strednodobý"},
-    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.5, "ttp_callback_pct": 0.5, "target_pct": 1.7, "desc": "1h swing"},
-    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.5, "ttp_callback_pct": 0.7, "target_pct": 2.0, "desc": "2h trend"},
-    "3h": {"trail_pct": 4.0, "be_trigger_pct": 3.0, "ttp_trigger_pct": 5.0, "ttp_callback_pct": 1.0, "target_pct": 3.0, "desc": "3h pozičný"},
-    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 7.0, "ttp_callback_pct": 1.5, "target_pct": 3.5, "desc": "4h swing"}
+    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "desc": "30m trendový (TTP od +1.0%)"},
+    "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "desc": "45m strednodobý (TTP od +1.4%)"},
+    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "desc": "1h swing"},
+    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.7, "target_pct": 5.0, "desc": "2h trend"},
+    "3h": {"trail_pct": 4.0, "be_trigger_pct": 3.0, "ttp_trigger_pct": 4.5, "ttp_callback_pct": 1.0, "target_pct": 7.0, "desc": "3h pozičný"},
+    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 6.0, "ttp_callback_pct": 1.5, "target_pct": 10.0, "desc": "4h swing"}
 }
 
 ACTIVE_TRADES = {}
@@ -277,7 +277,7 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
-# --- PINE SCRIPT LOGIKA (ALL GREEN) V PYTHONE ---
+# --- PINE SCRIPT LOGIKA (ALL GREEN CHECKLIST) V PYTHONE ---
 
 def calc_ema(values, length):
     if len(values) < length:
@@ -300,6 +300,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 "symbol": symbol,
                 "price": 0.0,
                 "oscillator": 0.0,
+                "momentum": "SLABÉ",
+                "impulse": "ČAKÁ",
+                "exec_signal": "ČAKÁ",
                 "signal": "⚠️ CHYBA DÁT",
                 "is_green": False
             }
@@ -328,21 +331,32 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_osc, prev_osc = oscillator[-1], oscillator[-2]
         curr_sig, prev_sig = signal_line[-1], signal_line[-2]
         
+        # 1. Objemové Momentum (Silné ak oscilátor > 0 a rastie nad signálku)
         cond_volume_bullish = curr_osc > 0 and curr_osc > curr_sig
+        momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
+
+        # 2. Nákupný Impulz (Aktívny pri prekrižovaní alebo priaznivom trende)
         cond_volume_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
-        
         curr_close, prev_close = ha_closes[-1], ha_closes[-2]
         curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
-        all_green_condition = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
-        
+        cond_impulse_active = cond_volume_crossover or close_crossover_ema9
+        impulse_str = "AKTÍVNY (V TRHU)" if cond_impulse_active else "ČAKÁ"
+
+        # 3. Finálny exekučný pokyn (Všetky podmienky naraz = NAKÚPIŤ)
+        all_green_condition = cond_volume_bullish and cond_impulse_active
+        exec_signal_str = "NAKÚPIŤ" if all_green_condition else "ČAKÁ"
+
         status_text = "🟢 ALL GREEN" if all_green_condition else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH")
 
         MARKET_SCANNER_CACHE[coin_key] = {
             "symbol": symbol,
             "price": curr_close,
             "oscillator": round(curr_osc, 2),
+            "momentum": momentum_str,
+            "impulse": impulse_str,
+            "exec_signal": exec_signal_str,
             "signal": status_text,
             "is_green": all_green_condition
         }
@@ -353,6 +367,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "symbol": symbol,
             "price": 0.0,
             "oscillator": 0.0,
+            "momentum": "SLABÉ",
+            "impulse": "ČAKÁ",
+            "exec_signal": "ČAKÁ",
             "signal": "⚠️ VÝNIMKA",
             "is_green": False
         }
@@ -852,7 +869,7 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
-# --- HTML ŠABLÓNA ---
+# --- HTML ŠABLÓNA (S ROZŠÍRENÝM CHECKLISTOM V TABUĽKE) ---
 
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
@@ -907,6 +924,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .log-line { white-space: pre-wrap; word-break: break-all; line-height: 1.4; border-bottom: 1px dashed rgba(255,255,255,0.03); padding-bottom: 4px; }
         .text-green { color: var(--green); font-weight: 700; }
         .text-red { color: var(--red); font-weight: 700; }
+        .text-yellow { color: var(--yellow); font-weight: 700; }
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.01); }
         .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
     </style>
@@ -919,7 +937,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <p>
                     <span id="header-pair">Top USDC · OKX Demo (Live Dáta)</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
-                    <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span> (TP +0.75%)</span>
+                    <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
                 </p>
             </div>
             <div class="actions">
@@ -1003,19 +1021,20 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - Live dáta)</div>
-            <div class="terminal-card scrollable-card" style="max-height: 220px;">
+            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - Checklist Live)</div>
+            <div class="terminal-card scrollable-card" style="max-height: 240px;">
                 <table>
                     <thead>
                         <tr>
                             <th>Token / Pár</th>
-                            <th>Aktuálna Cena</th>
-                            <th>Objemový Oscilátor</th>
-                            <th>Pine Script Stav</th>
+                            <th>Cena</th>
+                            <th>1. Objemové Momentum</th>
+                            <th>2. Nákupný Impulz</th>
+                            <th>7. Exekučný Pokyn</th>
                         </tr>
                     </thead>
                     <tbody id="scanner-tbody">
-                        <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Načítavam stav skenera...</td></tr>
+                        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Načítavam stav skenera...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1185,17 +1204,21 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 if (Object.keys(scannerData).length > 0) {
                     let sHtml = "";
                     for (let [coin, info] of Object.entries(scannerData)) {
-                        let oscClass = info.oscillator >= 0 ? "text-green" : "text-red";
+                        let momClass = info.momentum === "SILNÉ" ? "text-green" : "text-red";
+                        let impClass = info.impulse.includes("AKTÍVNY") ? "text-green" : "text-yellow";
+                        let execClass = info.exec_signal === "NAKÚPIŤ" ? "text-green" : "text-yellow";
+
                         sHtml += `<tr>
                             <td><b>${info.symbol}</b></td>
                             <td>${info.price ? info.price.toFixed(4) : '--'}</td>
-                            <td class="${oscClass}">${info.oscillator}</td>
-                            <td>${info.signal}</td>
+                            <td class="${momClass}">${info.momentum}</td>
+                            <td class="${impClass}">${info.impulse}</td>
+                            <td class="${execClass}">${info.exec_signal}</td>
                         </tr>`;
                     }
                     scannerTbody.innerHTML = sHtml;
                 } else {
-                    scannerTbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Prebieha úvodné skenovanie trhu...</td></tr>`;
+                    scannerTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Prebieha úvodné skenovanie trhu...</td></tr>`;
                 }
 
                 let historyTbody = document.getElementById('history-tbody');
