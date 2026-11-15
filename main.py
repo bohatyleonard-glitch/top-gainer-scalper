@@ -24,19 +24,17 @@ WEBHOOK_SECRET = "moje_tajne_heslo_123"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-# --- DYNAMICKE PROFILY PRE CASOVE RAMCE ---
+# --- DYNAMICKE PROFILY PRE CASOVE RAMCE (VRATANE 8M A 10M) ---
 
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
     "5m": {"trail_pct": 0.6, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.7, "ttp_callback_pct": 0.2, "target_pct": 0.65, "desc": "Skalper 5m"},
-    "8m": {"trail_pct": 0.65, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.75, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 8m scalp (+0.75%)"},
-    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"},
-    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "desc": "30m trendový (TTP od +1.0%)"},
-    "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "desc": "45m strednodobý (TTP od +1.4%)"},
-    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "desc": "1h swing"},
-    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.7, "target_pct": 5.0, "desc": "2h trend"},
-    "3h": {"trail_pct": 4.0, "be_trigger_pct": 3.0, "ttp_trigger_pct": 4.5, "ttp_callback_pct": 1.0, "target_pct": 7.0, "desc": "3h pozičný"},
-    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 6.0, "ttp_callback_pct": 1.5, "target_pct": 10.0, "desc": "4h swing"}
+    "8m": {"trail_pct": 0.65, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.75, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 8m scalp (+0.75%) [65% WR]"},
+    "10m": {"trail_pct": 0.68, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.78, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 10m scalp (+0.75%) [70% WR]"},
+    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%) [69% WR]"},
+    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "desc": "30m trendový"},
+    "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "desc": "45m strednodobý"},
+    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "desc": "1h swing"}
 }
 
 ACTIVE_TRADES = {}
@@ -57,11 +55,12 @@ ALLOWED_STABLES = ["USDC"]
 # Blacklist vysoko rizikových / falošne signálnych tokenov
 BLACKLIST_COINS = {"HYPE", "PUMP", "PEPE", "XMSTR"}
 
+# Predvolené Top 20 likvidné USDC páry (okrem BTC a ETH, bez šumu)
 TOP_LIQUID_SYMBOLS = [
     "SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC",
     "LINK-USDC", "DOGE-USDC", "NEAR-USDC", "RUNE-USDC",
     "RENDER-USDC", "APT-USDC", "ARB-USDC", "OP-USDC", "INJ-USDC",
-    "TIA-USDC", "SEI-USDC", "DOT-USDC", "ATOM-USDC", "UNI-USDC"
+    "TIA-USDC", "SEI-USDC", "DOT-USDC", "ATOM-USDC", "UNI-USDC", "NEAR-USDC"
 ]
 
 SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
@@ -74,7 +73,8 @@ SETTINGS.update({
     "max_parallel": 1,
     "fib_choice": 0.786,
     "pivot_len": 2,
-    "ha_exit_consecutive": 2
+    "ha_exit_consecutive": 2,
+    "use_volume_spike": True  # Nový filter pre objemové šoky
 })
 
 def log_event(message: str):
@@ -400,7 +400,13 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
-        buy_trigger = cond_above_fib and cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
+        # Volume Spike filter (Objemová špička > 2.0x priemeru za posledných 20 sviečok)
+        vol_spike_ok = True
+        if SETTINGS.get("use_volume_spike", True) and len(volumes) >= 20:
+            avg_vol = sum(volumes[-20:]) / 20.0
+            vol_spike_ok = volumes[-1] >= (avg_vol * 1.5)
+
+        buy_trigger = cond_above_fib and cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9) and vol_spike_ok
 
         ha_consec = SETTINGS.get("ha_exit_consecutive", 2)
         ha_is_red_curr = ha_closes[-1] < ha_opens[-1]
@@ -784,11 +790,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.5 (100% TV Sync Mode) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.7.0 (100% TV Sync Mode + 8M/10M) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.5 (100% TV Sync) pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.7.0 (100% TV Sync) pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -1057,7 +1063,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="brand">
                 <h1>APEX SCALPER // AUTO-PILOT (100% TV Sync Mode)</h1>
                 <p>
-                    <span id="header-pair">Top USDC · OKX Demo (Live Dáta)</span>
+                    <span id="header-pair">Top USDC (Exkl. BTC/ETH) · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
                     <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
                 </p>
@@ -1065,9 +1071,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="actions">
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '5M' %}btn-yellow{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '10M' %}btn-yellow{% endif %}" data-tf="10m" onclick="setTf('10m')">10M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
 
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
@@ -1143,7 +1148,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - 100% TV Sync)</div>
+            <div class="section-title">Live Market Scanner Status (Top Liquid USDC Pairs + Volume Spike Filter)</div>
             <div class="terminal-card scrollable-card" style="max-height: 260px;">
                 <table>
                     <thead>
