@@ -27,16 +27,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 # --- DYNAMICKE PROFILY PRE CASOVE RAMCE ---
 
 TIMEFRAME_PROFILES = {
-    "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
-    "5m": {"trail_pct": 0.6, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.7, "ttp_callback_pct": 0.2, "target_pct": 0.65, "desc": "Skalper 5m"},
-    "8m": {"trail_pct": 0.65, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.75, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 8m scalp (+0.75%)"},
-    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"},
-    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "desc": "30m trendový (TTP od +1.0%)"},
-    "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "desc": "45m strednodobý (TTP od +1.4%)"},
-    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "desc": "1h swing"},
-    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.7, "target_pct": 5.0, "desc": "2h trend"},
-    "3h": {"trail_pct": 4.0, "be_trigger_pct": 3.0, "ttp_trigger_pct": 4.5, "ttp_callback_pct": 1.0, "target_pct": 7.0, "desc": "3h pozičný"},
-    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 6.0, "ttp_callback_pct": 1.5, "target_pct": 10.0, "desc": "4h swing"}
+    "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "sl_pct": 0.65, "desc": "Skalper 1m"},
+    "5m": {"trail_pct": 0.6, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.7, "ttp_callback_pct": 0.2, "target_pct": 0.65, "sl_pct": 0.65, "desc": "Skalper 5m"},
+    "8m": {"trail_pct": 0.65, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.75, "ttp_callback_pct": 0.2, "target_pct": 0.75, "sl_pct": 0.65, "desc": "Rýchly 8m scalp (+0.75%)"},
+    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "sl_pct": 0.65, "desc": "Rýchly 15m scalp (+0.75%)"},
+    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "sl_pct": 0.65, "desc": "30m trendový"},
+    "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "sl_pct": 0.65, "desc": "45m strednodobý"},
+    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "sl_pct": 0.65, "desc": "1h swing"},
+    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.7, "target_pct": 5.0, "sl_pct": 0.65, "desc": "2h trend"},
+    "3h": {"trail_pct": 4.0, "be_trigger_pct": 3.0, "ttp_trigger_pct": 4.5, "ttp_callback_pct": 1.0, "target_pct": 7.0, "sl_pct": 0.65, "desc": "3h pozičný"},
+    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 6.0, "ttp_callback_pct": 1.5, "target_pct": 10.0, "sl_pct": 0.65, "desc": "4h swing"}
 }
 
 ACTIVE_TRADES = {}
@@ -393,7 +393,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
 
         fib_target = calc_fib_target(ha_highs, ha_lows, pivot_len=SETTINGS.get("pivot_len", 2), fib_ratio=SETTINGS.get("fib_choice", 0.786))
-        cond_above_fib = (fib_target is not None) and (ha_closes[-1] > fib_target)
+        cond_above_fib = (fib_target is not None) and (ha_lows[-1] <= fib_target)
 
         cond_volume_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
         curr_close, prev_close = ha_closes[-1], ha_closes[-2]
@@ -402,7 +402,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         
         buy_trigger = cond_above_fib and cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
 
-        ha_consec = SETTINGS.get("ha_exit_consecutive", 2)
+        ha_consec = SETTINGS.get("ha_exit_consecutive", 1)
         ha_is_red_curr = ha_closes[-1] < ha_opens[-1]
         ha_is_red_prev = ha_closes[-2] < ha_opens[-2]
         if ha_consec == 1:
@@ -572,7 +572,10 @@ async def execute_autonomous_buy(okx_symbol: str):
             
         coin_amount = float(formatted_sz)
         actual_spent_usdc = coin_amount * current_price
-        sl_price = current_price * (1 - 0.006)
+        
+        # Presné hodnoty pre SL (-0.65%), BE (+1.2%), TTP (+1.2%), TP (+0.75%)
+        sl_pct = SETTINGS.get("sl_pct", 0.65)
+        sl_price = current_price * (1 - (sl_pct / 100.0))
         be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
         ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
         target_pct = SETTINGS.get("target_pct", 0.75)
@@ -699,7 +702,9 @@ async def advanced_risk_monitor_loop():
                         del ACTIVE_TRADES[coin]
                         continue
 
-                    be_trigger = trade_settings.get("be_trigger_pct", 0.35)
+                    be_trigger = trade_settings.get("be_trigger_pct", 1.2)
+                    sl_pct = trade_settings.get("sl_pct", 0.65)
+                    
                     if be_trigger > 0:
                         trail_stop_price = trade["highest_price"] * (1 - (trade_settings["trail_pct"] / 100.0))
                         
@@ -707,9 +712,9 @@ async def advanced_risk_monitor_loop():
                             trade["break_even_activated"] = True
                             effective_sl = max(trail_stop_price, trade["entry_price"])
                         else:
-                            effective_sl = trade["entry_price"] * (1 - 0.006)
+                            effective_sl = trade["entry_price"] * (1 - (sl_pct / 100.0))
                             
-                        ttp_trigger = trade_settings.get("ttp_trigger_pct", 0.0)
+                        ttp_trigger = trade_settings.get("ttp_trigger_pct", 1.2)
                         if ttp_trigger > 0:
                             ttp_activation_price = trade["entry_price"] * (1 + (ttp_trigger / 100.0))
                             if current_price >= ttp_activation_price:
@@ -723,7 +728,7 @@ async def advanced_risk_monitor_loop():
                         CURRENT_STAGE = f"STAV: Aktívnych pozícií: {len(ACTIVE_TRADES)} | Posledná: {symbol} ({pnl_pct:+.2f}%)"
                         
                         if current_price <= effective_sl:
-                            reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else "Stop-Loss (-0.6%)"
+                            reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else f"Stop-Loss (-{sl_pct}%)"
                             try:
                                 fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
                                 if fmt_sz:
@@ -760,7 +765,7 @@ async def advanced_risk_monitor_loop():
 
                     scanner_info = MARKET_SCANNER_CACHE.get(coin, {})
                     if scanner_info.get("ha_exit_triggered") or scanner_info.get("exec_signal") == "EXIT SIGNÁL":
-                        reason = f"EXIT SIGNÁL ({trade_settings.get('ha_exit_consecutive', 2)}x červená HA)"
+                        reason = f"EXIT SIGNÁL ({trade_settings.get('ha_exit_consecutive', 1)}x červená HA)"
                         try:
                             fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
                             if fmt_sz:
@@ -784,11 +789,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.5 (100% TV Sync Mode) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.8 (100% TV Strategy Sync) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.6.5 (100% TV Sync) pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -919,7 +924,8 @@ async def manual_buy(coin: str):
             
             coin_amount = float(formatted_sz)
             actual_spent_usdc = coin_amount * current_price
-            sl_price = current_price * (1 - 0.006)
+            sl_pct = SETTINGS.get("sl_pct", 0.65)
+            sl_price = current_price * (1 - (sl_pct / 100.0))
             be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
             ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
             target_pct = SETTINGS.get("target_pct", 0.75)
@@ -1055,7 +1061,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // AUTO-PILOT (100% TV Sync Mode)</h1>
+                <h1>APEX SCALPER // AUTO-PILOT (100% TV Strategy Sync)</h1>
                 <p>
                     <span id="header-pair">Top USDC · OKX Demo (Live Dáta)</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
