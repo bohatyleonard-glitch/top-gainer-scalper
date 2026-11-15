@@ -24,7 +24,7 @@ WEBHOOK_SECRET = "moje_tajne_heslo_123"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-# --- DYNAMICKE PROFILY PRE CASOVE RAMCE (VRATANE 8M A 10M) ---
+# --- DYNAMICKE PROFILY PRE VSETKY CASOVE RAMCE (KOMPLETNE) ---
 
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
@@ -34,7 +34,10 @@ TIMEFRAME_PROFILES = {
     "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%) [69% WR]"},
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "desc": "30m trendový"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "desc": "45m strednodobý"},
-    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "desc": "1h swing"}
+    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "desc": "1h swing"},
+    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.7, "target_pct": 5.0, "desc": "2h trend"},
+    "3h": {"trail_pct": 4.0, "be_trigger_pct": 3.0, "ttp_trigger_pct": 4.5, "ttp_callback_pct": 1.0, "target_pct": 7.0, "desc": "3h pozičný"},
+    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 6.0, "ttp_callback_pct": 1.5, "target_pct": 10.0, "desc": "4h swing"}
 }
 
 ACTIVE_TRADES = {}
@@ -48,7 +51,7 @@ MARKET_SCANNER_CACHE = {}
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
-CURRENT_TIMEFRAME = "15M"
+CURRENT_TIMEFRAME = "10M"
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC"]
 
@@ -60,10 +63,10 @@ TOP_LIQUID_SYMBOLS = [
     "SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC",
     "LINK-USDC", "DOGE-USDC", "NEAR-USDC", "RUNE-USDC",
     "RENDER-USDC", "APT-USDC", "ARB-USDC", "OP-USDC", "INJ-USDC",
-    "TIA-USDC", "SEI-USDC", "DOT-USDC", "ATOM-USDC", "UNI-USDC", "NEAR-USDC"
+    "TIA-USDC", "SEI-USDC", "DOT-USDC", "ATOM-USDC", "UNI-USDC"
 ]
 
-SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
+SETTINGS = TIMEFRAME_PROFILES["10m"].copy()
 SETTINGS.update({
     "use_btc_filter": True,
     "reentry_cooldown_sec": 120,
@@ -74,7 +77,7 @@ SETTINGS.update({
     "fib_choice": 0.786,
     "pivot_len": 2,
     "ha_exit_consecutive": 2,
-    "use_volume_spike": True  # Nový filter pre objemové šoky
+    "use_volume_spike": True
 })
 
 def log_event(message: str):
@@ -330,7 +333,7 @@ def calc_fib_target(ha_highs, ha_lows, pivot_len=2, fib_ratio=0.786):
         return last_high - range_size * fib_ratio
     return None
 
-def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
+def evaluate_pine_strategy(symbol: str, bar_tf: str = "10m"):
     global MARKET_SCANNER_CACHE, ACTIVE_TRADES
     coin_key = symbol.split("-")[0]
 
@@ -400,7 +403,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
-        # Volume Spike filter (Objemová špička > 2.0x priemeru za posledných 20 sviečok)
+        # Volume Spike filter
         vol_spike_ok = True
         if SETTINGS.get("use_volume_spike", True) and len(volumes) >= 20:
             avg_vol = sum(volumes[-20:]) / 20.0
@@ -421,7 +424,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         
         is_in_trade = coin_key in ACTIVE_TRADES
         impuls_active = buy_trigger or is_in_trade
-        impulse_str = "AKTÍVNY (V TRHU)" if impuls_active else "ČAKÁ"
+        impulse_str = "AKTÍVNY (V TRHU)" if is_in_trade else ("ČAKÁ" if not buy_trigger else "SIGNÁL")
 
         trade_status_txt = f"{ACTIVE_TRADES[coin_key]['entry_price']:.4f}" if is_in_trade else "---"
         be_status_txt = "VYPNUTÝ"
@@ -790,11 +793,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.7.0 (100% TV Sync Mode + 8M/10M) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.7.1 (100% TV Sync Mode - Všetky TF) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.7.0 (100% TV Sync) pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO v5.7.1 pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -997,7 +1000,7 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
-# --- HTML ŠABLÓNA ---
+# --- HTML ŠABLÓNA (VŠETKY ČASOVÉ RÁMCE OBNOVENÉ) ---
 
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
@@ -1026,8 +1029,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .brand h1 { font-size: 1.05rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
         .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.8px; display: flex; gap: 12px; flex-wrap: wrap; }
         .balance-tag { color: var(--yellow); font-weight: 700; }
-        .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-        .btn { background: transparent; border: 1px solid var(--border-hover); color: var(--text-main); padding: 5px 10px; font-size: 0.7rem; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px; }
+        .actions { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
+        .btn { background: transparent; border: 1px solid var(--border-hover); color: var(--text-main); padding: 4px 8px; font-size: 0.65rem; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px; }
         .btn:hover { border-color: var(--text-muted); background: rgba(255,255,255,0.03); }
         .btn-on { border-color: var(--green); color: var(--green); }
         .btn-off { border-color: var(--text-muted); color: var(--text-muted); }
@@ -1054,7 +1057,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .text-red { color: var(--red); font-weight: 700; }
         .text-yellow { color: var(--yellow); font-weight: 700; }
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.01); }
-        .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
+        .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 45px; outline: none; text-transform: uppercase; font-weight: 600; }
     </style>
 </head>
 <body>
@@ -1069,10 +1072,16 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </p>
             </div>
             <div class="actions">
+                <!-- Všetky časové rámce kompletne naspäť -->
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '5M' %}btn-yellow{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '10M' %}btn-yellow{% endif %}" data-tf="10m" onclick="setTf('10m')">10M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '1H' %}btn-yellow{% endif %}" data-tf="1h" onclick="setTf('1h')">1H</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '2H' %}btn-yellow{% endif %}" data-tf="2h" onclick="setTf('2h')">2H</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '4H' %}btn-yellow{% endif %}" data-tf="4h" onclick="setTf('4h')">4H</button>
 
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
@@ -1083,15 +1092,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
 
                 <div class="custom-buy-box">
                     <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL">
-                    <button class="btn btn-on" style="padding: 2px 5px;" onclick="manualBuyCustom()">BUY</button>
+                    <button class="btn btn-on" style="padding: 2px 4px;" onclick="manualBuyCustom()">BUY</button>
                 </div>
 
                 <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-yellow{% endif %}" onclick="toggleCompounding()">
-                    COMPOUND: {% if SETTINGS.compounding_enabled %}ON{% else %}OFF{% endif %}
+                    COMP: {% if SETTINGS.compounding_enabled %}ON{% else %}OFF{% endif %}
                 </button>
                 <button id="btc-btn" class="btn {% if SETTINGS.use_btc_filter %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBtcFilter()">
                     BTC: {% if SETTINGS.use_btc_filter %}ON{% else %}OFF{% endif %}
@@ -1222,10 +1230,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             let btn = document.getElementById('compounding-btn');
             if (data.compounding_enabled) {
                 btn.className = "btn btn-yellow";
-                btn.innerText = "COMPOUND: ON";
+                btn.innerText = "COMP: ON";
             } else {
                 btn.className = "btn";
-                btn.innerText = "COMPOUND: OFF";
+                btn.innerText = "COMP: OFF";
             }
         }
 
