@@ -54,7 +54,7 @@ CURRENT_TIMEFRAME = "15M"
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC"]
 
-# Blacklist vysoko rizikových / falošne signálnych tokenov (podľa dohody)
+# Blacklist vysoko rizikových / falošne signálnych tokenov
 BLACKLIST_COINS = {"HYPE", "PUMP", "PEPE", "XMSTR"}
 
 TOP_LIQUID_SYMBOLS = [
@@ -338,7 +338,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         return False, False
 
     try:
-        # Sťahujeme dostatočnú históriu sviečok pre presný výpočet EMA a Pivotov (80 barov)
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=80"
         res = okx_public_request(url)
         if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 25:
@@ -351,10 +350,8 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             return False, False
 
         candles = res["data"]
-        candles.reverse() # Zoradíme od najstaršej po najnovšiu
+        candles.reverse()
         
-        # Striktné vyhodnocovanie na základe UZATVORENEJ sviečky (index -2), 
-        # aby sa hodnoty dokonale zhodovali s TradingView indikátorom.
         closed_candles = candles[:-1]
         
         ha_closes, ha_opens, ha_highs, ha_lows = [], [], [], []
@@ -371,7 +368,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             ha_lows.append(ha_lo)
             volumes.append(v)
             
-        # Výpočet objemového smeru Heikin-Ashi rovnako ako v Pine Scripte
         vol_dirs = [v if ha_closes[i] > ha_opens[i] else -v for i, v in enumerate(volumes)]
         fast_ma = calc_ema(vol_dirs, 5)
         slow_ma = calc_ema(vol_dirs, 20)
@@ -383,7 +379,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_osc, prev_osc = oscillator_value[-1], oscillator_value[-2]
         curr_sig, prev_sig = signal_line[-1], signal_line[-2]
 
-        # Prediktívny sklon oscilátora (rovnako ako pred_look = 3 v Pine Scripte) - filtruje falošné signály
         raw_slopes = []
         for k in range(3):
             idx_end = len(oscillator_value) - k
@@ -394,15 +389,12 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         smooth_slope = calc_wma(raw_slopes, len(raw_slopes)) if raw_slopes else 0.0
         predicted_next_value = curr_osc + smooth_slope
         
-        # 1. Objemové Momentum (sprísnené o rastúci sklon oscilátora proti falošným signálom)
         cond_volume_bullish = (curr_osc > 0) and (curr_osc > curr_sig) and (predicted_next_value > curr_osc)
         momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
 
-        # 2. Fibonacciho hladina (uzavretie sviečky výhradne nad Fib hladinou 0.786 ako v Pine Scripte)
         fib_target = calc_fib_target(ha_highs, ha_lows, pivot_len=SETTINGS.get("pivot_len", 2), fib_ratio=SETTINGS.get("fib_choice", 0.786))
         cond_above_fib = (fib_target is not None) and (ha_closes[-1] > fib_target)
 
-        # 3. Nákupný Impulz (100% Pine Script All Green podmienka)
         cond_volume_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
         curr_close, prev_close = ha_closes[-1], ha_closes[-2]
         curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
@@ -410,7 +402,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         
         buy_trigger = cond_above_fib and cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
 
-        # 4. Exit podmienka podľa Pine Scriptu: Počet červených HA sviečok pre exit (2 = filter šumu)
         ha_consec = SETTINGS.get("ha_exit_consecutive", 2)
         ha_is_red_curr = ha_closes[-1] < ha_opens[-1]
         ha_is_red_prev = ha_closes[-2] < ha_opens[-2]
@@ -442,7 +433,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         if is_in_trade:
             ts_status_txt = f"{ACTIVE_TRADES[coin_key].get('entry_price', 0)*0.994:.4f}"
 
-        # 7. Exekučný pokyn (7. bod checklistu - zhodný s Pine Script tabuľkou)
         if buy_trigger and not is_in_trade:
             exec_signal_str = "NAKÚPIŤ"
         elif is_in_trade and ha_exit_triggered:
@@ -488,13 +478,11 @@ async def autonomous_scanner_loop():
             max_allowed = SETTINGS.get("max_parallel", 1)
             tf_str = CURRENT_TIMEFRAME.lower()
             
-            # 1. Aktualizujeme stav pre všetky aktívne pozície (kvôli sledovaniu 2 červených HA sviečok pre EXIT SIGNÁL)
             for active_coin in list(ACTIVE_TRADES.keys()):
                 active_sym = ACTIVE_TRADES[active_coin]["market_pair"]
                 evaluate_pine_strategy(active_sym, bar_tf=tf_str)
                 await asyncio.sleep(0.2)
 
-            # 2. Hľadáme nové vstupy pre voľné sloty
             if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
                 if check_btc_health():
                     for symbol in list(TOP_LIQUID_SYMBOLS):
@@ -623,14 +611,10 @@ async def execute_autonomous_buy(okx_symbol: str):
             ]
         }
         send_telegram_msg(
-            f"🟢 <b>SYNCHRONIZOVANÝ NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>
-"
-            f"<b>Pár:</b> {okx_symbol}
-"
-            f"<b>Vstup:</b> {current_price:.4f}
-"
-            f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC
-"
+            f"🟢 <b>SYNCHRONIZOVANÝ NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
+            f"<b>Pár:</b> {okx_symbol}\n"
+            f"<b>Vstup:</b> {current_price:.4f}\n"
+            f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
             f"🎯 <b>Cieľ (TP):</b> {target_str}",
             reply_markup=inline_keyboard
         )
@@ -681,9 +665,7 @@ async def advanced_risk_monitor_loop():
                         pnl_usdc = invested * (pnl_pct / 100.0)
                         record_closed_trade(symbol, pnl_pct, pnl_usdc, "GTC Expirácia 48h")
                         log_event(f"⏳ Expirácia 48h pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                        send_telegram_msg(f"⏳ <b>GTC EXPIRÁCIA 48H</b>
-<b>Pár:</b> {symbol}
-<b>PnL:</b> {pnl_pct:+.2f}%")
+                        send_telegram_msg(f"⏳ <b>GTC EXPIRÁCIA 48H</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                     except Exception:
                         pass
                     del ACTIVE_TRADES[coin]
@@ -711,9 +693,7 @@ async def advanced_risk_monitor_loop():
                                 okx_request("POST", "/api/v5/trade/order", order_body)
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
                             log_event(f"🎯 Uzavretý 100% Take Profit pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                            send_telegram_msg(f"🎯 <b>UZAVRETÝ 100% TAKE PROFIT</b>
-<b>Pár:</b> {symbol}
-<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+                            send_telegram_msg(f"🎯 <b>UZAVRETÝ 100% TAKE PROFIT</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
                         except Exception:
                             pass
                         del ACTIVE_TRADES[coin]
@@ -754,9 +734,7 @@ async def advanced_risk_monitor_loop():
                                     okx_request("POST", "/api/v5/trade/order", order_body)
                                 record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
                                 log_event(f"🚨 Uzavretá 100% pozícia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                                send_telegram_msg(f"🚨 <b>UZAVRETÁ 100% POZÍCIA ({reason})</b>
-<b>Pár:</b> {symbol}
-<b>PnL:</b> {pnl_pct:+.2f}%")
+                                send_telegram_msg(f"🚨 <b>UZAVRETÁ 100% POZÍCIA ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                             except Exception:
                                 pass
                             del ACTIVE_TRADES[coin]
@@ -774,15 +752,12 @@ async def advanced_risk_monitor_loop():
                                     okx_request("POST", "/api/v5/trade/order", order_body)
                                 record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
                                 log_event(f"🎯 Uzavretá 100% pozícia (Trailing TP) pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                                send_telegram_msg(f"🎯 <b>UZAVRETÁ 100% POZÍCIA (TTP)</b>
-<b>Pár:</b> {symbol}
-<b>PnL:</b> {pnl_pct:+.2f}%")
+                                send_telegram_msg(f"🎯 <b>UZAVRETÁ 100% POZÍCIA (TTP)</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                             except Exception:
                                 pass
                             del ACTIVE_TRADES[coin]
                             continue
 
-                    # EXIT SIGNÁL z Pine Scriptu (2 po sebe idúce červené uzavreté HA sviečky)
                     scanner_info = MARKET_SCANNER_CACHE.get(coin, {})
                     if scanner_info.get("ha_exit_triggered") or scanner_info.get("exec_signal") == "EXIT SIGNÁL":
                         reason = f"EXIT SIGNÁL ({trade_settings.get('ha_exit_consecutive', 2)}x červená HA)"
@@ -796,9 +771,7 @@ async def advanced_risk_monitor_loop():
                                 okx_request("POST", "/api/v5/trade/order", order_body)
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
                             log_event(f"📉 Uzavretá 100% pozícia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                            send_telegram_msg(f"📉 <b>UZAVRETÁ 100% POZÍCIA ({reason})</b>
-<b>Pár:</b> {symbol}
-<b>PnL:</b> {pnl_pct:+.2f}%")
+                            send_telegram_msg(f"📉 <b>UZAVRETÁ 100% POZÍCIA ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                         except Exception:
                             pass
                         del ACTIVE_TRADES[coin]
