@@ -24,19 +24,19 @@ WEBHOOK_SECRET = "moje_tajne_heslo_123"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-# --- DYNAMICKE PROFILY PRE CASOVE RAMCE ---
+# --- DYNAMICKE PROFILY PRE CASOVE RAMCE (BE ZMENENÝ NA 0.35%) ---
 
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "sl_pct": 0.65, "desc": "Skalper 1m"},
     "5m": {"trail_pct": 0.6, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.7, "ttp_callback_pct": 0.2, "target_pct": 0.65, "sl_pct": 0.65, "desc": "Skalper 5m"},
     "8m": {"trail_pct": 0.65, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.75, "ttp_callback_pct": 0.2, "target_pct": 0.75, "sl_pct": 0.65, "desc": "Rýchly 8m scalp (+0.75%)"},
     "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "sl_pct": 0.65, "desc": "Rýchly 15m scalp (+0.75%)"},
-    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "sl_pct": 0.65, "desc": "30m trendový"},
-    "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "sl_pct": 0.65, "desc": "45m strednodobý"},
-    "1h": {"trail_pct": 2.0, "be_trigger_pct": 1.6, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "sl_pct": 0.65, "desc": "1h swing"},
-    "2h": {"trail_pct": 3.0, "be_trigger_pct": 2.2, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.7, "target_pct": 5.0, "sl_pct": 0.65, "desc": "2h trend"},
-    "3h": {"trail_pct": 4.0, "be_trigger_pct": 3.0, "ttp_trigger_pct": 4.5, "ttp_callback_pct": 1.0, "target_pct": 7.0, "sl_pct": 0.65, "desc": "3h pozičný"},
-    "4h": {"trail_pct": 5.5, "be_trigger_pct": 4.0, "ttp_trigger_pct": 6.0, "ttp_callback_pct": 1.5, "target_pct": 10.0, "sl_pct": 0.65, "desc": "4h swing"}
+    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.35, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "sl_pct": 0.65, "desc": "30m trendový"},
+    "45m": {"trail_pct": 1.5, "be_trigger_pct": 0.35, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "sl_pct": 0.65, "desc": "45m strednodobý"},
+    "1h": {"trail_pct": 2.0, "be_trigger_pct": 0.35, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "sl_pct": 0.65, "desc": "1h swing"},
+    "2h": {"trail_pct": 3.0, "be_trigger_pct": 0.35, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.7, "target_pct": 5.0, "sl_pct": 0.65, "desc": "2h trend"},
+    "3h": {"trail_pct": 4.0, "be_trigger_pct": 0.35, "ttp_trigger_pct": 4.5, "ttp_callback_pct": 1.0, "target_pct": 7.0, "sl_pct": 0.65, "desc": "3h pozičný"},
+    "4h": {"trail_pct": 5.5, "be_trigger_pct": 0.35, "ttp_trigger_pct": 6.0, "ttp_callback_pct": 1.5, "target_pct": 10.0, "sl_pct": 0.65, "desc": "4h swing"}
 }
 
 ACTIVE_TRADES = {}
@@ -45,17 +45,15 @@ CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na synchronizovaný signál..."
 LAST_TRADE_TIME = {}
-UNSUPPORTED_DEMO_SYMBOLS = set()
 MARKET_SCANNER_CACHE = {} 
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
 CURRENT_TIMEFRAME = "15M"
 STORAGE_FILE = "trades_history.json"
-ALLOWED_STABLES = ["USDC"]
 
-# Blacklist vysoko rizikových / falošne signálnych tokenov
-BLACKLIST_COINS = {"HYPE", "PUMP", "PEPE", "XMSTR"}
+# BLACKLIST ZRUŠENÝ - prázdna množina, používame čistý objem
+BLACKLIST_COINS = set()
 
 TOP_LIQUID_SYMBOLS = [
     "SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC",
@@ -74,7 +72,7 @@ SETTINGS.update({
     "max_parallel": 1,
     "fib_choice": 0.786,
     "pivot_len": 2,
-    "ha_exit_consecutive": 2
+    "ha_exit_consecutive": 3  # ZMENENÉ NA 3 SVIEČKY PODĽA VAŠEJ POŽIADAVKY
 })
 
 def log_event(message: str):
@@ -266,18 +264,16 @@ def update_top_liquid_symbols():
                 if not inst_id.endswith("-USDC"):
                     continue
                 coin = inst_id.split("-")[0]
-                if coin in ["BTC", "ETH"] or coin in BLACKLIST_COINS:
+                if coin in ["BTC", "ETH"]:
                     continue
                 vol = safe_float(t.get("volCcy24h", 0))
-                if vol >= 500000.0:
+                # Filtrujeme coiny s vysokým objemom, ktoré hravo zvládnu aj 10 000 USDC pozície
+                if vol >= 1000000.0:
                     valid.append((inst_id, vol))
             valid.sort(key=lambda x: x[1], reverse=True)
             top_20 = [item[0] for item in valid[:20]]
             if len(top_20) >= 5:
                 TOP_LIQUID_SYMBOLS = top_20
-            elif top_20:
-                merged = list(dict.fromkeys(top_20 + TOP_LIQUID_SYMBOLS))
-                TOP_LIQUID_SYMBOLS = [s for s in merged if s.split("-")[0] not in BLACKLIST_COINS][:20]
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
@@ -333,9 +329,6 @@ def calc_fib_target(ha_highs, ha_lows, pivot_len=2, fib_ratio=0.786):
 def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     global MARKET_SCANNER_CACHE, ACTIVE_TRADES
     coin_key = symbol.split("-")[0]
-
-    if coin_key in BLACKLIST_COINS:
-        return False, False
 
     try:
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=80"
@@ -402,15 +395,17 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         
         buy_trigger = cond_above_fib and cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
 
-        ha_consec = SETTINGS.get("ha_exit_consecutive", 1)
+        # VYHODNOTENIE PRE 3 PO SEBE IDÚCE ČERVENÉ HA SVIEČKY
+        ha_consec = SETTINGS.get("ha_exit_consecutive", 3)
         ha_is_red_curr = ha_closes[-1] < ha_opens[-1]
         ha_is_red_prev = ha_closes[-2] < ha_opens[-2]
+        ha_is_red_prev2 = ha_closes[-3] < ha_opens[-3] if len(ha_closes) >= 3 else False
+        
         if ha_consec == 1:
             ha_exit_triggered = ha_is_red_curr
         elif ha_consec == 2:
             ha_exit_triggered = ha_is_red_curr and ha_is_red_prev
-        else:
-            ha_is_red_prev2 = ha_closes[-3] < ha_opens[-3]
+        else: # 3 sviečky podľa požiadavky
             ha_exit_triggered = ha_is_red_curr and ha_is_red_prev and ha_is_red_prev2
         
         is_in_trade = coin_key in ACTIVE_TRADES
@@ -490,8 +485,6 @@ async def autonomous_scanner_loop():
                             break
 
                         coin_name = symbol.split("-")[0]
-                        if coin_name in BLACKLIST_COINS:
-                            continue
                         now_ts = datetime.now().timestamp()
 
                         if coin_name in ACTIVE_TRADES or (coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"])):
@@ -520,8 +513,6 @@ async def execute_autonomous_buy(okx_symbol: str):
     global ACTIVE_TRADES, LAST_TRADE_TIME
     async with trade_lock:
         coin_name = okx_symbol.split("-")[0]
-        if coin_name in BLACKLIST_COINS:
-            return
         now_ts = datetime.now().timestamp()
         max_allowed = SETTINGS.get("max_parallel", 1)
 
@@ -573,7 +564,6 @@ async def execute_autonomous_buy(okx_symbol: str):
         coin_amount = float(formatted_sz)
         actual_spent_usdc = coin_amount * current_price
         
-        # Presné hodnoty pre SL (-0.65%), BE (+1.2%), TTP (+1.2%), TP (+0.75%)
         sl_pct = SETTINGS.get("sl_pct", 0.65)
         sl_price = current_price * (1 - (sl_pct / 100.0))
         be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
@@ -702,7 +692,7 @@ async def advanced_risk_monitor_loop():
                         del ACTIVE_TRADES[coin]
                         continue
 
-                    be_trigger = trade_settings.get("be_trigger_pct", 1.2)
+                    be_trigger = trade_settings.get("be_trigger_pct", 0.35)
                     sl_pct = trade_settings.get("sl_pct", 0.65)
                     
                     if be_trigger > 0:
@@ -765,7 +755,7 @@ async def advanced_risk_monitor_loop():
 
                     scanner_info = MARKET_SCANNER_CACHE.get(coin, {})
                     if scanner_info.get("ha_exit_triggered") or scanner_info.get("exec_signal") == "EXIT SIGNÁL":
-                        reason = f"EXIT SIGNÁL ({trade_settings.get('ha_exit_consecutive', 1)}x červená HA)"
+                        reason = f"EXIT SIGNÁL ({trade_settings.get('ha_exit_consecutive', 3)}x červená HA)"
                         try:
                             fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
                             if fmt_sz:
@@ -789,7 +779,7 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.8 (100% TV Strategy Sync) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.9 (100% TV Strategy Sync + 3 HA Exits + BE 0.35%) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
@@ -1063,7 +1053,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="brand">
                 <h1>APEX SCALPER // AUTO-PILOT (100% TV Strategy Sync)</h1>
                 <p>
-                    <span id="header-pair">Top USDC · OKX Demo (Live Dáta)</span>
+                    <span id="header-pair">Top 20 Liquid USDC · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
                     <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
                 </p>
@@ -1149,7 +1139,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - 100% TV Sync)</div>
+            <div class="section-title">Live Market Scanner Status (Top 20 Liquid USDC Pairs - 3 HA Exit & BE 0.35%)</div>
             <div class="terminal-card scrollable-card" style="max-height: 260px;">
                 <table>
                     <thead>
