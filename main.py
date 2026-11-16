@@ -24,26 +24,29 @@ WEBHOOK_SECRET = "moje_tajne_heslo_123"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-# --- PRESNE ZOSYNCHRONIZOVANÉ PROFILY (15M SCALPING PODĽA TV STRATÉGIE) ---
+# --- KOMPLETNÉ ČASOVÉ RÁMCE (TF PROFILY) ---
 
 TIMEFRAME_PROFILES = {
+    "8m": {
+        "trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.65, "sl_pct": 0.5, "desc": "8m Skalper"
+    },
     "15m": {
-        "trail_pct": 0.6, 
-        "be_trigger_pct": 0.35, 
-        "ttp_trigger_pct": 0.7, 
-        "ttp_callback_pct": 0.2, 
-        "target_pct": 0.75, 
-        "sl_pct": 0.6, 
-        "desc": "15m Scalp 1:1 Sync (BE 0.35%, SL 0.6%, TP 0.75%)"
+        "trail_pct": 0.6, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.7, "ttp_callback_pct": 0.2, "target_pct": 0.75, "sl_pct": 0.6, "desc": "15m Scalp 1:1 Sync"
     },
     "30m": {
-        "trail_pct": 1.0, 
-        "be_trigger_pct": 0.35, 
-        "ttp_trigger_pct": 1.0, 
-        "ttp_callback_pct": 0.3, 
-        "target_pct": 1.5, 
-        "sl_pct": 0.6, 
-        "desc": "30m Trendový Scalp"
+        "trail_pct": 1.0, "be_trigger_pct": 0.35, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 1.5, "sl_pct": 0.6, "desc": "30m Trendový Scalp"
+    },
+    "45m": {
+        "trail_pct": 1.2, "be_trigger_pct": 0.5, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.35, "target_pct": 1.8, "sl_pct": 0.8, "desc": "45m Strednodobý Scalp"
+    },
+    "1h": {
+        "trail_pct": 1.5, "be_trigger_pct": 0.6, "ttp_trigger_pct": 1.5, "ttp_callback_pct": 0.4, "target_pct": 2.2, "sl_pct": 1.0, "desc": "1h Hodinový Trend"
+    },
+    "2h": {
+        "trail_pct": 2.0, "be_trigger_pct": 0.8, "ttp_trigger_pct": 2.0, "ttp_callback_pct": 0.5, "target_pct": 3.0, "sl_pct": 1.2, "desc": "2h Dvojhodinový Trend"
+    },
+    "4h": {
+        "trail_pct": 3.0, "be_trigger_pct": 1.2, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.8, "target_pct": 4.5, "sl_pct": 1.8, "desc": "4h 4-hodinový Swing"
     }
 }
 
@@ -51,14 +54,14 @@ ACTIVE_TRADES = {}
 DAILY_PNL_CALENDAR = []
 CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
-CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na uzavretú 15M sviečku..."
+CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na uzavretú sviečku..."
 LAST_TRADE_TIME = {}
 LAST_CANDLE_SIGNAL = {}  
 MARKET_SCANNER_CACHE = {} 
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
-CURRENT_TIMEFRAME = "15M"  # Hlavný 15M scalper
+CURRENT_TIMEFRAME = "15M"  # Predvolený TF
 STORAGE_FILE = "trades_history.json"
 
 TOP_LIQUID_SYMBOLS = [
@@ -75,7 +78,7 @@ SETTINGS.update({
     "use_breakeven": True,
     "max_budget_cap": 1000.0,
     "compounding_enabled": False,
-    "max_parallel": 1,
+    "max_parallel": 4,  # Nastavené na 4 paralelné obchody
     "fib_choice": "0.786",
     "pivot_len": 2,
     "ha_exit_consecutive": 3,
@@ -291,7 +294,7 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
-# --- 100% PINE SCRIPT 1:1 SYNCHRONIZOVANá MATEMATIKA (VYUŽÍVA UZAVRETÉ SVIEČKY) ---
+# --- 100% PINE SCRIPT 1:1 SYNCHRONIZOVANá MATEMATIKA (UZAVRETÉ SVIEČKY) ---
 
 def calc_ema(values, length):
     if len(values) < length:
@@ -344,7 +347,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         signal_line = calc_ema(oscillator_value, 9)
         close_ema_9 = calc_ema(ha_closes, 9)
         
-        # KĽÚČOVÁ ZMENA: Používame index [-2], čo je POSLEDNÁ UZAVRETÁ SVIEČKA (zhodné s TV)
         latest_candle_ts = candles[-2][0]
         
         curr_osc, prev_osc = oscillator_value[-2], oscillator_value[-3]
@@ -365,7 +367,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         already_bought_on_this_candle = (LAST_CANDLE_SIGNAL.get(candle_key) == latest_candle_ts)
         buy_trigger = raw_all_green and not already_bought_on_this_candle
 
-        # Exit filter: 3 červené HA sviečky (vyhodnocujeme na uzavretých sviečkach [-2], [-3], [-4])
+        # Exit filter: 3 červené HA sviečky
         ha_consec = SETTINGS.get("ha_exit_consecutive", 3)
         if len(ha_closes) >= 5:
             ha_is_red_c1 = ha_closes[-2] < ha_opens[-2]
@@ -441,10 +443,10 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
 async def autonomous_scanner_loop():
     await asyncio.sleep(3)
-    log_event(f"🤖 Autonómny Pine Script skener (1:1 Closed Candle Sync) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"🤖 Autonómny Pine Script skener (Closed Candle Sync) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
-            max_allowed = SETTINGS.get("max_parallel", 1)
+            max_allowed = SETTINGS.get("max_parallel", 4)
             tf_str = CURRENT_TIMEFRAME.lower()
             
             for active_coin in list(ACTIVE_TRADES.keys()):
@@ -455,7 +457,7 @@ async def autonomous_scanner_loop():
             if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
                 if check_btc_health():
                     for symbol in list(TOP_LIQUID_SYMBOLS):
-                        if not IS_BOT_ACTIVE or len(ACTIVE_TRADES) >= SETTINGS.get("max_parallel", 1):
+                        if not IS_BOT_ACTIVE or len(ACTIVE_TRADES) >= SETTINGS.get("max_parallel", 4):
                             break
 
                         coin_name = symbol.split("-")[0]
@@ -470,7 +472,7 @@ async def autonomous_scanner_loop():
                             candle_ts = MARKET_SCANNER_CACHE.get(coin_name, {}).get("latest_candle_ts")
                             if candle_ts:
                                 LAST_CANDLE_SIGNAL[f"{symbol}_{tf_str}"] = candle_ts
-                            log_event(f"🚀 PINE SCRIPT 15M UZAVRETÝ SIGNÁL PRE {symbol}!")
+                            log_event(f"🚀 PINE SCRIPT {CURRENT_TIMEFRAME} UZAVRETÝ SIGNÁL PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
                             
                         await asyncio.sleep(0.3)
@@ -491,7 +493,7 @@ async def execute_autonomous_buy(okx_symbol: str):
     async with trade_lock:
         coin_name = okx_symbol.split("-")[0]
         now_ts = datetime.now().timestamp()
-        max_allowed = SETTINGS.get("max_parallel", 1)
+        max_allowed = SETTINGS.get("max_parallel", 4)
 
         if coin_name in ACTIVE_TRADES or len(ACTIVE_TRADES) >= max_allowed:
             return
@@ -581,15 +583,15 @@ async def execute_autonomous_buy(okx_symbol: str):
             ]
         }
         send_telegram_msg(
-            f"🟢 <b>15M SYNCHRONIZOVANÝ NÁKUP (UZAVRETÁ SVIEČKA)</b>\n"
+            f"🟢 <b>{CURRENT_TIMEFRAME} SYNCHRONIZOVANÝ NÁKUP (UZAVRETÁ SVIEČKA)</b>\n"
             f"<b>Pár:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
             f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
-            f"🎯 <b>Cieľ:</b> {target_str} | BE: +0.35% | SL: -0.6%",
+            f"🎯 <b>Cieľ:</b> {target_str}",
             reply_markup=inline_keyboard
         )
 
-# --- MONITOR RIZIK (1:1 S TV STRATÉGIOU) ---
+# --- MONITOR RIZIK ---
 
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
@@ -597,8 +599,8 @@ async def advanced_risk_monitor_loop():
     while True:
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
-                max_p = SETTINGS.get("max_parallel", 1)
-                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem uzavreté 15M..."
+                max_p = SETTINGS.get("max_parallel", 4)
+                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem {CURRENT_TIMEFRAME}..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -621,7 +623,7 @@ async def advanced_risk_monitor_loop():
                 trade["current_price"] = current_price
 
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
-                if now_time - bought_time > timedelta(hours=24):
+                if now_time - bought_time > timedelta(hours=48):
                     try:
                         fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
                         if fmt_sz:
@@ -633,9 +635,9 @@ async def advanced_risk_monitor_loop():
                         pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
                         invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
                         pnl_usdc = invested * (pnl_pct / 100.0)
-                        record_closed_trade(symbol, pnl_pct, pnl_usdc, "GTC Expirácia 24h")
-                        log_event(f"⏳ Expirácia 24h pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                        send_telegram_msg(f"⏳ <b>GTC EXPIRÁCIA 24H</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                        record_closed_trade(symbol, pnl_pct, pnl_usdc, "GTC Expirácia 48h")
+                        log_event(f"⏳ Expirácia 48h pre {symbol} | PnL: {pnl_pct:+.2f}%")
+                        send_telegram_msg(f"⏳ <b>GTC EXPIRÁCIA 48H</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                     except Exception:
                         pass
                     del ACTIVE_TRADES[coin]
@@ -651,7 +653,6 @@ async def advanced_risk_monitor_loop():
                     
                     target_pct = trade_settings.get("target_pct", 0.75)
                     
-                    # 1. Pevný Take Profit na 0.75%
                     if target_pct > 0 and pnl_pct >= target_pct:
                         reason = f"Take Profit (+{target_pct}%)"
                         try:
@@ -697,7 +698,6 @@ async def advanced_risk_monitor_loop():
                         trade["live_pnl_usdc"] = pnl_usdc
                         CURRENT_STAGE = f"STAV: Aktívnych pozícií: {len(ACTIVE_TRADES)} | Posledná: {symbol} ({pnl_pct:+.2f}%)"
                         
-                        # Kontrola Stop-Lossu (-0.6%) alebo Break-Even ochrany
                         if current_price <= effective_sl:
                             reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else f"Stop-Loss (-{sl_pct}%)"
                             try:
@@ -716,7 +716,6 @@ async def advanced_risk_monitor_loop():
                             del ACTIVE_TRADES[coin]
                             continue
                             
-                        # Kontrola Trailing Take Profit (TTP)
                         if trade.get("ttp_activated") and current_price <= ttp_stop_level:
                             reason = "Trailing Take Profit"
                             try:
@@ -735,7 +734,6 @@ async def advanced_risk_monitor_loop():
                             del ACTIVE_TRADES[coin]
                             continue
 
-                    # Kontrola výstupu cez Heikin-Ashi sviečky
                     scanner_info = MARKET_SCANNER_CACHE.get(coin, {})
                     if scanner_info.get("ha_exit_triggered") or scanner_info.get("exec_signal") == "EXIT SIGNÁL":
                         reason = f"EXIT SIGNÁL ({trade_settings.get('ha_exit_consecutive', 3)}x červená HA)"
@@ -762,11 +760,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO (15M Closed Candle Sync) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO spustený (Multi-TF & 4x Parallel).")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO (15M Closed Candle Sync) pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -855,7 +853,7 @@ async def manual_buy(coin: str):
                 return JSONResponse({"status": "error", "message": "Bot je pozastavený."})
             
             coin_upper = coin.upper().strip()
-            max_allowed = SETTINGS.get("max_parallel", 1)
+            max_allowed = SETTINGS.get("max_parallel", 4)
             if len(ACTIVE_TRADES) >= max_allowed or coin_upper in ACTIVE_TRADES:
                 return JSONResponse({"status": "error", "message": "Dosiahnutý limit paralelných pozícií alebo pozícia už existuje."})
             
@@ -925,7 +923,7 @@ async def manual_buy(coin: str):
                 "settings": SETTINGS.copy()
             }
             log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$")
-            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [15M Scalp Sync]</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC")
+            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [{CURRENT_TIMEFRAME}]</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC")
             
             return JSONResponse({"status": "success", "symbol": okx_symbol})
         except Exception as e:
@@ -977,7 +975,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper PRO Terminal - 15M Sync</title>
+    <title>Apex Scalper PRO Terminal - Multi-TF Sync</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -994,13 +992,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; }
         body { background-color: var(--bg-color); color: var(--text-main); padding: 16px; min-height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
-        .container { max-width: 1350px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
+        .container { max-width: 1400px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
         .top-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 12px; flex-wrap: wrap; gap: 12px; }
         .brand h1 { font-size: 1.05rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
         .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.8px; display: flex; gap: 12px; flex-wrap: wrap; }
         .balance-tag { color: var(--yellow); font-weight: 700; }
         .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-        .btn { background: transparent; border: 1px solid var(--border-hover); color: var(--text-main); padding: 5px 10px; font-size: 0.7rem; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px; }
+        .btn { background: transparent; border: 1px solid var(--border-hover); color: var(--text-main); padding: 5px 9px; font-size: 0.7rem; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px; }
         .btn:hover { border-color: var(--text-muted); background: rgba(255,255,255,0.03); }
         .btn-on { border-color: var(--green); color: var(--green); }
         .btn-off { border-color: var(--text-muted); color: var(--text-muted); }
@@ -1027,14 +1025,15 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .text-red { color: var(--red); font-weight: 700; }
         .text-yellow { color: var(--yellow); font-weight: 700; }
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.01); }
-        .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
+        .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 45px; outline: none; text-transform: uppercase; font-weight: 600; }
+        .tf-group, .parallel-group, .budget-group { display: flex; gap: 3px; align-items: center; border-right: 1px solid var(--border-hover); padding-right: 6px; margin-right: 2px; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // 15M STRATEGY SYNC</h1>
+                <h1>APEX SCALPER // MULTI-TF STRATEGY SYNC</h1>
                 <p>
                     <span id="header-pair">Top 20 Liquid USDC · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
@@ -1042,15 +1041,31 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </p>
             </div>
             <div class="actions">
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
+                <!-- Časové rámce (TF) -->
+                <div class="tf-group">
+                    <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
+                    <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
+                    <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
+                    <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
+                    <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '1H' %}btn-yellow{% endif %}" data-tf="1h" onclick="setTf('1h')">1H</button>
+                    <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '2H' %}btn-yellow{% endif %}" data-tf="2h" onclick="setTf('2h')">2H</button>
+                    <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '4H' %}btn-yellow{% endif %}" data-tf="4h" onclick="setTf('4h')">4H</button>
+                </div>
 
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
+                <!-- Paralelné obchody (do 4x) -->
+                <div class="parallel-group">
+                    <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
+                    <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
+                    <button class="parallel-btn btn {% if SETTINGS.max_parallel == 3 %}btn-yellow{% endif %}" data-val="3" onclick="setParallel(3)">3x</button>
+                    <button class="parallel-btn btn {% if SETTINGS.max_parallel == 4 %}btn-yellow{% endif %}" data-val="4" onclick="setParallel(4)">4x</button>
+                </div>
 
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
+                <!-- Rozpočet -->
+                <div class="budget-group">
+                    <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
+                    <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
+                    <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
+                </div>
 
                 <div class="custom-buy-box">
                     <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL">
@@ -1095,7 +1110,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Active Positions (BE @ +0.35%, SL @ -0.6%, TP @ +0.75%)</div>
+            <div class="section-title">Active Positions (Multi-TF Risk Management)</div>
             <div class="terminal-card">
                 <table>
                     <thead>
@@ -1108,14 +1123,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre uzavreté 15M signály...</td></tr>
+                        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre signály...</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (15M Closed Candle Sync)</div>
+            <div class="section-title">Live Market Scanner Status (Closed Candle Sync)</div>
             <div class="terminal-card scrollable-card" style="max-height: 260px;">
                 <table>
                     <thead>
@@ -1125,7 +1140,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <th>1. Objem. Momentum</th>
                             <th>2. Nákupný Impulz</th>
                             <th>3. Stav Obchodu</th>
-                            <th>4. Break-Even (+0.35%)</th>
+                            <th>4. Break-Even</th>
                             <th>5. Trailing TP</th>
                             <th>6. Trailing Stop</th>
                             <th>7. Exekučný Pokyn</th>
@@ -1160,7 +1175,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         <div>
             <div class="section-title">System Execution Logs</div>
             <div class="logs-box" id="logs-container">
-                <div class="log-line">[System Initialized] 15M Closed Candle Sync pripravený.</div>
+                <div class="log-line">[System Initialized] Multi-TF Strategy Sync pripravený.</div>
             </div>
         </div>
     </div>
@@ -1293,7 +1308,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     activeTbody.innerHTML = html;
                     sellBtn.disabled = false;
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre uzavreté 15M signály...</td></tr>`;
+                    activeTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre signály...</td></tr>`;
                     sellBtn.disabled = true;
                 }
 
