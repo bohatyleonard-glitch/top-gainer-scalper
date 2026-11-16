@@ -82,7 +82,7 @@ SETTINGS.update({
     "fib_choice": "0.786",
     "pivot_len": 2,
     "ha_exit_consecutive": 3,
-    "mode_choice": "🛡️ All Green (Všetky filtre zelené)"
+    "mode_choice": "🛡️ Columns > 0 (Zelený nad nulou)"
 })
 
 def log_event(message: str):
@@ -294,7 +294,7 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
-# --- 100% PINE SCRIPT 1:1 SYNCHRONIZOVANá MATEMATIKA (UZAVRETÉ SVIEČKY) ---
+# --- 100% PINE SCRIPT COLUMNS (OSCILÁTOR NAD / POD NULOVOU ČIAROU) ---
 
 def calc_ema(values, length):
     if len(values) < length:
@@ -343,48 +343,28 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         fast_ma = calc_ema(vol_dirs, 5)
         slow_ma = calc_ema(vol_dirs, 20)
         
+        # Columns hodnota v Pine Scripte (oscillator_value)
         oscillator_value = [f - s for f, s in zip(fast_ma, slow_ma)]
-        signal_line = calc_ema(oscillator_value, 9)
-        close_ema_9 = calc_ema(ha_closes, 9)
         
         latest_candle_ts = candles[-2][0]
-        
         curr_osc, prev_osc = oscillator_value[-2], oscillator_value[-3]
-        curr_sig, prev_sig = signal_line[-2], signal_line[-3]
 
-        # Podmienky vstupov (All Green)
-        cond_volume_bullish = (curr_osc > 0) and (curr_osc > curr_sig)
-        momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
+        # --- NOVÁ PODMIENKA PODĽA POŽIADAVKY ---
+        # Nákup: Columns sú zelené nad nulovou čiarou (prechod z <= 0 na > 0)
+        columns_green_above_zero = (curr_osc > 0)
+        momentum_str = "SILNÉ (ZELENÉ > 0)" if columns_green_above_zero else "SLABÉ (ČERVENÉ < 0)"
 
-        cond_volume_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
-        curr_close, prev_close = ha_closes[-2], ha_closes[-3]
-        curr_ema9, prev_ema9 = close_ema_9[-2], close_ema_9[-3]
-        close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
-        
-        raw_all_green = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
+        raw_buy_signal = (prev_osc <= 0) and (curr_osc > 0)
 
         candle_key = f"{symbol}_{bar_tf}"
         already_bought_on_this_candle = (LAST_CANDLE_SIGNAL.get(candle_key) == latest_candle_ts)
-        buy_trigger = raw_all_green and not already_bought_on_this_candle
+        buy_trigger = raw_buy_signal and not already_bought_on_this_candle
 
-        # Exit filter: 3 červené HA sviečky
-        ha_consec = SETTINGS.get("ha_exit_consecutive", 3)
-        if len(ha_closes) >= 5:
-            ha_is_red_c1 = ha_closes[-2] < ha_opens[-2]
-            ha_is_red_c2 = ha_closes[-3] < ha_opens[-3]
-            ha_is_red_c3 = ha_closes[-4] < ha_opens[-4]
-        else:
-            ha_is_red_c1 = ha_is_red_c2 = ha_is_red_c3 = False
-        
-        if ha_consec == 1:
-            ha_exit_triggered = ha_is_red_c1
-        elif ha_consec == 2:
-            ha_exit_triggered = ha_is_red_c1 and ha_is_red_c2
-        else:
-            ha_exit_triggered = ha_is_red_c1 and ha_is_red_c2 and ha_is_red_c3
+        # Predaj: Columns sú červené pod nulovou čiarou (curr_osc < 0)
+        columns_red_below_zero = (curr_osc < 0)
         
         is_in_trade = coin_key in ACTIVE_TRADES
-        impuls_active = raw_all_green or is_in_trade
+        impuls_active = columns_green_above_zero or is_in_trade
         impulse_str = "AKTÍVNY (V TRHU)" if impuls_active else "ČAKÁ"
 
         trade_status_txt = f"{ACTIVE_TRADES[coin_key]['entry_price']:.4f}" if is_in_trade else "---"
@@ -403,9 +383,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         if is_in_trade:
             ts_status_txt = f"{ACTIVE_TRADES[coin_key].get('entry_price', 0):.4f}"
 
-        if raw_all_green and not is_in_trade:
+        if raw_buy_signal and not is_in_trade:
             exec_signal_str = "NAKÚPIŤ"
-        elif is_in_trade and ha_exit_triggered:
+        elif is_in_trade and columns_red_below_zero:
             exec_signal_str = "EXIT SIGNÁL"
         elif is_in_trade:
             exec_signal_str = "DRŽAŤ"
@@ -423,13 +403,13 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "ttp_status": ttp_status_txt,
             "ts_status": ts_status_txt,
             "exec_signal": exec_signal_str,
-            "ha_exit_triggered": ha_exit_triggered,
+            "ha_exit_triggered": columns_red_below_zero,
             "latest_candle_ts": latest_candle_ts,
-            "signal": "🟢 ALL GREEN (Sync)" if raw_all_green else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH"),
-            "is_green": raw_all_green
+            "signal": "🟢 COLUMNS > 0 (Zelené)" if columns_green_above_zero else "🔴 COLUMNS < 0 (Červené)",
+            "is_green": columns_green_above_zero
         }
 
-        return buy_trigger, ha_exit_triggered
+        return buy_trigger, columns_red_below_zero
     except Exception as e:
         MARKET_SCANNER_CACHE[coin_key] = {
             "symbol": symbol, "price": 0.0, "oscillator": 0.0,
@@ -443,7 +423,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
 async def autonomous_scanner_loop():
     await asyncio.sleep(3)
-    log_event(f"🤖 Autonómny Pine Script skener (Closed Candle Sync) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"🤖 Autonómny Pine Script skener (Columns > 0 Zelené / < 0 Červené) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             max_allowed = SETTINGS.get("max_parallel", 4)
@@ -472,7 +452,7 @@ async def autonomous_scanner_loop():
                             candle_ts = MARKET_SCANNER_CACHE.get(coin_name, {}).get("latest_candle_ts")
                             if candle_ts:
                                 LAST_CANDLE_SIGNAL[f"{symbol}_{tf_str}"] = candle_ts
-                            log_event(f"🚀 PINE SCRIPT {CURRENT_TIMEFRAME} UZAVRETÝ SIGNÁL PRE {symbol}!")
+                            log_event(f"🚀 COLUMNS NAD NULOU (ZELENÉ) [{CURRENT_TIMEFRAME}] SIGNÁL PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
                             
                         await asyncio.sleep(0.3)
@@ -583,7 +563,7 @@ async def execute_autonomous_buy(okx_symbol: str):
             ]
         }
         send_telegram_msg(
-            f"🟢 <b>{CURRENT_TIMEFRAME} SYNCHRONIZOVANÝ NÁKUP (UZAVRETÁ SVIEČKA)</b>\n"
+            f"🟢 <b>{CURRENT_TIMEFRAME} COLUMNS NAD NULOU (ZELENÉ) NÁKUP</b>\n"
             f"<b>Pár:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
             f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
@@ -736,7 +716,7 @@ async def advanced_risk_monitor_loop():
 
                     scanner_info = MARKET_SCANNER_CACHE.get(coin, {})
                     if scanner_info.get("ha_exit_triggered") or scanner_info.get("exec_signal") == "EXIT SIGNÁL":
-                        reason = f"EXIT SIGNÁL ({trade_settings.get('ha_exit_consecutive', 3)}x červená HA)"
+                        reason = "EXIT SIGNÁL (Columns pod 0 - Červené)"
                         try:
                             fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
                             if fmt_sz:
@@ -1317,7 +1297,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 if (Object.keys(scannerData).length > 0) {
                     let sHtml = "";
                     for (let [coin, info] of Object.entries(scannerData)) {
-                        let momClass = info.momentum === "SILNÉ" ? "text-green" : "text-red";
+                        let momClass = info.momentum.includes("SILNÉ") ? "text-green" : "text-red";
                         let impClass = info.impulse.includes("AKTÍVNY") ? "text-green" : "text-yellow";
                         let execClass = info.exec_signal === "NAKÚPIŤ" ? "text-green" : (info.exec_signal === "EXIT SIGNÁL" ? "text-red" : "text-yellow");
 
