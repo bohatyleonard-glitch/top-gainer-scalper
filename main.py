@@ -51,7 +51,7 @@ ACTIVE_TRADES = {}
 DAILY_PNL_CALENDAR = []
 CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
-CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na 15M TV signál..."
+CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na uzavretú 15M sviečku..."
 LAST_TRADE_TIME = {}
 LAST_CANDLE_SIGNAL = {}  
 MARKET_SCANNER_CACHE = {} 
@@ -291,7 +291,7 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
-# --- 100% PINE SCRIPT 1:1 SYNCHRONIZOVANÁ MATEMATIKA ---
+# --- 100% PINE SCRIPT 1:1 SYNCHRONIZOVANá MATEMATIKA (VYUŽÍVA UZAVRETÉ SVIEČKY) ---
 
 def calc_ema(values, length):
     if len(values) < length:
@@ -321,8 +321,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         candles = res["data"]
         candles.reverse()  
         
-        latest_candle_ts = candles[-1][0]
-
         # Heikin-Ashi výpočet
         ha_closes, ha_opens, ha_highs, ha_lows = [], [], [], []
         volumes = []
@@ -346,16 +344,19 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         signal_line = calc_ema(oscillator_value, 9)
         close_ema_9 = calc_ema(ha_closes, 9)
         
-        curr_osc, prev_osc = oscillator_value[-1], oscillator_value[-2]
-        curr_sig, prev_sig = signal_line[-1], signal_line[-2]
+        # KĽÚČOVÁ ZMENA: Používame index [-2], čo je POSLEDNÁ UZAVRETÁ SVIEČKA (zhodné s TV)
+        latest_candle_ts = candles[-2][0]
+        
+        curr_osc, prev_osc = oscillator_value[-2], oscillator_value[-3]
+        curr_sig, prev_sig = signal_line[-2], signal_line[-3]
 
         # Podmienky vstupov (All Green)
         cond_volume_bullish = (curr_osc > 0) and (curr_osc > curr_sig)
         momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
 
         cond_volume_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
-        curr_close, prev_close = ha_closes[-1], ha_closes[-2]
-        curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
+        curr_close, prev_close = ha_closes[-2], ha_closes[-3]
+        curr_ema9, prev_ema9 = close_ema_9[-2], close_ema_9[-3]
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
         raw_all_green = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
@@ -364,9 +365,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         already_bought_on_this_candle = (LAST_CANDLE_SIGNAL.get(candle_key) == latest_candle_ts)
         buy_trigger = raw_all_green and not already_bought_on_this_candle
 
-        # Exit filter: 3 červené HA sviečky
+        # Exit filter: 3 červené HA sviečky (vyhodnocujeme na uzavretých sviečkach [-2], [-3], [-4])
         ha_consec = SETTINGS.get("ha_exit_consecutive", 3)
-        if len(ha_closes) >= 4:
+        if len(ha_closes) >= 5:
             ha_is_red_c1 = ha_closes[-2] < ha_opens[-2]
             ha_is_red_c2 = ha_closes[-3] < ha_opens[-3]
             ha_is_red_c3 = ha_closes[-4] < ha_opens[-4]
@@ -411,7 +412,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
         MARKET_SCANNER_CACHE[coin_key] = {
             "symbol": symbol,
-            "price": curr_close,
+            "price": ha_closes[-1],
             "oscillator": round(curr_osc, 2),
             "momentum": momentum_str,
             "impulse": impulse_str,
@@ -440,7 +441,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
 async def autonomous_scanner_loop():
     await asyncio.sleep(3)
-    log_event(f"🤖 Autonómny Pine Script skener (15M 1:1 Sync) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"🤖 Autonómny Pine Script skener (1:1 Closed Candle Sync) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             max_allowed = SETTINGS.get("max_parallel", 1)
@@ -469,7 +470,7 @@ async def autonomous_scanner_loop():
                             candle_ts = MARKET_SCANNER_CACHE.get(coin_name, {}).get("latest_candle_ts")
                             if candle_ts:
                                 LAST_CANDLE_SIGNAL[f"{symbol}_{tf_str}"] = candle_ts
-                            log_event(f"🚀 PINE SCRIPT 15M SIGNÁL PRE {symbol}!")
+                            log_event(f"🚀 PINE SCRIPT 15M UZAVRETÝ SIGNÁL PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
                             
                         await asyncio.sleep(0.3)
@@ -580,7 +581,7 @@ async def execute_autonomous_buy(okx_symbol: str):
             ]
         }
         send_telegram_msg(
-            f"🟢 <b>15M SYNCHRONIZOVANÝ NÁKUP</b>\n"
+            f"🟢 <b>15M SYNCHRONIZOVANÝ NÁKUP (UZAVRETÁ SVIEČKA)</b>\n"
             f"<b>Pár:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
             f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
@@ -597,7 +598,7 @@ async def advanced_risk_monitor_loop():
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
                 max_p = SETTINGS.get("max_parallel", 1)
-                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem 15M..."
+                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem uzavreté 15M..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -761,11 +762,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO (15M 1:1 Strategy Sync) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO (15M Closed Candle Sync) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO (15M Scalp Sync) pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO (15M Closed Candle Sync) pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -1107,14 +1108,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre 15M signály...</td></tr>
+                        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre uzavreté 15M signály...</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (15M Scalp Sync)</div>
+            <div class="section-title">Live Market Scanner Status (15M Closed Candle Sync)</div>
             <div class="terminal-card scrollable-card" style="max-height: 260px;">
                 <table>
                     <thead>
@@ -1159,7 +1160,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         <div>
             <div class="section-title">System Execution Logs</div>
             <div class="logs-box" id="logs-container">
-                <div class="log-line">[System Initialized] 15M Strategy Sync pripravený.</div>
+                <div class="log-line">[System Initialized] 15M Closed Candle Sync pripravený.</div>
             </div>
         </div>
     </div>
@@ -1292,7 +1293,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     activeTbody.innerHTML = html;
                     sellBtn.disabled = false;
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre 15M signály...</td></tr>`;
+                    activeTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre uzavreté 15M signály...</td></tr>`;
                     sellBtn.disabled = true;
                 }
 
