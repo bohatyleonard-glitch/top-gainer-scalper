@@ -1346,7 +1346,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 }
                 logsBox.innerHTML = lHtml;
 
-            }纲 catch (err) {
+            } catch (err) {
                 console.error("Chyba pri obnove stavu:", err);
             }
         }
@@ -1387,4 +1387,4 @@ async def get_state():
     })
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=Test)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
