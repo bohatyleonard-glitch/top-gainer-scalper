@@ -24,36 +24,42 @@ WEBHOOK_SECRET = "moje_tajne_heslo_123"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9021881475:AAFn1oQSvaGkhpX2uyJscdcTybFgk1tNmV8")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-# --- DYNAMICKE PROFILY PRE CASOVE RAMCE (BE ZMENENÝ NA 0.35%) ---
+# --- PRESNE ZOSYNCHRONIZOVANÉ PROFILY (15M SCALPING PODĽA TV STRATÉGIE) ---
 
 TIMEFRAME_PROFILES = {
-    "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "sl_pct": 0.65, "desc": "Skalper 1m"},
-    "5m": {"trail_pct": 0.6, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.7, "ttp_callback_pct": 0.2, "target_pct": 0.65, "sl_pct": 0.65, "desc": "Skalper 5m"},
-    "8m": {"trail_pct": 0.65, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.75, "ttp_callback_pct": 0.2, "target_pct": 0.75, "sl_pct": 0.65, "desc": "Rýchly 8m scalp (+0.75%)"},
-    "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "sl_pct": 0.65, "desc": "Rýchly 15m scalp (+0.75%)"},
-    "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.35, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "sl_pct": 0.65, "desc": "30m trendový"},
-    "45m": {"trail_pct": 1.5, "be_trigger_pct": 0.35, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "sl_pct": 0.65, "desc": "45m strednodobý"},
-    "1h": {"trail_pct": 2.0, "be_trigger_pct": 0.35, "ttp_trigger_pct": 2.2, "ttp_callback_pct": 0.5, "target_pct": 4.0, "sl_pct": 0.65, "desc": "1h swing"},
-    "2h": {"trail_pct": 3.0, "be_trigger_pct": 0.35, "ttp_trigger_pct": 3.0, "ttp_callback_pct": 0.7, "target_pct": 5.0, "sl_pct": 0.65, "desc": "2h trend"},
-    "3h": {"trail_pct": 4.0, "be_trigger_pct": 0.35, "ttp_trigger_pct": 4.5, "ttp_callback_pct": 1.0, "target_pct": 7.0, "sl_pct": 0.65, "desc": "3h pozičný"},
-    "4h": {"trail_pct": 5.5, "be_trigger_pct": 0.35, "ttp_trigger_pct": 6.0, "ttp_callback_pct": 1.5, "target_pct": 10.0, "sl_pct": 0.65, "desc": "4h swing"}
+    "15m": {
+        "trail_pct": 0.6, 
+        "be_trigger_pct": 0.35, 
+        "ttp_trigger_pct": 0.7, 
+        "ttp_callback_pct": 0.2, 
+        "target_pct": 0.75, 
+        "sl_pct": 0.6, 
+        "desc": "15m Scalp 1:1 Sync (BE 0.35%, SL 0.6%, TP 0.75%)"
+    },
+    "30m": {
+        "trail_pct": 1.0, 
+        "be_trigger_pct": 0.35, 
+        "ttp_trigger_pct": 1.0, 
+        "ttp_callback_pct": 0.3, 
+        "target_pct": 1.5, 
+        "sl_pct": 0.6, 
+        "desc": "30m Trendový Scalp"
+    }
 }
 
 ACTIVE_TRADES = {}
 DAILY_PNL_CALENDAR = []
 CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
-CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na synchronizovaný signál..."
+CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na 15M TV signál..."
 LAST_TRADE_TIME = {}
-LAST_CANDLE_SIGNAL = {}  # Poistka proti dvojitému nákupu na tej istej živej sviečke
+LAST_CANDLE_SIGNAL = {}  
 MARKET_SCANNER_CACHE = {} 
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
-CURRENT_TIMEFRAME = "15M"
+CURRENT_TIMEFRAME = "15M"  # Hlavný 15M scalper
 STORAGE_FILE = "trades_history.json"
-
-BLACKLIST_COINS = set()
 
 TOP_LIQUID_SYMBOLS = [
     "SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC",
@@ -70,9 +76,10 @@ SETTINGS.update({
     "max_budget_cap": 1000.0,
     "compounding_enabled": False,
     "max_parallel": 1,
-    "fib_choice": 0.786,
+    "fib_choice": "0.786",
     "pivot_len": 2,
-    "ha_exit_consecutive": 3
+    "ha_exit_consecutive": 3,
+    "mode_choice": "🛡️ All Green (Všetky filtre zelené)"
 })
 
 def log_event(message: str):
@@ -161,7 +168,7 @@ def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
     CLOSED_TRADES_HISTORY.insert(0, {"pair": pair, "pnl_pct": round(pnl_pct, 2), "pnl_usdc": round(pnl_usdc, 2), "reason": reason, "time": get_sk_time_str()})
     save_persistent_data()
 
-# --- HYBRIDNÝ REQUEST SYSTEM ---
+# --- OKX API ---
 
 def okx_public_request(path: str):
     url = "https://www.okx.com" + path
@@ -272,7 +279,6 @@ def update_top_liquid_symbols():
             valid.sort(key=lambda x: x[1], reverse=True)
             top_20 = [item[0] for item in valid[:20]]
             
-            # Poistka, aby hlavné páry ako NEAR-USDC nikdy nevypadli zo zoznamu
             must_have = ["SOL-USDC", "NEAR-USDC", "SUI-USDC", "LINK-USDC", "XRP-USDC", "AVAX-USDC"]
             for m in must_have:
                 if m not in top_20 and any(t.get("instId") == m for t in tickers):
@@ -285,7 +291,7 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
-# --- 100% PINE SCRIPT SYNCHRONIZOVANÁ MATEMATIKA ---
+# --- 100% PINE SCRIPT 1:1 SYNCHRONIZOVANÁ MATEMATIKA ---
 
 def calc_ema(values, length):
     if len(values) < length:
@@ -301,9 +307,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     coin_key = symbol.split("-")[0]
 
     try:
-        url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=80"
+        url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=100"
         res = okx_public_request(url)
-        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 25:
+        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 30:
             MARKET_SCANNER_CACHE[coin_key] = {
                 "symbol": symbol, "price": 0.0, "oscillator": 0.0,
                 "momentum": "SLABÉ", "impulse": "ČAKÁ", "trade_status": "---",
@@ -313,11 +319,11 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             return False, False
 
         candles = res["data"]
-        candles.reverse()  # Od najstaršej po najnovšiu (živú) sviečku
+        candles.reverse()  
         
-        latest_candle_ts = candles[-1][0]  # Čas otvorenia aktuálnej živej sviečky
+        latest_candle_ts = candles[-1][0]
 
-        # Výpočet Heikin-Ashi vrátane živej sviečky (presne ako v TradingView)
+        # Heikin-Ashi výpočet
         ha_closes, ha_opens, ha_highs, ha_lows = [], [], [], []
         volumes = []
         for i, c in enumerate(candles):
@@ -343,7 +349,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_osc, prev_osc = oscillator_value[-1], oscillator_value[-2]
         curr_sig, prev_sig = signal_line[-1], signal_line[-2]
 
-        # 1:1 LOGIKA Z PINE SCRIPTU (REŽIM ALL GREEN)
+        # Podmienky vstupov (All Green)
         cond_volume_bullish = (curr_osc > 0) and (curr_osc > curr_sig)
         momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
 
@@ -354,12 +360,11 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         
         raw_all_green = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
 
-        # Poistka: signál sa aktivuje iba raz na danú sviečku (ako ta.change(time) != 0 v Pine Scripte)
         candle_key = f"{symbol}_{bar_tf}"
         already_bought_on_this_candle = (LAST_CANDLE_SIGNAL.get(candle_key) == latest_candle_ts)
         buy_trigger = raw_all_green and not already_bought_on_this_candle
 
-        # VYHODNOTENIE PRE 3 PO SEBE IDÚCE UZAVRETÉ ČERVENÉ HA SVIEČKY
+        # Exit filter: 3 červené HA sviečky
         ha_consec = SETTINGS.get("ha_exit_consecutive", 3)
         if len(ha_closes) >= 4:
             ha_is_red_c1 = ha_closes[-2] < ha_opens[-2]
@@ -387,13 +392,13 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         ttp_status_txt = "VYPNUTÝ"
         if is_in_trade:
             if ACTIVE_TRADES[coin_key].get("ttp_activated"):
-                ttp_status_txt = f"{ACTIVE_TRADES[coin_key].get('highest_price', 0)*0.99:.4f}"
+                ttp_status_txt = f"{ACTIVE_TRADES[coin_key].get('highest_price', 0)*0.998:.4f}"
             else:
                 ttp_status_txt = "V TRHU"
 
         ts_status_txt = "VYPNUTÝ"
         if is_in_trade:
-            ts_status_txt = f"{ACTIVE_TRADES[coin_key].get('entry_price', 0)*0.994:.4f}"
+            ts_status_txt = f"{ACTIVE_TRADES[coin_key].get('entry_price', 0):.4f}"
 
         if raw_all_green and not is_in_trade:
             exec_signal_str = "NAKÚPIŤ"
@@ -435,7 +440,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
 async def autonomous_scanner_loop():
     await asyncio.sleep(3)
-    log_event(f"🤖 Autonómny Pine Script skener (100% Sync s TradingView) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"🤖 Autonómny Pine Script skener (15M 1:1 Sync) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             max_allowed = SETTINGS.get("max_parallel", 1)
@@ -464,7 +469,7 @@ async def autonomous_scanner_loop():
                             candle_ts = MARKET_SCANNER_CACHE.get(coin_name, {}).get("latest_candle_ts")
                             if candle_ts:
                                 LAST_CANDLE_SIGNAL[f"{symbol}_{tf_str}"] = candle_ts
-                            log_event(f"🚀 PINE SCRIPT 'ALL GREEN' SYNCHRONIZOVANÝ SIGNÁL PRE {symbol}!")
+                            log_event(f"🚀 PINE SCRIPT 15M SIGNÁL PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
                             
                         await asyncio.sleep(0.3)
@@ -535,7 +540,7 @@ async def execute_autonomous_buy(okx_symbol: str):
         coin_amount = float(formatted_sz)
         actual_spent_usdc = coin_amount * current_price
         
-        sl_pct = SETTINGS.get("sl_pct", 0.65)
+        sl_pct = SETTINGS.get("sl_pct", 0.6)
         sl_price = current_price * (1 - (sl_pct / 100.0))
         be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
         ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
@@ -563,7 +568,7 @@ async def execute_autonomous_buy(okx_symbol: str):
             "settings": SETTINGS.copy()
         }
         
-        target_str = f"+{target_pct}%"
+        target_str = f"+{target_pct}% (Take Profit / Trailing)"
         log_event(f"🛒 Autonómny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Investícia: {actual_spent_usdc:.2f} USDC")
         
         inline_keyboard = {
@@ -575,15 +580,15 @@ async def execute_autonomous_buy(okx_symbol: str):
             ]
         }
         send_telegram_msg(
-            f"🟢 <b>SYNCHRONIZOVANÝ NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
+            f"🟢 <b>15M SYNCHRONIZOVANÝ NÁKUP</b>\n"
             f"<b>Pár:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
             f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
-            f"🎯 <b>Cieľ (TP):</b> {target_str}",
+            f"🎯 <b>Cieľ:</b> {target_str} | BE: +0.35% | SL: -0.6%",
             reply_markup=inline_keyboard
         )
 
-# --- MONITOR RIZIK ---
+# --- MONITOR RIZIK (1:1 S TV STRATÉGIOU) ---
 
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
@@ -592,7 +597,7 @@ async def advanced_risk_monitor_loop():
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
                 max_p = SETTINGS.get("max_parallel", 1)
-                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem TV Sync..."
+                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem 15M..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -615,7 +620,7 @@ async def advanced_risk_monitor_loop():
                 trade["current_price"] = current_price
 
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
-                if now_time - bought_time > timedelta(hours=48):
+                if now_time - bought_time > timedelta(hours=24):
                     try:
                         fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
                         if fmt_sz:
@@ -627,9 +632,9 @@ async def advanced_risk_monitor_loop():
                         pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
                         invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
                         pnl_usdc = invested * (pnl_pct / 100.0)
-                        record_closed_trade(symbol, pnl_pct, pnl_usdc, "GTC Expirácia 48h")
-                        log_event(f"⏳ Expirácia 48h pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                        send_telegram_msg(f"⏳ <b>GTC EXPIRÁCIA 48H</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                        record_closed_trade(symbol, pnl_pct, pnl_usdc, "GTC Expirácia 24h")
+                        log_event(f"⏳ Expirácia 24h pre {symbol} | PnL: {pnl_pct:+.2f}%")
+                        send_telegram_msg(f"⏳ <b>GTC EXPIRÁCIA 24H</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                     except Exception:
                         pass
                     del ACTIVE_TRADES[coin]
@@ -645,8 +650,9 @@ async def advanced_risk_monitor_loop():
                     
                     target_pct = trade_settings.get("target_pct", 0.75)
                     
+                    # 1. Pevný Take Profit na 0.75%
                     if target_pct > 0 and pnl_pct >= target_pct:
-                        reason = f"Take Profit 100% (+{target_pct}%)"
+                        reason = f"Take Profit (+{target_pct}%)"
                         try:
                             fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
                             if fmt_sz:
@@ -656,18 +662,19 @@ async def advanced_risk_monitor_loop():
                                 })
                                 okx_request("POST", "/api/v5/trade/order", order_body)
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                            log_event(f"🎯 Uzavretý 100% Take Profit pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                            send_telegram_msg(f"🎯 <b>UZAVRETÝ 100% TAKE PROFIT</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+                            log_event(f"🎯 Uzavretý Take Profit pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+                            send_telegram_msg(f"🎯 <b>UZAVRETÝ TAKE PROFIT</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
                         except Exception:
                             pass
                         del ACTIVE_TRADES[coin]
                         continue
 
                     be_trigger = trade_settings.get("be_trigger_pct", 0.35)
-                    sl_pct = trade_settings.get("sl_pct", 0.65)
+                    sl_pct = trade_settings.get("sl_pct", 0.6)
+                    trail_pct = trade_settings.get("trail_pct", 0.6)
                     
                     if be_trigger > 0:
-                        trail_stop_price = trade["highest_price"] * (1 - (trade_settings["trail_pct"] / 100.0))
+                        trail_stop_price = trade["highest_price"] * (1 - (trail_pct / 100.0))
                         
                         if pnl_pct >= be_trigger:
                             trade["break_even_activated"] = True
@@ -675,12 +682,13 @@ async def advanced_risk_monitor_loop():
                         else:
                             effective_sl = trade["entry_price"] * (1 - (sl_pct / 100.0))
                             
-                        ttp_trigger = trade_settings.get("ttp_trigger_pct", 1.2)
+                        ttp_trigger = trade_settings.get("ttp_trigger_pct", 0.7)
+                        ttp_callback = trade_settings.get("ttp_callback_pct", 0.2)
                         if ttp_trigger > 0:
                             ttp_activation_price = trade["entry_price"] * (1 + (ttp_trigger / 100.0))
                             if current_price >= ttp_activation_price:
                                 trade["ttp_activated"] = True
-                            ttp_stop_level = trade["highest_price"] * (1 - (trade_settings["ttp_callback_pct"] / 100.0)) if trade.get("ttp_activated") else ttp_activation_price
+                            ttp_stop_level = trade["highest_price"] * (1 - (ttp_callback / 100.0)) if trade.get("ttp_activated") else ttp_activation_price
                         else:
                             ttp_stop_level = 0
                         
@@ -688,6 +696,7 @@ async def advanced_risk_monitor_loop():
                         trade["live_pnl_usdc"] = pnl_usdc
                         CURRENT_STAGE = f"STAV: Aktívnych pozícií: {len(ACTIVE_TRADES)} | Posledná: {symbol} ({pnl_pct:+.2f}%)"
                         
+                        # Kontrola Stop-Lossu (-0.6%) alebo Break-Even ochrany
                         if current_price <= effective_sl:
                             reason = "Break-Even Ochrana" if effective_sl >= trade["entry_price"] else f"Stop-Loss (-{sl_pct}%)"
                             try:
@@ -699,13 +708,14 @@ async def advanced_risk_monitor_loop():
                                     })
                                     okx_request("POST", "/api/v5/trade/order", order_body)
                                 record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                                log_event(f"🚨 Uzavretá 100% pozícia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                                send_telegram_msg(f"🚨 <b>UZAVRETÁ 100% POZÍCIA ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                                log_event(f"🚨 Uzavretá pozícia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}%")
+                                send_telegram_msg(f"🚨 <b>UZAVRETÁ POZÍCIA ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                             except Exception:
                                 pass
                             del ACTIVE_TRADES[coin]
                             continue
                             
+                        # Kontrola Trailing Take Profit (TTP)
                         if trade.get("ttp_activated") and current_price <= ttp_stop_level:
                             reason = "Trailing Take Profit"
                             try:
@@ -717,13 +727,14 @@ async def advanced_risk_monitor_loop():
                                     })
                                     okx_request("POST", "/api/v5/trade/order", order_body)
                                 record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                                log_event(f"🎯 Uzavretá 100% pozícia (Trailing TP) pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                                send_telegram_msg(f"🎯 <b>UZAVRETÁ 100% POZÍCIA (TTP)</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                                log_event(f"🎯 Uzavretá pozícia (Trailing TP) pre {symbol} | PnL: {pnl_pct:+.2f}%")
+                                send_telegram_msg(f"🎯 <b>UZAVRETÁ POZÍCIA (TTP)</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                             except Exception:
                                 pass
                             del ACTIVE_TRADES[coin]
                             continue
 
+                    # Kontrola výstupu cez Heikin-Ashi sviečky
                     scanner_info = MARKET_SCANNER_CACHE.get(coin, {})
                     if scanner_info.get("ha_exit_triggered") or scanner_info.get("exec_signal") == "EXIT SIGNÁL":
                         reason = f"EXIT SIGNÁL ({trade_settings.get('ha_exit_consecutive', 3)}x červená HA)"
@@ -736,8 +747,8 @@ async def advanced_risk_monitor_loop():
                                 })
                                 okx_request("POST", "/api/v5/trade/order", order_body)
                             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
-                            log_event(f"📉 Uzavretá 100% pozícia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}%")
-                            send_telegram_msg(f"📉 <b>UZAVRETÁ 100% POZÍCIA ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                            log_event(f"📉 Uzavretá pozícia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}%")
+                            send_telegram_msg(f"📉 <b>UZAVRETÁ POZÍCIA ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
                         except Exception:
                             pass
                         del ACTIVE_TRADES[coin]
@@ -750,11 +761,11 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.7.0 (100% TV Strategy Sync + Live Candle Entry + 3 HA Exits + BE 0.35%) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO (15M 1:1 Strategy Sync) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg("🚀 Autonómny Apex Scalper PRO pripravený!")
+    send_telegram_msg("🚀 Autonómny Apex Scalper PRO (15M Scalp Sync) pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -799,7 +810,7 @@ async def toggle_btc_filter():
 @app.post("/api/toggle-compounding")
 async def toggle_compounding():
     SETTINGS["compounding_enabled"] = not SETTINGS.get("compounding_enabled", False)
-    status_str = "ZAPNUTÉ (Zložené úročenie)" if SETTINGS["compounding_enabled"] else "VYPNUTÉ (Pevný rozpočet)"
+    status_str = "ZAPNUTÉ (Zložené úročenie)" if SETTINGS["compounding_enabled"] else "VYPNUTÝ (Pevný rozpočet)"
     log_event(f"⚙️ Automatické reinvestovanie (COMPOUNDING): {status_str.upper()}")
     send_telegram_msg(f"⚙️ Zmena stavu: Auto-Compounding je teraz {status_str}.")
     return JSONResponse({"status": "success", "compounding_enabled": SETTINGS["compounding_enabled"]})
@@ -885,7 +896,7 @@ async def manual_buy(coin: str):
             
             coin_amount = float(formatted_sz)
             actual_spent_usdc = coin_amount * current_price
-            sl_pct = SETTINGS.get("sl_pct", 0.65)
+            sl_pct = SETTINGS.get("sl_pct", 0.6)
             sl_price = current_price * (1 - (sl_pct / 100.0))
             be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
             ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
@@ -913,7 +924,7 @@ async def manual_buy(coin: str):
                 "settings": SETTINGS.copy()
             }
             log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$")
-            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}] (TV Sync)</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC")
+            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [15M Scalp Sync]</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC")
             
             return JSONResponse({"status": "success", "symbol": okx_symbol})
         except Exception as e:
@@ -965,7 +976,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper PRO Terminal</title>
+    <title>Apex Scalper PRO Terminal - 15M Sync</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -1022,7 +1033,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // AUTO-PILOT (100% TV Strategy Sync)</h1>
+                <h1>APEX SCALPER // 15M STRATEGY SYNC</h1>
                 <p>
                     <span id="header-pair">Top 20 Liquid USDC · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
@@ -1030,22 +1041,15 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </p>
             </div>
             <div class="actions">
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '5M' %}btn-yellow{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
 
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 3 %}btn-yellow{% endif %}" data-val="3" onclick="setParallel(3)">3x</button>
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 4 %}btn-yellow{% endif %}" data-val="4" onclick="setParallel(4)">4x</button>
 
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
+                <button class="budget-btn btn {% if SETSETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
 
                 <div class="custom-buy-box">
                     <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL">
@@ -1090,7 +1094,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Active Positions Matrix (100% TP / SL / BE)</div>
+            <div class="section-title">Active Positions (BE @ +0.35%, SL @ -0.6%, TP @ +0.75%)</div>
             <div class="terminal-card">
                 <table>
                     <thead>
@@ -1103,14 +1107,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script All Green signály...</td></tr>
+                        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre 15M signály...</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (Top 20 Liquid USDC Pairs - 3 HA Exit & BE 0.35%)</div>
+            <div class="section-title">Live Market Scanner Status (15M Scalp Sync)</div>
             <div class="terminal-card scrollable-card" style="max-height: 260px;">
                 <table>
                     <thead>
@@ -1120,7 +1124,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <th>1. Objem. Momentum</th>
                             <th>2. Nákupný Impulz</th>
                             <th>3. Stav Obchodu</th>
-                            <th>4. Break-Even</th>
+                            <th>4. Break-Even (+0.35%)</th>
                             <th>5. Trailing TP</th>
                             <th>6. Trailing Stop</th>
                             <th>7. Exekučný Pokyn</th>
@@ -1134,7 +1138,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Execution History (3-Month Persistent Storage)</div>
+            <div class="section-title">Execution History</div>
             <div class="terminal-card scrollable-card">
                 <table>
                     <thead>
@@ -1155,7 +1159,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         <div>
             <div class="section-title">System Execution Logs</div>
             <div class="logs-box" id="logs-container">
-                <div class="log-line">[System Initialized] Autonómny režim pripravený.</div>
+                <div class="log-line">[System Initialized] 15M Strategy Sync pripravený.</div>
             </div>
         </div>
     </div>
@@ -1288,7 +1292,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     activeTbody.innerHTML = html;
                     sellBtn.disabled = false;
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script All Green signály...</td></tr>`;
+                    activeTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre 15M signály...</td></tr>`;
                     sellBtn.disabled = true;
                 }
 
