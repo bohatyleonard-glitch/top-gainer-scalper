@@ -45,6 +45,7 @@ CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na synchronizovaný signál..."
 LAST_TRADE_TIME = {}
+LAST_CANDLE_SIGNAL = {}  # Poistka proti dvojitému nákupu na tej istej živej sviečke
 MARKET_SCANNER_CACHE = {} 
 trade_lock = asyncio.Lock()
 
@@ -52,7 +53,6 @@ IS_BOT_ACTIVE = True
 CURRENT_TIMEFRAME = "15M"
 STORAGE_FILE = "trades_history.json"
 
-# BLACKLIST ZRUŠENÝ - prázdna množina, používame čistý objem
 BLACKLIST_COINS = set()
 
 TOP_LIQUID_SYMBOLS = [
@@ -72,7 +72,7 @@ SETTINGS.update({
     "max_parallel": 1,
     "fib_choice": 0.786,
     "pivot_len": 2,
-    "ha_exit_consecutive": 3  # ZMENENÉ NA 3 SVIEČKY PODĽA VAŠEJ POŽIADAVKY
+    "ha_exit_consecutive": 3
 })
 
 def log_event(message: str):
@@ -267,11 +267,19 @@ def update_top_liquid_symbols():
                 if coin in ["BTC", "ETH"]:
                     continue
                 vol = safe_float(t.get("volCcy24h", 0))
-                # Filtrujeme coiny s vysokým objemom, ktoré hravo zvládnu aj 10 000 USDC pozície
-                if vol >= 1000000.0:
+                if vol >= 250000.0:
                     valid.append((inst_id, vol))
             valid.sort(key=lambda x: x[1], reverse=True)
             top_20 = [item[0] for item in valid[:20]]
+            
+            # Poistka, aby hlavné páry ako NEAR-USDC nikdy nevypadli zo zoznamu
+            must_have = ["SOL-USDC", "NEAR-USDC", "SUI-USDC", "LINK-USDC", "XRP-USDC", "AVAX-USDC"]
+            for m in must_have:
+                if m not in top_20 and any(t.get("instId") == m for t in tickers):
+                    if len(top_20) >= 20:
+                        top_20.pop()
+                    top_20.append(m)
+
             if len(top_20) >= 5:
                 TOP_LIQUID_SYMBOLS = top_20
     except Exception as e:
@@ -288,46 +296,8 @@ def calc_ema(values, length):
         ema.append(price * alpha + ema[-1] * (1 - alpha))
     return ema
 
-def calc_linreg(values, length, offset=0):
-    n = len(values)
-    end_idx = n - offset
-    start_idx = end_idx - length
-    if start_idx < 0 or end_idx <= start_idx:
-        return values[-1] if values else 0.0
-    sub = values[start_idx:end_idx]
-    x_mean = (length - 1) / 2.0
-    y_mean = sum(sub) / length
-    num = sum((i - x_mean) * (sub[i] - y_mean) for i in range(length))
-    den = sum((i - x_mean) ** 2 for i in range(length))
-    slope = num / den if den != 0 else 0.0
-    intercept = y_mean - slope * x_mean
-    return intercept + slope * (length - 1)
-
-def calc_wma(values, length):
-    if len(values) < length:
-        return values[-1] if values else 0.0
-    sub = values[-length:]
-    weights = list(range(1, length + 1))
-    return sum(sub[i] * weights[i] for i in range(length)) / sum(weights)
-
-def calc_fib_target(ha_highs, ha_lows, pivot_len=2, fib_ratio=0.786):
-    last_high = None
-    last_low = None
-    n = len(ha_highs)
-    for i in range(pivot_len, n - pivot_len):
-        window_h = ha_highs[i - pivot_len : i + pivot_len + 1]
-        if ha_highs[i] == max(window_h) and window_h.count(ha_highs[i]) == 1:
-            last_high = ha_highs[i]
-        window_l = ha_lows[i - pivot_len : i + pivot_len + 1]
-        if ha_lows[i] == min(window_l) and window_l.count(ha_lows[i]) == 1:
-            last_low = ha_lows[i]
-    if last_high is not None and last_low is not None and last_high > last_low:
-        range_size = last_high - last_low
-        return last_high - range_size * fib_ratio
-    return None
-
 def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
-    global MARKET_SCANNER_CACHE, ACTIVE_TRADES
+    global MARKET_SCANNER_CACHE, ACTIVE_TRADES, LAST_CANDLE_SIGNAL
     coin_key = symbol.split("-")[0]
 
     try:
@@ -343,13 +313,14 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             return False, False
 
         candles = res["data"]
-        candles.reverse()
+        candles.reverse()  # Od najstaršej po najnovšiu (živú) sviečku
         
-        closed_candles = candles[:-1]
-        
+        latest_candle_ts = candles[-1][0]  # Čas otvorenia aktuálnej živej sviečky
+
+        # Výpočet Heikin-Ashi vrátane živej sviečky (presne ako v TradingView)
         ha_closes, ha_opens, ha_highs, ha_lows = [], [], [], []
         volumes = []
-        for i, c in enumerate(closed_candles):
+        for i, c in enumerate(candles):
             o, h, l, cl, v = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4]), safe_float(c[5])
             ha_cl = (o + h + l + cl) / 4.0
             ha_op = (o + cl) / 2.0 if i == 0 else (ha_opens[-1] + ha_closes[-1]) / 2.0
@@ -372,44 +343,40 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_osc, prev_osc = oscillator_value[-1], oscillator_value[-2]
         curr_sig, prev_sig = signal_line[-1], signal_line[-2]
 
-        raw_slopes = []
-        for k in range(3):
-            idx_end = len(oscillator_value) - k
-            if idx_end >= 4:
-                sub_osc = oscillator_value[:idx_end]
-                rs = calc_linreg(sub_osc, 3, 0) - calc_linreg(sub_osc, 3, 1)
-                raw_slopes.insert(0, rs)
-        smooth_slope = calc_wma(raw_slopes, len(raw_slopes)) if raw_slopes else 0.0
-        predicted_next_value = curr_osc + smooth_slope
-        
-        cond_volume_bullish = (curr_osc > 0) and (curr_osc > curr_sig) and (predicted_next_value > curr_osc)
+        # 1:1 LOGIKA Z PINE SCRIPTU (REŽIM ALL GREEN)
+        cond_volume_bullish = (curr_osc > 0) and (curr_osc > curr_sig)
         momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
-
-        fib_target = calc_fib_target(ha_highs, ha_lows, pivot_len=SETTINGS.get("pivot_len", 2), fib_ratio=SETTINGS.get("fib_choice", 0.786))
-        cond_above_fib = (fib_target is not None) and (ha_lows[-1] <= fib_target)
 
         cond_volume_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
         curr_close, prev_close = ha_closes[-1], ha_closes[-2]
         curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
-        buy_trigger = cond_above_fib and cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
+        raw_all_green = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
 
-        # VYHODNOTENIE PRE 3 PO SEBE IDÚCE ČERVENÉ HA SVIEČKY
+        # Poistka: signál sa aktivuje iba raz na danú sviečku (ako ta.change(time) != 0 v Pine Scripte)
+        candle_key = f"{symbol}_{bar_tf}"
+        already_bought_on_this_candle = (LAST_CANDLE_SIGNAL.get(candle_key) == latest_candle_ts)
+        buy_trigger = raw_all_green and not already_bought_on_this_candle
+
+        # VYHODNOTENIE PRE 3 PO SEBE IDÚCE UZAVRETÉ ČERVENÉ HA SVIEČKY
         ha_consec = SETTINGS.get("ha_exit_consecutive", 3)
-        ha_is_red_curr = ha_closes[-1] < ha_opens[-1]
-        ha_is_red_prev = ha_closes[-2] < ha_opens[-2]
-        ha_is_red_prev2 = ha_closes[-3] < ha_opens[-3] if len(ha_closes) >= 3 else False
+        if len(ha_closes) >= 4:
+            ha_is_red_c1 = ha_closes[-2] < ha_opens[-2]
+            ha_is_red_c2 = ha_closes[-3] < ha_opens[-3]
+            ha_is_red_c3 = ha_closes[-4] < ha_opens[-4]
+        else:
+            ha_is_red_c1 = ha_is_red_c2 = ha_is_red_c3 = False
         
         if ha_consec == 1:
-            ha_exit_triggered = ha_is_red_curr
+            ha_exit_triggered = ha_is_red_c1
         elif ha_consec == 2:
-            ha_exit_triggered = ha_is_red_curr and ha_is_red_prev
-        else: # 3 sviečky podľa požiadavky
-            ha_exit_triggered = ha_is_red_curr and ha_is_red_prev and ha_is_red_prev2
+            ha_exit_triggered = ha_is_red_c1 and ha_is_red_c2
+        else:
+            ha_exit_triggered = ha_is_red_c1 and ha_is_red_c2 and ha_is_red_c3
         
         is_in_trade = coin_key in ACTIVE_TRADES
-        impuls_active = buy_trigger or is_in_trade
+        impuls_active = raw_all_green or is_in_trade
         impulse_str = "AKTÍVNY (V TRHU)" if impuls_active else "ČAKÁ"
 
         trade_status_txt = f"{ACTIVE_TRADES[coin_key]['entry_price']:.4f}" if is_in_trade else "---"
@@ -428,7 +395,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         if is_in_trade:
             ts_status_txt = f"{ACTIVE_TRADES[coin_key].get('entry_price', 0)*0.994:.4f}"
 
-        if buy_trigger and not is_in_trade:
+        if raw_all_green and not is_in_trade:
             exec_signal_str = "NAKÚPIŤ"
         elif is_in_trade and ha_exit_triggered:
             exec_signal_str = "EXIT SIGNÁL"
@@ -449,8 +416,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "ts_status": ts_status_txt,
             "exec_signal": exec_signal_str,
             "ha_exit_triggered": ha_exit_triggered,
-            "signal": "🟢 ALL GREEN (Sync)" if buy_trigger else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH"),
-            "is_green": buy_trigger
+            "latest_candle_ts": latest_candle_ts,
+            "signal": "🟢 ALL GREEN (Sync)" if raw_all_green else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH"),
+            "is_green": raw_all_green
         }
 
         return buy_trigger, ha_exit_triggered
@@ -493,13 +461,16 @@ async def autonomous_scanner_loop():
                             
                         signal_met, _ = evaluate_pine_strategy(symbol, bar_tf=tf_str)
                         if signal_met:
+                            candle_ts = MARKET_SCANNER_CACHE.get(coin_name, {}).get("latest_candle_ts")
+                            if candle_ts:
+                                LAST_CANDLE_SIGNAL[f"{symbol}_{tf_str}"] = candle_ts
                             log_event(f"🚀 PINE SCRIPT 'ALL GREEN' SYNCHRONIZOVANÝ SIGNÁL PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
                             
                         await asyncio.sleep(0.3)
         except Exception as e:
             log_event(f"⚠️ Chyba v autonómnom skeneri: {e}")
-        await asyncio.sleep(15)
+        await asyncio.sleep(10)
 
 async def top_symbols_updater_loop():
     while True:
@@ -779,7 +750,7 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.9 (100% TV Strategy Sync + 3 HA Exits + BE 0.35%) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.7.0 (100% TV Strategy Sync + Live Candle Entry + 3 HA Exits + BE 0.35%) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
