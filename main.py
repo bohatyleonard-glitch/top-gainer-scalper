@@ -54,14 +54,14 @@ ACTIVE_TRADES = {}
 DAILY_PNL_CALENDAR = []
 CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
-CURRENT_STAGE = "STAV: Autonómny Pine Script Sync beží..."
+CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na uzavretú sviečku..."
 LAST_TRADE_TIME = {}
 LAST_CANDLE_SIGNAL = {}  
 MARKET_SCANNER_CACHE = {} 
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
-CURRENT_TIMEFRAME = "15M"  
+CURRENT_TIMEFRAME = "15M"  # Predvolený TF
 STORAGE_FILE = "trades_history.json"
 
 TOP_LIQUID_SYMBOLS = [
@@ -79,8 +79,10 @@ SETTINGS.update({
     "max_budget_cap": 1000.0,
     "compounding_enabled": False,
     "max_parallel": 4,  # Nastavené na 4 paralelné obchody
+    "fib_choice": "0.786",
+    "pivot_len": 2,
     "ha_exit_consecutive": 3,
-    "mode_choice": "🌲 100% Pine Script Internal Sync"
+    "mode_choice": "🛡️ All Green (Všetky filtre zelené)"
 })
 
 def log_event(message: str):
@@ -292,7 +294,7 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
-# --- PINE SCRIPT 1:1 INTERNÁ MATEMATIKA ---
+# --- 100% PINE SCRIPT 1:1 SYNCHRONIZOVANá MATEMATIKA (UZAVRETÉ SVIEČKY) ---
 
 def calc_ema(values, length):
     if len(values) < length:
@@ -322,6 +324,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         candles = res["data"]
         candles.reverse()  
         
+        # Heikin-Ashi výpočet
         ha_closes, ha_opens, ha_highs, ha_lows = [], [], [], []
         volumes = []
         for i, c in enumerate(candles):
@@ -349,7 +352,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_osc, prev_osc = oscillator_value[-2], oscillator_value[-3]
         curr_sig, prev_sig = signal_line[-2], signal_line[-3]
 
-        # Presné vyhodnotenie podmienok Long (zodpovedá šípkam Long v Pine Scripte)
+        # Podmienky vstupov (All Green)
         cond_volume_bullish = (curr_osc > 0) and (curr_osc > curr_sig)
         momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
 
@@ -358,13 +361,13 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_ema9, prev_ema9 = close_ema_9[-2], close_ema_9[-3]
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
-        raw_long_signal = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
+        raw_all_green = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
 
         candle_key = f"{symbol}_{bar_tf}"
         already_bought_on_this_candle = (LAST_CANDLE_SIGNAL.get(candle_key) == latest_candle_ts)
-        buy_trigger = raw_long_signal and not already_bought_on_this_candle
+        buy_trigger = raw_all_green and not already_bought_on_this_candle
 
-        # Exit filter: 3 červené HA sviečky (zodpovedá Exit Signal šípkam)
+        # Exit filter: 3 červené HA sviečky
         ha_consec = SETTINGS.get("ha_exit_consecutive", 3)
         if len(ha_closes) >= 5:
             ha_is_red_c1 = ha_closes[-2] < ha_opens[-2]
@@ -381,7 +384,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             ha_exit_triggered = ha_is_red_c1 and ha_is_red_c2 and ha_is_red_c3
         
         is_in_trade = coin_key in ACTIVE_TRADES
-        impuls_active = raw_long_signal or is_in_trade
+        impuls_active = raw_all_green or is_in_trade
         impulse_str = "AKTÍVNY (V TRHU)" if impuls_active else "ČAKÁ"
 
         trade_status_txt = f"{ACTIVE_TRADES[coin_key]['entry_price']:.4f}" if is_in_trade else "---"
@@ -400,8 +403,8 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         if is_in_trade:
             ts_status_txt = f"{ACTIVE_TRADES[coin_key].get('entry_price', 0):.4f}"
 
-        if raw_long_signal and not is_in_trade:
-            exec_signal_str = "LONG (NÁKUP)"
+        if raw_all_green and not is_in_trade:
+            exec_signal_str = "NAKÚPIŤ"
         elif is_in_trade and ha_exit_triggered:
             exec_signal_str = "EXIT SIGNÁL"
         elif is_in_trade:
@@ -422,8 +425,8 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "exec_signal": exec_signal_str,
             "ha_exit_triggered": ha_exit_triggered,
             "latest_candle_ts": latest_candle_ts,
-            "signal": "🟢 LONG (P.S. Sync)" if raw_long_signal else ("🟡 BULLISH" if cond_volume_bullish else "🔴 STAGNÁCIA"),
-            "is_green": raw_long_signal
+            "signal": "🟢 ALL GREEN (Sync)" if raw_all_green else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH"),
+            "is_green": raw_all_green
         }
 
         return buy_trigger, ha_exit_triggered
@@ -440,7 +443,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
 async def autonomous_scanner_loop():
     await asyncio.sleep(3)
-    log_event(f"🤖 Autonómny Pine Script Internal Sync spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"🤖 Autonómny Pine Script skener (Closed Candle Sync) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             max_allowed = SETTINGS.get("max_parallel", 4)
@@ -469,7 +472,7 @@ async def autonomous_scanner_loop():
                             candle_ts = MARKET_SCANNER_CACHE.get(coin_name, {}).get("latest_candle_ts")
                             if candle_ts:
                                 LAST_CANDLE_SIGNAL[f"{symbol}_{tf_str}"] = candle_ts
-                            log_event(f"🚀 PINE SCRIPT LONG SIGNÁL PRE {symbol} ({CURRENT_TIMEFRAME})!")
+                            log_event(f"🚀 PINE SCRIPT {CURRENT_TIMEFRAME} UZAVRETÝ SIGNÁL PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
                             
                         await asyncio.sleep(0.3)
@@ -569,7 +572,7 @@ async def execute_autonomous_buy(okx_symbol: str):
         }
         
         target_str = f"+{target_pct}% (Take Profit / Trailing)"
-        log_event(f"🛒 Autonómny LONG nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Investícia: {actual_spent_usdc:.2f} USDC")
+        log_event(f"🛒 Autonómny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Investícia: {actual_spent_usdc:.2f} USDC")
         
         inline_keyboard = {
             "inline_keyboard": [
@@ -580,10 +583,11 @@ async def execute_autonomous_buy(okx_symbol: str):
             ]
         }
         send_telegram_msg(
-            f"🟢 <b>PINE SCRIPT LONG NÁKUP [{CURRENT_TIMEFRAME}]</b>\n"
+            f"🟢 <b>{CURRENT_TIMEFRAME} SYNCHRONIZOVANÝ NÁKUP (UZAVRETÁ SVIEČKA)</b>\n"
             f"<b>Pár:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
-            f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC",
+            f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
+            f"🎯 <b>Cieľ:</b> {target_str}",
             reply_markup=inline_keyboard
         )
 
@@ -756,7 +760,7 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO (Pine Script Internal Sync) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO spustený (Multi-TF & 4x Parallel).")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
@@ -971,7 +975,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper PRO Terminal - Pine Script Sync</title>
+    <title>Apex Scalper PRO Terminal - Multi-TF Sync</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -1029,7 +1033,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PINE SCRIPT INTERNAL SYNC</h1>
+                <h1>APEX SCALPER // MULTI-TF STRATEGY SYNC</h1>
                 <p>
                     <span id="header-pair">Top 20 Liquid USDC · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
@@ -1037,6 +1041,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </p>
             </div>
             <div class="actions">
+                <!-- Časové rámce (TF) -->
                 <div class="tf-group">
                     <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
                     <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
@@ -1047,6 +1052,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '4H' %}btn-yellow{% endif %}" data-tf="4h" onclick="setTf('4h')">4H</button>
                 </div>
 
+                <!-- Paralelné obchody (do 4x) -->
                 <div class="parallel-group">
                     <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
                     <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
@@ -1054,6 +1060,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <button class="parallel-btn btn {% if SETTINGS.max_parallel == 4 %}btn-yellow{% endif %}" data-val="4" onclick="setParallel(4)">4x</button>
                 </div>
 
+                <!-- Rozpočet -->
                 <div class="budget-group">
                     <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
                     <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
@@ -1103,7 +1110,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Active Positions (Pine Script Risk Management)</div>
+            <div class="section-title">Active Positions (Multi-TF Risk Management)</div>
             <div class="terminal-card">
                 <table>
                     <thead>
@@ -1116,14 +1123,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Long signály...</td></tr>
+                        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre signály...</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (Pine Script Internal Sync)</div>
+            <div class="section-title">Live Market Scanner Status (Closed Candle Sync)</div>
             <div class="terminal-card scrollable-card" style="max-height: 260px;">
                 <table>
                     <thead>
@@ -1168,7 +1175,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         <div>
             <div class="section-title">System Execution Logs</div>
             <div class="logs-box" id="logs-container">
-                <div class="log-line">[System Initialized] Pine Script Internal Sync pripravený.</div>
+                <div class="log-line">[System Initialized] Multi-TF Strategy Sync pripravený.</div>
             </div>
         </div>
     </div>
@@ -1301,7 +1308,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     activeTbody.innerHTML = html;
                     sellBtn.disabled = false;
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Long signály...</td></tr>`;
+                    activeTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre signály...</td></tr>`;
                     sellBtn.disabled = true;
                 }
 
@@ -1312,7 +1319,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     for (let [coin, info] of Object.entries(scannerData)) {
                         let momClass = info.momentum === "SILNÉ" ? "text-green" : "text-red";
                         let impClass = info.impulse.includes("AKTÍVNY") ? "text-green" : "text-yellow";
-                        let execClass = info.exec_signal.includes("LONG") ? "text-green" : (info.exec_signal === "EXIT SIGNÁL" ? "text-red" : "text-yellow");
+                        let execClass = info.exec_signal === "NAKÚPIŤ" ? "text-green" : (info.exec_signal === "EXIT SIGNÁL" ? "text-red" : "text-yellow");
 
                         sHtml += `<tr>
                             <td><b>${info.symbol}</b></td>
