@@ -78,11 +78,11 @@ SETTINGS.update({
     "use_breakeven": True,
     "max_budget_cap": 1000.0,
     "compounding_enabled": False,
-    "max_parallel": 4,  # Nastavené na 4 paralelné obchody
+    "max_parallel": 4,
     "fib_choice": "0.786",
     "pivot_len": 2,
     "use_ha_exit": True,
-    "ha_exit_consecutive": 1,  # Podľa Pine Scriptu: 1 = hneď pri prvej červenej HA sviečke
+    "ha_exit_consecutive": 1,
     "mode_choice": "🛡️ All Green (Všetky filtre zelené)"
 })
 
@@ -172,10 +172,10 @@ def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
     CLOSED_TRADES_HISTORY.insert(0, {"pair": pair, "pnl_pct": round(pnl_pct, 2), "pnl_usdc": round(pnl_usdc, 2), "reason": reason, "time": get_sk_time_str()})
     save_persistent_data()
 
-# --- OKX API ---
+# --- OKX API (OPRAVENÁ STABILNÁ DOMÉNA eea.okx.com) ---
 
 def okx_public_request(path: str):
-    url = "https://www.okx.com" + path
+    url = "https://eea.okx.com" + path
     try:
         response = requests.get(url, timeout=5)
         return response.json()
@@ -295,7 +295,7 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
-# --- 100% SYNCHRONIZOVANÝ PINE SCRIPT ("AI DOKAZAL SOM TO !!!" - ALL GREEN) ---
+# --- PINE SCRIPT EVALUATION ---
 
 def calc_ema(values, length):
     if not values:
@@ -304,7 +304,6 @@ def calc_ema(values, length):
         return [values[-1]] * len(values)
     alpha = 2 / (length + 1)
     ema = [sum(values[:length]) / length]
-    # Doplnenie začiatku poľa, aby indexy presne sedeli s pôvodným poľom sviečok
     padded_ema = [ema[0]] * (length - 1) + ema
     for price in values[length:]:
         padded_ema.append(price * alpha + padded_ema[-1] * (1 - alpha))
@@ -329,7 +328,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         candles = res["data"]
         candles.reverse()  
         
-        # 1. Výpočet Heikin-Ashi sviečok (r_close, r_open, r_high, r_low, r_volume)
         ha_closes, ha_opens, ha_highs, ha_lows = [], [], [], []
         volumes = []
         for i, c in enumerate(candles):
@@ -344,7 +342,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             ha_lows.append(ha_lo)
             volumes.append(v)
             
-        # 2. Objemový oscilátor & Signálna čiara (fast_len=5, slow_len=20, signal_len=9)
         vol_dirs = [v if ha_closes[i] > ha_opens[i] else -v for i, v in enumerate(volumes)]
         fast_ma = calc_ema(vol_dirs, 5)
         slow_ma = calc_ema(vol_dirs, 20)
@@ -353,7 +350,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         signal_line = calc_ema(oscillator_value, 9)
         ema_9_close = calc_ema(ha_closes, 9)
         
-        # Vyhodnocujeme na poslednej uzavretej sviečke (index -2, predošlá -3)
         idx = -2
         prev_idx = -3
         latest_candle_ts = candles[idx][0]
@@ -368,18 +364,10 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_ema9 = ema_9_close[idx]
         prev_ema9 = ema_9_close[prev_idx]
 
-        # 3. PODMIENKY Z PINE SCRIPTU (ALL GREEN)
-        # cond_volume_bullish = oscillator_value > 0 and oscillator_value > signal_line
         cond_volume_bullish = (curr_osc > 0) and (curr_osc > curr_sig)
-        
-        # cond_volume_crossover = ta.crossover(oscillator_value, signal_line) and oscillator_value > 0
         osc_crossover_sig = (prev_osc <= prev_sig) and (curr_osc > curr_sig)
         cond_volume_crossover = osc_crossover_sig and (curr_osc > 0)
-        
-        # ta.crossover(r_close, ta.ema(r_close, 9))
         close_crossover_ema9 = (prev_ha_close <= prev_ema9) and (curr_ha_close > curr_ema9)
-        
-        # all_green_condition = cond_volume_bullish and (cond_volume_crossover or ta.crossover(r_close, ta.ema(r_close, 9)))
         all_green_condition = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
         
         raw_buy_signal = all_green_condition
@@ -388,7 +376,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         already_bought_on_this_candle = (LAST_CANDLE_SIGNAL.get(candle_key) == latest_candle_ts)
         buy_trigger = raw_buy_signal and not already_bought_on_this_candle
 
-        # 4. EXIT PODMIENKA Z PINE SCRIPTU (Otočenie Heikin-Ashi do červenej)
         use_ha_exit = SETTINGS.get("use_ha_exit", True)
         ha_exit_consecutive = SETTINGS.get("ha_exit_consecutive", 1)
         
@@ -405,7 +392,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             else:
                 ha_exit_triggered = ha_is_red_curr and ha_is_red_prev1 and ha_is_red_prev2
 
-        # 5. STAVY PRE TABUĽKU (PRESNÁ KÓPIA CHECKLISTU Z PINE SCRIPTU)
         momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
         is_in_trade = coin_key in ACTIVE_TRADES
         impuls_active = raw_buy_signal or is_in_trade
@@ -465,7 +451,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         }
         return False, False
 
-# --- AUTONOMNA SKENOVACIA SLUCKA ---
+# --- AUTONOMNA SKENOVACIA SLUCKA (ODDELENÉ ZOBRAZENIE OD BTC FILTRA) ---
 
 async def autonomous_scanner_loop():
     await asyncio.sleep(3)
@@ -475,11 +461,12 @@ async def autonomous_scanner_loop():
             max_allowed = SETTINGS.get("max_parallel", 4)
             tf_str = CURRENT_TIMEFRAME.lower()
             
-            for active_coin in list(ACTIVE_TRADES.keys()):
-                active_sym = ACTIVE_TRADES[active_coin]["market_pair"]
-                evaluate_pine_strategy(active_sym, bar_tf=tf_str)
+            # 1. Vždy prejdeme všetky symboly, aby sa naplnila tabuľka na webe
+            for symbol in list(TOP_LIQUID_SYMBOLS):
+                evaluate_pine_strategy(symbol, bar_tf=tf_str)
                 await asyncio.sleep(0.2)
 
+            # 2. Samotné otváranie obchodu podlieha BTC filtru a stavu bota
             if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
                 if check_btc_health():
                     for symbol in list(TOP_LIQUID_SYMBOLS):
@@ -490,7 +477,6 @@ async def autonomous_scanner_loop():
                         now_ts = datetime.now().timestamp()
 
                         if coin_name in ACTIVE_TRADES or (coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"])):
-                            evaluate_pine_strategy(symbol, bar_tf=tf_str)
                             continue
                             
                         signal_met, _ = evaluate_pine_strategy(symbol, bar_tf=tf_str)
@@ -501,7 +487,6 @@ async def autonomous_scanner_loop():
                             log_event(f"🚀 ALL GREEN [{CURRENT_TIMEFRAME}] SIGNÁL PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
                             
-                        await asyncio.sleep(0.3)
         except Exception as e:
             log_event(f"⚠️ Chyba v autonómnom skeneri: {e}")
         await asyncio.sleep(10)
@@ -835,7 +820,7 @@ async def toggle_btc_filter():
 @app.post("/api/toggle-compounding")
 async def toggle_compounding():
     SETTINGS["compounding_enabled"] = not SETTINGS.get("compounding_enabled", False)
-    status_str = "ZAPNUTÉ (Zložené úročenie)" if SETTINGS["compounding_enabled"] else "VYPNUTÉ (Pevný rozpočet)"
+    status_str = "ZAPNUTÉ (Zložené úročenie)" if SETTINGS["compounding_enabled"] else "VYPNUTÝ (Pevný rozpočet)"
     log_event(f"⚙️ Automatické reinvestovanie (COMPOUNDING): {status_str.upper()}")
     send_telegram_msg(f"⚙️ Zmena stavu: Auto-Compounding je teraz {status_str}.")
     return JSONResponse({"status": "success", "compounding_enabled": SETTINGS["compounding_enabled"]})
@@ -1067,7 +1052,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </p>
             </div>
             <div class="actions">
-                <!-- Časové rámce (TF) -->
                 <div class="tf-group">
                     <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
                     <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
@@ -1078,7 +1062,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '4H' %}btn-yellow{% endif %}" data-tf="4h" onclick="setTf('4h')">4H</button>
                 </div>
 
-                <!-- Paralelné obchody (do 4x) -->
                 <div class="parallel-group">
                     <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
                     <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
@@ -1086,7 +1069,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <button class="parallel-btn btn {% if SETTINGS.max_parallel == 4 %}btn-yellow{% endif %}" data-val="4" onclick="setParallel(4)">4x</button>
                 </div>
 
-                <!-- Rozpočet -->
                 <div class="budget-group">
                     <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
                     <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
