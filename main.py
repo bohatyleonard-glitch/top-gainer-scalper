@@ -29,7 +29,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 TIMEFRAME_PROFILES = {
     "1m": {"trail_pct": 0.5, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.6, "ttp_callback_pct": 0.15, "target_pct": 0.5, "desc": "Skalper 1m"},
     "5m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 5m"},
-    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "target_pct": 0.0, "desc": "Manuál 8m"},
+    "8m": {"trail_pct": 0.0, "be_trigger_pct": 0.0, "ttp_trigger_pct": 0.0, "ttp_callback_pct": 0.0, "desc": "Manuál 8m"},
     "15m": {"trail_pct": 0.7, "be_trigger_pct": 0.5, "ttp_trigger_pct": 0.8, "ttp_callback_pct": 0.2, "target_pct": 0.75, "desc": "Rýchly 15m scalp (+0.75%)"},
     "30m": {"trail_pct": 1.0, "be_trigger_pct": 0.9, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.3, "target_pct": 2.0, "desc": "30m trendový (TTP od +1.0%)"},
     "45m": {"trail_pct": 1.5, "be_trigger_pct": 1.2, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.4, "target_pct": 3.0, "desc": "45m strednodobý (TTP od +1.4%)"},
@@ -68,7 +68,8 @@ SETTINGS.update({
     "use_breakeven": True,
     "max_budget_cap": 1000.0,
     "compounding_enabled": False,
-    "max_parallel": 1
+    "max_parallel": 1,
+    "ha_exit_consecutive": 3  # Nastavenie na 3 červené Heikin-Ashi sviečky pre exit
 })
 
 def log_event(message: str):
@@ -291,7 +292,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     coin_key = symbol.split("-")[0]
 
     try:
-        # Sťahujeme dostatočnú históriu sviečok pre presný výpočet EMA (50 barov)
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=60"
         res = okx_public_request(url)
         if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 10:
@@ -304,10 +304,8 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             return False
 
         candles = res["data"]
-        candles.reverse() # Zoradíme od najstaršej po najnovšiu
+        candles.reverse() # Od najstaršej po najnovšiu
         
-        # Striktné vyhodnocovanie na základe UZATVORENEJ sviečky (index -2), 
-        # aby sa hodnoty dokonale zhodovali s TradingView indikátorom.
         closed_candles = candles[:-1]
         
         ha_closes, ha_opens, r_closes = [], [], []
@@ -321,7 +319,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             r_closes.append(cl)
             volumes.append(v)
             
-        # Výpočet objemového smeru Heikin-Ashi rovnako ako v Pine Scripte
         vol_dirs = [v if ha_closes[i] > ha_opens[i] else -v for i, v in enumerate(volumes)]
         fast_ma = calc_ema(vol_dirs, 5)
         slow_ma = calc_ema(vol_dirs, 20)
@@ -333,17 +330,19 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_osc, prev_osc = oscillator_value[-1], oscillator_value[-2]
         curr_sig, prev_sig = signal_line[-1], signal_line[-2]
         
-        # 1. Objemové Momentum (1. bod checklistu)
+        # 1. Objemové Momentum
         cond_volume_bullish = curr_osc > 0 and curr_osc > curr_sig
         momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
 
-        # 2. Nákupný Impulz (2. bod checklistu)
+        # 2. Nákupný Impulz & Striktná zelená Heikin-Ashi sviečka
         cond_volume_crossover = (prev_osc <= prev_sig) and (curr_osc > curr_sig) and (curr_osc > 0)
         curr_close, prev_close = ha_closes[-1], ha_closes[-2]
         curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
-        buy_trigger = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
+        ha_is_green = ha_closes[-1] > ha_opens[-1]  # Striktná podmienka: sviečka HA musí byť zelená!
+        
+        buy_trigger = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9) and ha_is_green
         
         is_in_trade = coin_key in ACTIVE_TRADES
         impuls_active = buy_trigger or is_in_trade
@@ -365,7 +364,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         if is_in_trade:
             ts_status_txt = f"{ACTIVE_TRADES[coin_key].get('entry_price', 0)*0.994:.4f}"
 
-        # 7. Exekučný pokyn (7. bod checklistu)
+        # 7. Exekučný pokyn
         exec_signal_str = "NAKÚPIŤ" if buy_trigger else ("DRŽAŤ" if is_in_trade else "ČAKAJ")
 
         MARKET_SCANNER_CACHE[coin_key] = {
@@ -534,7 +533,7 @@ async def execute_autonomous_buy(okx_symbol: str):
             reply_markup=inline_keyboard
         )
 
-# --- MONITOR RIZIK ---
+# --- MONITOR RIZIK & HEIKIN-ASHI EXIT FILTER ---
 
 async def advanced_risk_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
@@ -556,6 +555,7 @@ async def advanced_risk_monitor_loop():
                 trade = ACTIVE_TRADES[coin]
                 symbol = trade["market_pair"]
                 trade_settings = trade.get("settings", SETTINGS)
+                tf_str = trade.get("tf", CURRENT_TIMEFRAME).lower()
 
                 ticker_res = okx_public_request(f"/api/v5/market/ticker?instId={symbol}")
                 if ticker_res.get("code") == "0" and ticker_res.get("data"):
@@ -564,6 +564,51 @@ async def advanced_risk_monitor_loop():
                     current_price = trade["entry_price"]
 
                 trade["current_price"] = current_price
+
+                # Kontrola Heikin-Ashi exitov (napr. 3 červené sviečky po sebe)
+                ha_exit_triggered = False
+                try:
+                    candles_res = okx_public_request(f"/api/v5/market/candles?instId={symbol}&bar={tf_str}&limit=5")
+                    if candles_res.get("code") == "0" and candles_res.get("data") and len(candles_res["data"]) >= 4:
+                        c_data = candles_res["data"]
+                        c_data.reverse()
+                        closed_c = c_data[:-1] # Zohľadňujeme uzavreté sviečky
+                        
+                        ha_list = []
+                        for i, c in enumerate(closed_c):
+                            o, h, l, cl = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4])
+                            ha_cl = (o + h + l + cl) / 4.0
+                            ha_op = (o + cl) / 2.0 if i == 0 else (ha_list[-1][1] + ha_list[-1][0]) / 2.0
+                            ha_list.append((ha_op, ha_cl))
+                        
+                        required_reds = trade_settings.get("ha_exit_consecutive", 3)
+                        if len(ha_list) >= required_reds:
+                            last_n = ha_list[-required_reds:]
+                            if all(item[1] < item[0] for item in last_n):
+                                ha_exit_triggered = True
+                except Exception:
+                    pass
+
+                if ha_exit_triggered:
+                    reason = f"Heikin-Ashi Exit ({trade_settings.get('ha_exit_consecutive', 3)} červené sviečky)"
+                    try:
+                        fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
+                        if fmt_sz:
+                            order_body = json.dumps({
+                                "instId": symbol, "tdMode": "cash", "side": "sell",
+                                "ordType": "market", "sz": fmt_sz
+                            })
+                            okx_request("POST", "/api/v5/trade/order", order_body)
+                        pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100
+                        invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
+                        pnl_usdc = invested * (pnl_pct / 100.0)
+                        record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
+                        log_event(f"🚨 {reason} pre {symbol} | PnL: {pnl_pct:+.2f}%")
+                        send_telegram_msg(f"🚨 <b>{reason.upper()}</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}%")
+                    except Exception:
+                        pass
+                    del ACTIVE_TRADES[coin]
+                    continue
 
                 bought_time = datetime.strptime(trade["bought_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone(timedelta(hours=1)))
                 if now_time - bought_time > timedelta(hours=48):
