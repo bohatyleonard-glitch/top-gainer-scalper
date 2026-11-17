@@ -47,6 +47,7 @@ CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na synchronizovaný signál..."
 LAST_TRADE_TIME = {}
 UNSUPPORTED_DEMO_SYMBOLS = set()
 MARKET_SCANNER_CACHE = {} 
+MACD_VISUAL_CACHE = {}
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
@@ -75,7 +76,7 @@ SETTINGS.update({
     "fib_choice": 0.786,
     "pivot_len": 2,
     "ha_exit_consecutive": 2,
-    "use_macd_filter": True  # Doplnený MACD filter pre zvýšenie Win Rate
+    "use_macd_filter": True  # Zapnutý MACD filter
 })
 
 def log_event(message: str):
@@ -332,7 +333,7 @@ def calc_fib_target(ha_highs, ha_lows, pivot_len=2, fib_ratio=0.786):
     return None
 
 def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
-    global MARKET_SCANNER_CACHE, ACTIVE_TRADES
+    global MARKET_SCANNER_CACHE, ACTIVE_TRADES, MACD_VISUAL_CACHE
     coin_key = symbol.split("-")[0]
 
     if coin_key in BLACKLIST_COINS:
@@ -401,17 +402,37 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
-        # --- DOPLNENÝ MACD FILTER ---
+        # --- MACD VÝPOČET & VIZUALIZÁCIA ---
         macd_fast = calc_ema(ha_closes, 12)
         macd_slow = calc_ema(ha_closes, 26)
         macd_line = [f - s for f, s in zip(macd_fast, macd_slow)]
         macd_signal = calc_ema(macd_line, 9)
+        macd_histogram = [l - s for l, s in zip(macd_line, macd_signal)]
         
         curr_macd, prev_macd = macd_line[-1], macd_line[-2]
         curr_macdsig, prev_macdsig = macd_signal[-1], macd_signal[-2]
+        curr_hist = macd_histogram[-1]
+        
+        is_bullish_crossover = (prev_macd <= prev_macdsig) and (curr_macd > curr_macdsig)
+        if is_bullish_crossover:
+            macd_status_txt = "🟢 ČERSTVÝ CROSSOVER"
+        elif curr_macd > curr_macdsig and curr_hist > 0:
+            macd_status_txt = "🟢 RASTÚCI TREND"
+        elif curr_macd > curr_macdsig:
+            macd_status_txt = "🟡 NAD SIGNÁLOM"
+        else:
+            macd_status_txt = "🔴 MEDVEDÍ / SLABÝ"
+
+        MACD_VISUAL_CACHE[coin_key] = {
+            "symbol": symbol,
+            "macd_line": round(curr_macd, 4),
+            "signal_line": round(curr_macdsig, 4),
+            "histogram": round(curr_hist, 4),
+            "status": macd_status_txt
+        }
         
         if SETTINGS.get("use_macd_filter", True):
-            macd_bullish = (prev_macd <= prev_macdsig) and (curr_macd > curr_macdsig) or (curr_macd > curr_macdsig)
+            macd_bullish = is_bullish_crossover or (curr_macd > curr_macdsig)
         else:
             macd_bullish = True
 
@@ -877,12 +898,13 @@ async def set_parallel(count: int):
 
 @app.post("/api/set-tf/{tf_val}")
 async def set_tf(tf_val: str):
-    global CURRENT_TIMEFRAME, SETTINGS, MARKET_SCANNER_CACHE
+    global CURRENT_TIMEFRAME, SETTINGS, MARKET_SCANNER_CACHE, MACD_VISUAL_CACHE
     tf_lower = tf_val.lower()
     if tf_lower in TIMEFRAME_PROFILES:
         CURRENT_TIMEFRAME = tf_val.upper()
         SETTINGS.update(TIMEFRAME_PROFILES[tf_lower])
         MARKET_SCANNER_CACHE.clear()
+        MACD_VISUAL_CACHE.clear()
         log_event(f"⏱️ Časový rámec (TF) manuálne zmenený na: {CURRENT_TIMEFRAME}")
         return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
     return JSONResponse({"status": "error", "message": "Neplatný časový rámec."})
@@ -1187,19 +1209,20 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Execution History (3-Month Persistent Storage)</div>
+            <div class="section-title">MACD Signal Matrix & Live Indicator Status</div>
             <div class="terminal-card scrollable-card">
                 <table>
                     <thead>
                         <tr>
-                            <th>Timestamp</th>
-                            <th>Pair</th>
-                            <th>Trigger Reason</th>
-                            <th>Net PnL</th>
+                            <th>Token / Pár</th>
+                            <th>MACD Línia</th>
+                            <th>Signálna Línia</th>
+                            <th>Histogram</th>
+                            <th>Aktuálny MACD Stav</th>
                         </tr>
                     </thead>
-                    <tbody id="history-tbody">
-                        <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Zatiaľ žiadne ukončené obchody.</td></tr>
+                    <tbody id="macd-tbody">
+                        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Načítavam MACD hodnoty pre aktívne tokeny...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1371,21 +1394,26 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     scannerTbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted);">Prebieha úvodné skenovanie trhu...</td></tr>`;
                 }
 
-                let historyTbody = document.getElementById('history-tbody');
-                if (data.history.length > 0) {
-                    let hHtml = "";
-                    for (let h of data.history) {
-                        let pnlClass = h.pnl_usdc >= 0 ? "text-green" : "text-red";
-                        hHtml += `<tr>
-                            <td>${h.time}</td>
-                            <td><b>${h.pair}</b></td>
-                            <td>${h.reason}</td>
-                            <td class="${pnlClass}">${h.pnl_usdc >= 0 ? "+" : ""}${h.pnl_usdc.toFixed(2)} $ (${h.pnl_pct >= 0 ? "+" : ""}${h.pnl_pct.toFixed(2)}%)</td>
+                let macdTbody = document.getElementById('macd-tbody');
+                let macdData = data.macd_cache || {};
+                if (Object.keys(macdData).length > 0) {
+                    let mHtml = "";
+                    for (let [coin, m] of Object.entries(macdData)) {
+                        let histClass = m.histogram >= 0 ? "text-green" : "text-red";
+                        let isOwned = data.active_trades && data.active_trades[coin];
+                        let rowStyle = isOwned ? "background: rgba(16, 185, 129, 0.08); font-weight: bold;" : "";
+                        
+                        mHtml += `<tr style="${rowStyle}">
+                            <td><b>${m.symbol}</b> ${isOwned ? '🟢 [V TRHU]' : ''}</td>
+                            <td>${m.macd_line.toFixed(4)}</td>
+                            <td>${m.signal_line.toFixed(4)}</td>
+                            <td class="${histClass}">${m.histogram >= 0 ? "+" : ""}${m.histogram.toFixed(4)}</td>
+                            <td>${m.status}</td>
                         </tr>`;
                     }
-                    historyTbody.innerHTML = hHtml;
+                    macdTbody.innerHTML = mHtml;
                 } else {
-                    historyTbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Zatiaľ žiadne ukončené obchody.</td></tr>`;
+                    macdTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Prebieha výpočet MACD indikátorov...</td></tr>`;
                 }
 
                 let logsBox = document.getElementById('logs-container');
@@ -1431,7 +1459,7 @@ async def get_state():
         "stats": stats,
         "active_trades": ACTIVE_TRADES,
         "scanner_cache": MARKET_SCANNER_CACHE,
-        "history": CLOSED_TRADES_HISTORY[:20],
+        "macd_cache": MACD_VISUAL_CACHE,
         "logs": SYSTEM_LOGS
     })
 
