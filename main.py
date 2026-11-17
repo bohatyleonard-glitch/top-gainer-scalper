@@ -74,7 +74,8 @@ SETTINGS.update({
     "max_parallel": 1,
     "fib_choice": 0.786,
     "pivot_len": 2,
-    "ha_exit_consecutive": 2
+    "ha_exit_consecutive": 2,
+    "use_macd_filter": True  # Doplnený MACD filter pre zvýšenie Win Rate
 })
 
 def log_event(message: str):
@@ -400,7 +401,21 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_ema9, prev_ema9 = close_ema_9[-1], close_ema_9[-2]
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
-        buy_trigger = cond_above_fib and cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
+        # --- DOPLNENÝ MACD FILTER ---
+        macd_fast = calc_ema(ha_closes, 12)
+        macd_slow = calc_ema(ha_closes, 26)
+        macd_line = [f - s for f, s in zip(macd_fast, macd_slow)]
+        macd_signal = calc_ema(macd_line, 9)
+        
+        curr_macd, prev_macd = macd_line[-1], macd_line[-2]
+        curr_macdsig, prev_macdsig = macd_signal[-1], macd_signal[-2]
+        
+        if SETTINGS.get("use_macd_filter", True):
+            macd_bullish = (prev_macd <= prev_macdsig) and (curr_macd > curr_macdsig) or (curr_macd > curr_macdsig)
+        else:
+            macd_bullish = True
+
+        buy_trigger = cond_above_fib and cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9) and macd_bullish
 
         ha_consec = SETTINGS.get("ha_exit_consecutive", 1)
         ha_is_red_curr = ha_closes[-1] < ha_opens[-1]
@@ -573,7 +588,6 @@ async def execute_autonomous_buy(okx_symbol: str):
         coin_amount = float(formatted_sz)
         actual_spent_usdc = coin_amount * current_price
         
-        # Presné hodnoty pre SL (-0.65%), BE (+1.2%), TTP (+1.2%), TP (+0.75%)
         sl_pct = SETTINGS.get("sl_pct", 0.65)
         sl_price = current_price * (1 - (sl_pct / 100.0))
         be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
@@ -789,7 +803,7 @@ async def advanced_risk_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event("🚀 Autonómny Apex Scalper PRO v5.6.8 (100% TV Strategy Sync) spustený.")
+    log_event("🚀 Autonómny Apex Scalper PRO v5.6.8 (100% TV Strategy Sync + MACD) spustený.")
     monitor_task = asyncio.create_task(advanced_risk_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
@@ -1061,7 +1075,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // AUTO-PILOT (100% TV Strategy Sync)</h1>
+                <h1>APEX SCALPER // AUTO-PILOT (100% TV Strategy Sync + MACD)</h1>
                 <p>
                     <span id="header-pair">Top USDC · OKX Demo (Live Dáta)</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
