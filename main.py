@@ -420,12 +420,14 @@ async def execute_trade_in_background(data: dict):
                 free_capital = fetch_account_capital("USDC")
                 budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
                 
+                # Výpočet rozpočtu s ohľadom na paralelné obchody
+                allocated_capital_base = free_capital / MAX_PARALLEL_TRADES
                 if SETTINGS.get("compounding_enabled", False):
-                    safe_budget = min(free_capital * 0.98, free_capital)
-                    log_event(f"🔄 Compounding AKTÍVNY: Používam zostatok ({free_capital:.2f} USDC)")
+                    safe_budget = min(allocated_capital_base * 0.98, allocated_capital_base)
+                    log_event(f"🔄 Compounding AKTÍVNY (Max {MAX_PARALLEL_TRADES} paralelne): Alokujem {safe_budget:.2f} USDC")
                 else:
-                    safe_budget = min(free_capital * 0.98, budget_cap)
-                    log_event(f"⚙️ Compounding VYPNUTÝ: Pevný rozpočet do stropu {budget_cap} $")
+                    safe_budget = min(allocated_capital_base * 0.98, budget_cap)
+                    log_event(f"⚙️ Compounding VYPNUTÝ (Max {MAX_PARALLEL_TRADES} paralelne): Alokujem {safe_budget:.2f} USDC (Strop: {budget_cap})")
 
                 if safe_budget < 5.0:
                     log_event(f"❌ Nedostatok prostriedkov: {free_capital} USDC")
@@ -644,7 +646,12 @@ async def manual_buy(coin: str):
             free_capital = fetch_account_capital("USDC")
             budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
             
-            safe_budget = min(free_capital * 0.98, free_capital if SETTINGS.get("compounding_enabled") else budget_cap)
+            allocated_capital_base = free_capital / MAX_PARALLEL_TRADES
+            if SETTINGS.get("compounding_enabled", False):
+                safe_budget = min(allocated_capital_base * 0.98, allocated_capital_base)
+            else:
+                safe_budget = min(allocated_capital_base * 0.98, budget_cap)
+
             if safe_budget < 5.0:
                 return JSONResponse({"status": "error", "message": "Nedostatok prostriedkov."})
             
@@ -733,7 +740,7 @@ async def sell_now():
                     del ACTIVE_TRADES[coin]
         return JSONResponse({"status": "success", "sold": sold})
 
-# --- 🎨 HTML TERMINÁL ---
+# --- 🎨 HTML TERMINÁL (S OVLÁDANÍM 1-4 PARALELNÝCH OBCHODOV) ---
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
 <head>
@@ -813,6 +820,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '1H' %}btn-yellow{% endif %}" data-tf="1h" onclick="setTf('1h')">1H</button>
                     <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '2H' %}btn-yellow{% endif %}" data-tf="2h" onclick="setTf('2h')">2H</button>
                     <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '4H' %}btn-yellow{% endif %}" data-tf="4h" onclick="setTf('4h')">4H</button>
+                </div>
+
+                <!-- Paralelné obchody (1x, 2x, 3x, 4x) -->
+                <div class="group">
+                    <button class="parallel-btn btn {% if MAX_PARALLEL_TRADES == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
+                    <button class="parallel-btn btn {% if MAX_PARALLEL_TRADES == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
+                    <button class="parallel-btn btn {% if MAX_PARALLEL_TRADES == 3 %}btn-yellow{% endif %}" data-val="3" onclick="setParallel(3)">3x</button>
+                    <button class="parallel-btn btn {% if MAX_PARALLEL_TRADES == 4 %}btn-yellow{% endif %}" data-val="4" onclick="setParallel(4)">4x</button>
                 </div>
 
                 <!-- Rozpočet (500, 1K, 3K, 5K, 10K) -->
@@ -957,6 +972,19 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             }
         }
 
+        async function setParallel(count) {
+            let res = await fetch(`/api/set-parallel/${count}`, {method: 'POST'});
+            let data = await res.json();
+            if (data.status === 'success') {
+                document.querySelectorAll('.parallel-btn').forEach(b => {
+                    b.classList.remove('btn-yellow');
+                    if (parseInt(b.getAttribute('data-val')) === count) {
+                        b.classList.add('btn-yellow');
+                    }
+                });
+            }
+        }
+
         async function setTf(tfVal) {
             let res = await fetch(`/api/set-tf/${tfVal}`, {method: 'POST'});
             let data = await res.json();
@@ -1077,6 +1105,7 @@ async def dashboard():
         IS_BOT_ACTIVE=IS_BOT_ACTIVE,
         CURRENT_TIMEFRAME=CURRENT_TIMEFRAME,
         CURRENT_STAGE=CURRENT_STAGE,
+        MAX_PARALLEL_TRADES=MAX_PARALLEL_TRADES,
         balance=balance
     )
 
@@ -1089,6 +1118,7 @@ async def get_state():
         "is_bot_active": IS_BOT_ACTIVE,
         "current_stage": CURRENT_STAGE,
         "current_tf": CURRENT_TIMEFRAME,
+        "max_parallel": MAX_PARALLEL_TRADES,
         "stats": stats,
         "active_trades": ACTIVE_TRADES,
         "history": CLOSED_TRADES_HISTORY[:20],
