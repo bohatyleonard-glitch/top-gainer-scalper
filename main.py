@@ -313,7 +313,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     coin_key = symbol.split("-")[0]
 
     try:
-        # Sťahujeme dostatočnú históriu sviečok pre presný výpočet EMA (50 barov)
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=60"
         res = okx_public_request(url)
         if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 10:
@@ -327,10 +326,8 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             return False
 
         candles = res["data"]
-        candles.reverse() # Zoradíme od najstaršej po najnovšiu
+        candles.reverse()
         
-        # Striktné vyhodnocovanie na základe UZATVORENEJ sviečky (index -2), 
-        # aby sa hodnoty dokonale zhodovali s TradingView indikátorom.
         closed_candles = candles[:-1]
         
         highs = [safe_float(c[2]) for c in closed_candles]
@@ -347,7 +344,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             r_closes.append(cl)
             volumes.append(v)
             
-        # Výpočet objemového smeru Heikin-Ashi rovnako ako v Pine Scripte
         vol_dirs = [v if ha_closes[i] > ha_opens[i] else -v for i, v in enumerate(volumes)]
         fast_ma = calc_ema(vol_dirs, 5)
         slow_ma = calc_ema(vol_dirs, 20)
@@ -358,11 +354,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_osc = oscillator_value[-1]
         curr_sig = signal_line[-1]
         
-        # 1. Objemové Momentum (1. bod checklistu)
         cond_volume_bullish = curr_osc > 0 and curr_osc > curr_sig
         momentum_str = "SILNÉ" if cond_volume_bullish else "SLABÉ"
 
-        # 2. Fibonacciho hladiny 0.618 (nákup) a 0.786 (stop loss)
         last_high, last_low = find_pivots(highs, lows, pivot_len=2)
         fib_0618, fib_0786 = None, None
         if last_high and last_low and last_high > last_low:
@@ -370,7 +364,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             fib_0618 = last_high - range_size * 0.618
             fib_0786 = last_high - range_size * 0.786
 
-        # Podmienka nákupu: Silné momentum + cena na hladine 0.618 alebo nad ňou (v zóne od 0.786 po 0.618)
         curr_low = lows[-1]
         curr_real_close = r_closes[-1]
         buy_trigger = False
@@ -378,7 +371,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             if curr_low <= fib_0618 and curr_real_close >= fib_0786:
                 buy_trigger = True
 
-        # Detekcia 3 po sebe idúcich červených Heikin-Ashi sviečok pre Exit
         ha_consec_req = SETTINGS.get("ha_exit_consecutive", 3)
         ha_exit_triggered = False
         if len(ha_closes) >= ha_consec_req:
@@ -404,7 +396,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         if is_in_trade:
             ts_status_txt = f"{ACTIVE_TRADES[coin_key].get('current_sl_price', 0):.4f}"
 
-        # 7. Exekučný pokyn (7. bod checklistu)
         if is_in_trade and ha_exit_triggered:
             exec_signal_str = "EXIT SIGNÁL"
         elif buy_trigger and not is_in_trade:
@@ -457,7 +448,6 @@ async def autonomous_scanner_loop():
                     coin_name = symbol.split("-")[0]
                     now_ts = datetime.now().timestamp()
 
-                    # Aktualizujeme checklist aj pre otvorené obchody (kvôli HA exit signálu)
                     if coin_name in ACTIVE_TRADES or (coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"])):
                         evaluate_pine_strategy(symbol, bar_tf=tf_str)
                         await asyncio.sleep(0.2)
@@ -539,7 +529,6 @@ async def execute_autonomous_buy(okx_symbol: str):
         coin_amount = float(formatted_sz)
         actual_spent_usdc = coin_amount * current_price
 
-        # Počiatočný Stop Loss na hladine 0.786 s bezpečnostným stropom max_sl_pct podľa TF
         max_allowed_sl_pct = SETTINGS.get("max_sl_pct", 1.0) / 100.0
         absolute_max_sl_price = current_price * (1.0 - max_allowed_sl_pct)
 
@@ -660,7 +649,6 @@ async def advanced_risk_monitor_loop():
                     trade["live_pnl_usdc"] = pnl_usdc
                     CURRENT_STAGE = f"STAV: Aktívnych pozícií: {len(ACTIVE_TRADES)} | Posledná: {symbol} ({pnl_pct:+.2f}%)"
 
-                    # 1. Okamžitý exit pri signále z checklistu (napr. 3 červené Heikin-Ashi sviečky)
                     checklist_exec = MARKET_SCANNER_CACHE.get(coin, {}).get("exec_signal", "")
                     if checklist_exec in ["EXIT SIGNÁL", "PREDAJ"]:
                         reason = "Checklist Exit (3x červená HA sviečka)"
@@ -680,11 +668,9 @@ async def advanced_risk_monitor_loop():
                         del ACTIVE_TRADES[coin]
                         continue
 
-                    # 2. Dynamický posun Stop Lossu z hladiny 0.786 s rastúcou cenou + Break-Even
                     be_trigger = trade_settings.get("be_trigger_pct", 0.4)
                     trail_pct = trade_settings.get("trail_pct", 0.4)
                     
-                    # Posúvame počiatočný SL nahor o rovnaký prírastok, ako narástlo maximum od vstupu
                     price_gain_since_entry = max(0.0, trade["highest_price"] - trade["entry_price"])
                     dynamic_fibo_sl = trade["initial_sl_price"] + price_gain_since_entry
                     trail_stop_price = trade["highest_price"] * (1 - (trail_pct / 100.0))
@@ -697,7 +683,6 @@ async def advanced_risk_monitor_loop():
                     
                     trade["current_sl_price"] = effective_sl
 
-                    # 3. Prvý Take Profit -> uzamkne zisk a pokračuje s cenou hore
                     ttp_trigger = trade_settings.get("ttp_trigger_pct", 0.65)
                     if ttp_trigger > 0:
                         ttp_activation_price = trade["entry_price"] * (1 + (ttp_trigger / 100.0))
@@ -714,7 +699,6 @@ async def advanced_risk_monitor_loop():
                     else:
                         ttp_stop_level = 0
 
-                    # Kontrola zasiahnutia Stop Lossu / Break-Even
                     if current_price <= effective_sl:
                         reason = f"Break-Even / Trailing Stop ({trail_pct}%)" if trade.get("break_even_activated") else f"Stop-Loss (Fibo 0.786 / Max -{trade_settings.get('max_sl_pct', 1.0)}%)"
                         try:
@@ -733,7 +717,6 @@ async def advanced_risk_monitor_loop():
                         del ACTIVE_TRADES[coin]
                         continue
 
-                    # Kontrola zasiahnutia Trailing Take Profitu
                     if trade.get("ttp_activated") and current_price <= ttp_stop_level:
                         reason = f"Trailing Take Profit (+{pnl_pct:.2f}%)"
                         try:
@@ -771,6 +754,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+@app.post("/webhook/telegram")
 @app.post("/api/telegram-webhook")
 async def telegram_webhook(request: Request):
     try:
