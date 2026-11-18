@@ -27,16 +27,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 # --- DYNAMICKE PROFILY PRE CASOVE RAMCE ---
 
 TIMEFRAME_PROFILES = {
-    "1m": {"trail_pct": 0.4, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.65, "ttp_callback_pct": 0.15, "target_pct": 0.0, "desc": "Skalper 1m (Fibo 0.618)"},
-    "5m": {"trail_pct": 0.4, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.65, "ttp_callback_pct": 0.15, "target_pct": 0.0, "desc": "5m Fibo 0.618 (TTP od +0.65%)"},
-    "8m": {"trail_pct": 0.4, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.65, "ttp_callback_pct": 0.15, "target_pct": 0.0, "desc": "8m Fibo 0.618 (TTP od +0.65%)"},
-    "15m": {"trail_pct": 0.4, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.65, "ttp_callback_pct": 0.15, "target_pct": 0.0, "desc": "15m Fibo 0.618 (TTP od +0.65%)"},
-    "30m": {"trail_pct": 0.4, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.65, "ttp_callback_pct": 0.2, "target_pct": 0.0, "desc": "30m Fibo 0.618 (TTP od +0.65%)"},
-    "45m": {"trail_pct": 0.5, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.65, "ttp_callback_pct": 0.25, "target_pct": 0.0, "desc": "45m Fibo 0.618"},
-    "1h": {"trail_pct": 0.6, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.65, "ttp_callback_pct": 0.3, "target_pct": 0.0, "desc": "1h swing"},
-    "2h": {"trail_pct": 1.0, "be_trigger_pct": 0.5, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.4, "target_pct": 0.0, "desc": "2h trend"},
-    "3h": {"trail_pct": 1.5, "be_trigger_pct": 0.8, "ttp_trigger_pct": 1.5, "ttp_callback_pct": 0.5, "target_pct": 0.0, "desc": "3h pozičný"},
-    "4h": {"trail_pct": 2.0, "be_trigger_pct": 1.0, "ttp_trigger_pct": 2.0, "ttp_callback_pct": 0.6, "target_pct": 0.0, "desc": "4h swing"}
+    "1m": {"trail_pct": 0.25, "be_trigger_pct": 0.25, "ttp_trigger_pct": 0.45, "ttp_callback_pct": 0.1, "target_pct": 0.0, "max_sl_pct": 0.5, "desc": "Skalper 1m (SL max -0.5%)"},
+    "5m": {"trail_pct": 0.3, "be_trigger_pct": 0.3, "ttp_trigger_pct": 0.5, "ttp_callback_pct": 0.1, "target_pct": 0.0, "max_sl_pct": 0.6, "desc": "Skalper 5m (Rýchly SL max -0.6%)"},
+    "8m": {"trail_pct": 0.35, "be_trigger_pct": 0.35, "ttp_trigger_pct": 0.55, "ttp_callback_pct": 0.12, "target_pct": 0.0, "max_sl_pct": 0.7, "desc": "Skalper 8m (SL max -0.7%)"},
+    "15m": {"trail_pct": 0.4, "be_trigger_pct": 0.4, "ttp_trigger_pct": 0.65, "ttp_callback_pct": 0.15, "target_pct": 0.0, "max_sl_pct": 1.0, "desc": "15m Fibo 0.618 (SL max -1.0%)"},
+    "30m": {"trail_pct": 0.6, "be_trigger_pct": 0.5, "ttp_trigger_pct": 1.0, "ttp_callback_pct": 0.2, "target_pct": 0.0, "max_sl_pct": 1.5, "desc": "30m trendový (SL max -1.5%)"},
+    "45m": {"trail_pct": 0.8, "be_trigger_pct": 0.6, "ttp_trigger_pct": 1.2, "ttp_callback_pct": 0.25, "target_pct": 0.0, "max_sl_pct": 2.0, "desc": "45m strednodobý (SL max -2.0%)"},
+    "1h": {"trail_pct": 1.0, "be_trigger_pct": 0.7, "ttp_trigger_pct": 1.4, "ttp_callback_pct": 0.3, "target_pct": 0.0, "max_sl_pct": 2.2, "desc": "1h swing (SL max -2.2%)"},
+    "2h": {"trail_pct": 1.2, "be_trigger_pct": 0.8, "ttp_trigger_pct": 1.6, "ttp_callback_pct": 0.4, "target_pct": 0.0, "max_sl_pct": 2.5, "desc": "2h trend (SL max -2.5%)"},
+    "3h": {"trail_pct": 1.5, "be_trigger_pct": 1.0, "ttp_trigger_pct": 2.0, "ttp_callback_pct": 0.5, "target_pct": 0.0, "max_sl_pct": 3.0, "desc": "3h pozičný (SL max -3.0%)"},
+    "4h": {"trail_pct": 2.0, "be_trigger_pct": 1.2, "ttp_trigger_pct": 2.5, "ttp_callback_pct": 0.6, "target_pct": 0.0, "max_sl_pct": 3.5, "desc": "4h swing (SL max -3.5%)"}
 }
 
 ACTIVE_TRADES = {}
@@ -539,12 +539,15 @@ async def execute_autonomous_buy(okx_symbol: str):
         coin_amount = float(formatted_sz)
         actual_spent_usdc = coin_amount * current_price
 
-        # Počiatočný Stop Loss sa ihneď nastaví na Fibonacciho hladinu 0.786
+        # Počiatočný Stop Loss na hladine 0.786 s bezpečnostným stropom max_sl_pct podľa TF
+        max_allowed_sl_pct = SETTINGS.get("max_sl_pct", 1.0) / 100.0
+        absolute_max_sl_price = current_price * (1.0 - max_allowed_sl_pct)
+
         cached_fib_0786 = MARKET_SCANNER_CACHE.get(coin_name, {}).get("fib_0786")
         if cached_fib_0786 and 0 < cached_fib_0786 < current_price:
-            sl_price = cached_fib_0786
+            sl_price = max(cached_fib_0786, absolute_max_sl_price)
         else:
-            sl_price = current_price * (1 - (SETTINGS.get("trail_pct", 0.4) / 100.0))
+            sl_price = absolute_max_sl_price
 
         be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
         ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
@@ -573,7 +576,7 @@ async def execute_autonomous_buy(okx_symbol: str):
             "settings": SETTINGS.copy()
         }
         
-        log_event(f"🛒 Autonómny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | SL (0.786): {sl_price:.4f} | Investícia: {actual_spent_usdc:.2f} USDC")
+        log_event(f"🛒 Autonómny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | SL (0.786/Max-{SETTINGS.get('max_sl_pct', 1.0)}%): {sl_price:.4f} | Investícia: {actual_spent_usdc:.2f} USDC")
         
         inline_keyboard = {
             "inline_keyboard": [
@@ -587,7 +590,7 @@ async def execute_autonomous_buy(okx_symbol: str):
             f"🟢 <b>SYNCHRONIZOVANÝ NÁKUP (Fibo 0.618) [TF: {CURRENT_TIMEFRAME}]</b>\n"
             f"<b>Pár:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
-            f"<b>Počiatočný SL (0.786):</b> {sl_price:.4f}\n"
+            f"<b>Počiatočný SL (0.786 / Max -{SETTINGS.get('max_sl_pct', 1.0)}%):</b> {sl_price:.4f}\n"
             f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
             f"🎯 <b>Prvý TP (Trailing):</b> +{SETTINGS['ttp_trigger_pct']}%",
             reply_markup=inline_keyboard
@@ -677,11 +680,11 @@ async def advanced_risk_monitor_loop():
                         del ACTIVE_TRADES[coin]
                         continue
 
-                    # 2. Dynamický posun Stop Lossu z hladiny 0.786 s rastúcou cenou + Break-Even (0.4%)
+                    # 2. Dynamický posun Stop Lossu z hladiny 0.786 s rastúcou cenou + Break-Even
                     be_trigger = trade_settings.get("be_trigger_pct", 0.4)
                     trail_pct = trade_settings.get("trail_pct", 0.4)
                     
-                    # Posúvame počiatočný SL (0.786) nahor o rovnaký prírastok, ako narástlo maximum od vstupu
+                    # Posúvame počiatočný SL nahor o rovnaký prírastok, ako narástlo maximum od vstupu
                     price_gain_since_entry = max(0.0, trade["highest_price"] - trade["entry_price"])
                     dynamic_fibo_sl = trade["initial_sl_price"] + price_gain_since_entry
                     trail_stop_price = trade["highest_price"] * (1 - (trail_pct / 100.0))
@@ -694,7 +697,7 @@ async def advanced_risk_monitor_loop():
                     
                     trade["current_sl_price"] = effective_sl
 
-                    # 3. Prvý Take Profit na hranici +0.65% -> uzamkne zisk a pokračuje s cenou hore (aj na 10%+)
+                    # 3. Prvý Take Profit -> uzamkne zisk a pokračuje s cenou hore
                     ttp_trigger = trade_settings.get("ttp_trigger_pct", 0.65)
                     if ttp_trigger > 0:
                         ttp_activation_price = trade["entry_price"] * (1 + (ttp_trigger / 100.0))
@@ -702,7 +705,6 @@ async def advanced_risk_monitor_loop():
                             trade["ttp_activated"] = True
                         
                         if trade.get("ttp_activated"):
-                            # Zaručíme minimálny uzamknutý zisk +0.65% a sledujeme rast s callbackom
                             locked_floor = trade["entry_price"] * (1 + (ttp_trigger / 100.0))
                             trailing_ttp = trade["highest_price"] * (1 - (trade_settings.get("ttp_callback_pct", 0.15) / 100.0))
                             ttp_stop_level = max(locked_floor, trailing_ttp)
@@ -714,7 +716,7 @@ async def advanced_risk_monitor_loop():
 
                     # Kontrola zasiahnutia Stop Lossu / Break-Even
                     if current_price <= effective_sl:
-                        reason = "Break-Even / Trailing Stop (0.4%)" if trade.get("break_even_activated") else "Stop-Loss (Fibo 0.786)"
+                        reason = f"Break-Even / Trailing Stop ({trail_pct}%)" if trade.get("break_even_activated") else f"Stop-Loss (Fibo 0.786 / Max -{trade_settings.get('max_sl_pct', 1.0)}%)"
                         try:
                             fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
                             if fmt_sz:
@@ -838,7 +840,7 @@ async def set_tf(tf_val: str):
         SETTINGS.update(TIMEFRAME_PROFILES[tf_lower])
         SETTINGS["ha_exit_consecutive"] = 3
         MARKET_SCANNER_CACHE.clear()
-        log_event(f"⏱️ Časový rámec (TF) manuálne zmenený na: {CURRENT_TIMEFRAME}")
+        log_event(f"⏱️ Časový rámec (TF) manuálne zmenený na: {CURRENT_TIMEFRAME} (Max SL: -{SETTINGS.get('max_sl_pct', 1.0)}%)")
         return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
     return JSONResponse({"status": "error", "message": "Neplatný časový rámec."})
 
@@ -894,11 +896,14 @@ async def manual_buy(coin: str):
             coin_amount = float(formatted_sz)
             actual_spent_usdc = coin_amount * current_price
 
+            max_allowed_sl_pct = SETTINGS.get("max_sl_pct", 1.0) / 100.0
+            absolute_max_sl_price = current_price * (1.0 - max_allowed_sl_pct)
+
             cached_fib_0786 = MARKET_SCANNER_CACHE.get(coin_upper, {}).get("fib_0786")
             if cached_fib_0786 and 0 < cached_fib_0786 < current_price:
-                sl_price = cached_fib_0786
+                sl_price = max(cached_fib_0786, absolute_max_sl_price)
             else:
-                sl_price = current_price * (1 - (SETTINGS.get("trail_pct", 0.4) / 100.0))
+                sl_price = absolute_max_sl_price
 
             be_price = current_price * (1 + (SETTINGS["be_trigger_pct"] / 100.0)) if SETTINGS.get("be_trigger_pct", 0) > 0 else 0
             ttp_price = current_price * (1 + (SETTINGS["ttp_trigger_pct"] / 100.0)) if SETTINGS.get("ttp_trigger_pct", 0) > 0 else 0
@@ -927,7 +932,7 @@ async def manual_buy(coin: str):
                 "settings": SETTINGS.copy()
             }
             log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | SL: {sl_price:.4f} | Investícia: {actual_spent_usdc:.2f}$")
-            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}] (TV Sync)</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>SL (0.786):</b> {sl_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC")
+            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}] (TV Sync)</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>SL (0.786 / Max -{SETTINGS.get('max_sl_pct', 1.0)}%):</b> {sl_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC")
             
             return JSONResponse({"status": "success", "symbol": okx_symbol})
         except Exception as e:
