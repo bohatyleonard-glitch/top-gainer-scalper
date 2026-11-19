@@ -381,7 +381,12 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
         ha_exit_triggered = bool(is_in_trade and two_red_ha and trade_in_profit)
 
-        momentum_str = "SILNÉ" if (curr_ha_green and above_fib_0618) else ("ČAKÁ" if above_fib_0618 else "SLABÉ")
+        if fib_0618 is not None:
+            fib_0618_txt = f"{fib_0618:.4f} ({'NAD' if above_fib_0618 else 'POD'})"
+        else:
+            fib_0618_txt = "ČAKÁ NA PIVOT"
+
+        momentum_str = fib_0618_txt
         impuls_active = buy_trigger or is_in_trade
         impulse_str = "AKTÍVNY (V TRHU)" if impuls_active else ("FIBO 0.618 NAD" if above_fib_0618 else "ČAKÁ")
 
@@ -423,6 +428,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "symbol": symbol,
             "price": curr_real_close,
             "momentum": momentum_str,
+            "above_fib_0618": above_fib_0618,
             "impulse": impulse_str,
             "trade_status": trade_status_txt,
             "be_status": be_status_txt,
@@ -440,7 +446,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     except Exception:
         MARKET_SCANNER_CACHE[coin_key] = {
             "symbol": symbol, "price": 0.0,
-            "momentum": "SLABÉ", "impulse": "ČAKÁ", "trade_status": "---",
+            "momentum": "ČAKÁ NA PIVOT", "above_fib_0618": False, "impulse": "ČAKÁ", "trade_status": "---",
             "be_status": "VYPNUTÝ", "ttp_status": "VYPNUTÝ", "ts_status": "VYPNUTÝ",
             "exec_signal": "ČAKAJ", "signal": "⚠️ VÝNIMKA", "is_green": False,
             "ha_exit_eligible": False, "fib_0618": None, "fib_0786": None
@@ -1137,7 +1143,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         <tr>
                             <th>Token / Pár</th>
                             <th>Cena</th>
-                            <th>1. Stav Zóny</th>
+                            <th>1. Fibo 0.618 / Stav</th>
                             <th>2. Nákupný Impulz</th>
                             <th>3. Stav Obchodu</th>
                             <th>4. Break-Even</th>
@@ -1317,7 +1323,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 if (Object.keys(scannerData).length > 0) {
                     let sHtml = "";
                     for (let [coin, info] of Object.entries(scannerData)) {
-                        let momClass = info.momentum === "SILNÉ" ? "text-green" : (info.momentum === "ČAKÁ" ? "text-yellow" : "text-red");
+                        let momClass = info.above_fib_0618 ? "text-green" : (info.momentum && info.momentum.includes("POD") ? "text-red" : "text-yellow");
                         let impClass = info.impulse.includes("AKTÍVNY") ? "text-green" : "text-yellow";
                         let execClass = info.exec_signal === "NAKÚPIŤ" ? "text-green" : (info.exec_signal === "EXIT SIGNÁL" ? "text-red" : "text-yellow");
 
