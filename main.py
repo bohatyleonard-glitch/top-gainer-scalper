@@ -64,7 +64,8 @@ TOP_LIQUID_SYMBOLS = [
 SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
 SETTINGS.update({
     "use_btc_filter": True,
-    "reentry_cooldown_sec": 120,
+    "reentry_cooldown_sec": 900,
+    "entry_blocked_red_ha": 2,
     "use_breakeven": True,
     "max_budget_cap": 1000.0,
     "compounding_enabled": False,
@@ -144,7 +145,9 @@ def calculate_stats():
     return {"win_rate": round(win_rate, 1), "total_trades": total, "wins": wins, "losses": losses, "total_pnl": round(total_pnl, 2)}
 
 def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
-    global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR
+    global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR, LAST_TRADE_TIME
+    coin_key = pair.split("-")[0]
+    LAST_TRADE_TIME[coin_key] = datetime.now().timestamp()
     day_str = get_sk_date_str()
     day_found = False
     for item in DAILY_PNL_CALENDAR:
@@ -366,8 +369,14 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
         curr_low = lows[-1]
         curr_real_close = r_closes[-1]
+
+        blocked_red_req = SETTINGS.get("entry_blocked_red_ha", 2)
+        too_many_red_ha = False
+        if blocked_red_req > 0 and len(ha_closes) >= blocked_red_req:
+            too_many_red_ha = all(ha_closes[-k] < ha_opens[-k] for k in range(1, blocked_red_req + 1))
+
         buy_trigger = False
-        if cond_volume_bullish and fib_0618 and fib_0786:
+        if cond_volume_bullish and fib_0618 and fib_0786 and not too_many_red_ha:
             if curr_low <= fib_0618 and curr_real_close >= fib_0786:
                 buy_trigger = True
 
@@ -405,6 +414,15 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         else:
             exec_signal_str = "ČAKAJ"
 
+        if buy_trigger:
+            signal_label = "🟢 FIBO 0.618 (Sync)"
+        elif too_many_red_ha and cond_volume_bullish:
+            signal_label = "🟠 ČAKÁ (2x červená HA)"
+        elif cond_volume_bullish:
+            signal_label = "🟡 BULLISH (Čaká)"
+        else:
+            signal_label = "🔴 SLABÝ / TRH"
+
         MARKET_SCANNER_CACHE[coin_key] = {
             "symbol": symbol,
             "price": curr_real_close,
@@ -416,7 +434,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "ttp_status": ttp_status_txt,
             "ts_status": ts_status_txt,
             "exec_signal": exec_signal_str,
-            "signal": "🟢 FIBO 0.618 (Sync)" if buy_trigger else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH"),
+            "signal": signal_label,
             "is_green": buy_trigger,
             "fib_0618": fib_0618,
             "fib_0786": fib_0786
@@ -482,6 +500,8 @@ async def execute_autonomous_buy(okx_symbol: str):
         max_allowed = SETTINGS.get("max_parallel", 1)
 
         if coin_name in ACTIVE_TRADES or len(ACTIVE_TRADES) >= max_allowed:
+            return
+        if coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"]):
             return
             
         LAST_TRADE_TIME[coin_name] = now_ts
@@ -823,6 +843,7 @@ async def set_tf(tf_val: str):
         CURRENT_TIMEFRAME = tf_val.upper()
         SETTINGS.update(TIMEFRAME_PROFILES[tf_lower])
         SETTINGS["ha_exit_consecutive"] = 3
+        SETTINGS["entry_blocked_red_ha"] = 2
         MARKET_SCANNER_CACHE.clear()
         log_event(f"⏱️ Časový rámec (TF) manuálne zmenený na: {CURRENT_TIMEFRAME} (Max SL: -{SETTINGS.get('max_sl_pct', 1.0)}%)")
         return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
