@@ -45,6 +45,8 @@ CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na autonómny signál..."
 LAST_TRADE_TIME = {}
+UNSUPPORTED_DEMO_SYMBOLS = set()
+MARKET_SCANNER_CACHE = {} 
 trade_lock = asyncio.Lock()
 
 IS_BOT_ACTIVE = True
@@ -52,7 +54,12 @@ CURRENT_TIMEFRAME = "15M"
 STORAGE_FILE = "trades_history.json"
 ALLOWED_STABLES = ["USDC"]
 
-TOP_LIQUID_SYMBOLS = ["SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC", "LINK-USDC", "DOGE-USDC", "PEPE-USDC", "NEAR-USDC", "RUNE-USDC", "RENDER-USDC"]
+TOP_LIQUID_SYMBOLS = [
+    "SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC",
+    "LINK-USDC", "DOGE-USDC", "PEPE-USDC", "NEAR-USDC", "RUNE-USDC",
+    "RENDER-USDC", "APT-USDC", "ARB-USDC", "OP-USDC", "INJ-USDC",
+    "TIA-USDC", "SEI-USDC", "DOT-USDC", "ATOM-USDC", "UNI-USDC"
+]
 
 SETTINGS = TIMEFRAME_PROFILES["15m"].copy()
 SETTINGS.update({
@@ -176,7 +183,7 @@ def okx_request(method: str, path: str, body: str = ""):
 def get_instrument_rules(symbol: str):
     try:
         res = okx_request("GET", f"/api/v5/public/instruments?instType=SPOT&instId={symbol}")
-        if res.get("code") == "0" and res.get("data"):
+        if res.get("code") == "0" and res.get("data") and len(res["data"]) > 0:
             inst = res["data"][0]
             lot_sz = safe_float(inst.get("lotSz"), 0.01)
             min_sz = safe_float(inst.get("minSz"), 0.01)
@@ -249,8 +256,11 @@ def update_top_liquid_symbols():
                     valid.append((inst_id, vol))
             valid.sort(key=lambda x: x[1], reverse=True)
             top_20 = [item[0] for item in valid[:20]]
-            if top_20:
+            if len(top_20) >= 5:
                 TOP_LIQUID_SYMBOLS = top_20
+            elif top_20:
+                merged = list(dict.fromkeys(top_20 + TOP_LIQUID_SYMBOLS))
+                TOP_LIQUID_SYMBOLS = merged[:20]
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
@@ -265,11 +275,31 @@ def calc_ema(values, length):
         ema.append(price * alpha + ema[-1] * (1 - alpha))
     return ema
 
-def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m") -> bool:
+def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
+    global MARKET_SCANNER_CACHE
+    coin_key = symbol.split("-")[0]
+    
+    if symbol in UNSUPPORTED_DEMO_SYMBOLS:
+        MARKET_SCANNER_CACHE[coin_key] = {
+            "symbol": symbol,
+            "price": 0.0,
+            "oscillator": 0.0,
+            "signal": "⛔ DEMO NEPODPORUJE",
+            "is_green": False
+        }
+        return False
+
     try:
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=50"
         res = okx_request("GET", url)
         if res.get("code") != "0" or not res.get("data"):
+            MARKET_SCANNER_CACHE[coin_key] = {
+                "symbol": symbol,
+                "price": 0.0,
+                "oscillator": 0.0,
+                "signal": "⚠️ CHYBA DÁT",
+                "is_green": False
+            }
             return False
 
         candles = res["data"]
@@ -303,36 +333,62 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m") -> bool:
         close_crossover_ema9 = (prev_close <= prev_ema9) and (curr_close > curr_ema9)
         
         all_green_condition = cond_volume_bullish and (cond_volume_crossover or close_crossover_ema9)
+        
+        status_text = "🟢 ALL GREEN" if all_green_condition else ("🟡 BULLISH (Čaká)" if cond_volume_bullish else "🔴 SLABÝ / TRH")
+
+        MARKET_SCANNER_CACHE[coin_key] = {
+            "symbol": symbol,
+            "price": curr_close,
+            "oscillator": round(curr_osc, 2),
+            "signal": status_text,
+            "is_green": all_green_condition
+        }
+
         return all_green_condition
-    except Exception:
+    except Exception as e:
+        MARKET_SCANNER_CACHE[coin_key] = {
+            "symbol": symbol,
+            "price": 0.0,
+            "oscillator": 0.0,
+            "signal": "⚠️ VÝNIMKA",
+            "is_green": False
+        }
         return False
 
 # --- AUTONOMNA SKENOVACIA SLUCKA ---
 
 async def autonomous_scanner_loop():
-    await asyncio.sleep(5)
-    log_event("🤖 Autonómny Pine Script skener (All Green) úspešne spustený!")
+    await asyncio.sleep(3)
+    log_event(f"🤖 Autonómny Pine Script skener (All Green) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             max_allowed = SETTINGS.get("max_parallel", 1)
             if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
                 if check_btc_health():
                     tf_str = CURRENT_TIMEFRAME.lower()
-                    for symbol in TOP_LIQUID_SYMBOLS:
+                    for symbol in list(TOP_LIQUID_SYMBOLS):
+                        if not IS_BOT_ACTIVE or len(ACTIVE_TRADES) >= SETTINGS.get("max_parallel", 1):
+                            break
+                        if symbol in UNSUPPORTED_DEMO_SYMBOLS:
+                            continue
+
                         coin_name = symbol.split("-")[0]
                         now_ts = datetime.now().timestamp()
 
                         if coin_name in ACTIVE_TRADES or (coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"])):
+                            # Stále vyhodnotíme stratégiu, aby sa aktualizovala tabuľka pre tento coin, aj keď práve neobchoduje
+                            evaluate_pine_strategy(symbol, bar_tf=tf_str)
                             continue
                             
                         signal_met = evaluate_pine_strategy(symbol, bar_tf=tf_str)
                         if signal_met:
                             log_event(f"🚀 PINE SCRIPT 'ALL GREEN' SIGNÁL DETEGOVANÝ PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
-                            break
+                            
+                        await asyncio.sleep(0.3)
         except Exception as e:
             log_event(f"⚠️ Chyba v autonómnom skeneri: {e}")
-        await asyncio.sleep(30)
+        await asyncio.sleep(15)
 
 async def top_symbols_updater_loop():
     while True:
@@ -343,7 +399,7 @@ async def top_symbols_updater_loop():
         await asyncio.sleep(3600)
 
 async def execute_autonomous_buy(okx_symbol: str):
-    global ACTIVE_TRADES, LAST_TRADE_TIME
+    global ACTIVE_TRADES, LAST_TRADE_TIME, UNSUPPORTED_DEMO_SYMBOLS
     async with trade_lock:
         coin_name = okx_symbol.split("-")[0]
         now_ts = datetime.now().timestamp()
@@ -362,7 +418,7 @@ async def execute_autonomous_buy(okx_symbol: str):
         
         if SETTINGS.get("compounding_enabled", False):
             safe_budget = min(allocated_capital_base * 0.98, allocated_capital_base)
-            log_event(f"🔄 Compounding AKTÍVNY (Alokácia pre {max_allowed} pozície, 98% vybitia): {safe_budget:.2f} USDC")
+            log_event(f"🔄 Compounding AKTÍVNY (Alokácia pre {max_allowed} pozície): {safe_budget:.2f} USDC")
         else:
             safe_budget = min(allocated_capital_base * 0.98, budget_cap)
             log_event(f"⚙️ Compounding VYPNUTÝ (Alokácia pre {max_allowed} pozície, strop {budget_cap} USDC): {safe_budget:.2f} USDC")
@@ -394,8 +450,8 @@ async def execute_autonomous_buy(okx_symbol: str):
         order_res = okx_request("POST", "/api/v5/trade/order", order_body)
         if order_res.get("code") != "0":
             err_msg = order_res.get('msg', 'Neznáma chyba OKX')
-            log_event(f"❌ Chyba nákupnej objednávky ({okx_symbol}): {err_msg}")
-            send_telegram_msg(f"❌ <b>Chyba nákupu ({okx_symbol}):</b> {err_msg}")
+            log_event(f"⚠️ Pár {okx_symbol} nie je plne podporovaný v Demo režime ({err_msg}). Dočasne ho preskakujem.")
+            UNSUPPORTED_DEMO_SYMBOLS.add(okx_symbol)
             return
             
         coin_amount = float(formatted_sz)
@@ -456,7 +512,7 @@ async def advanced_risk_monitor_loop():
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
                 max_p = SETTINGS.get("max_parallel", 1)
-                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem Top {len(TOP_LIQUID_SYMBOLS)} altcoinov cez Pine Script..."
+                CURRENT_STAGE = f"STAV: Autonómny Bot aktívny (Max {max_p} paralelné). Skenujem trh cez Pine Script..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -679,7 +735,7 @@ async def set_tf(tf_val: str):
 
 @app.post("/api/manual-buy/{coin}")
 async def manual_buy(coin: str):
-    global ACTIVE_TRADES, LAST_TRADE_TIME
+    global ACTIVE_TRADES, LAST_TRADE_TIME, UNSUPPORTED_DEMO_SYMBOLS
     async with trade_lock:
         try:
             if not IS_BOT_ACTIVE:
@@ -723,7 +779,9 @@ async def manual_buy(coin: str):
             
             order_res = okx_request("POST", "/api/v5/trade/order", order_body)
             if order_res.get("code") != "0":
-                return JSONResponse({"status": "error", "message": order_res.get('msg', 'Neznáma chyba OKX')})
+                err_msg = order_res.get('msg', 'Neznáma chyba OKX')
+                UNSUPPORTED_DEMO_SYMBOLS.add(okx_symbol)
+                return JSONResponse({"status": "error", "message": f"OKX odmietlo príkaz ({err_msg})"})
             
             coin_amount = float(formatted_sz)
             actual_spent_usdc = coin_amount * current_price
@@ -775,18 +833,21 @@ async def sell_now():
                 curr_p = safe_float(ticker_res['data'][0]['last']) if ticker_res.get('code') == '0' and ticker_res.get('data') else trade["entry_price"]
                 
                 fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
-                if fmt_sz:
-                    order_body = json.dumps({
-                        "instId": symbol, "tdMode": "cash", "side": "sell",
-                        "ordType": "market", "sz": fmt_sz
-                    })
-                    okx_request("POST", "/api/v5/trade/order", order_body)
+                if not fmt_sz:
+                    fmt_sz = f"{trade['amount']:.4f}"
+
+                order_body = json.dumps({
+                    "instId": symbol, "tdMode": "cash", "side": "sell",
+                    "ordType": "market", "sz": fmt_sz
+                })
+                res = okx_request("POST", "/api/v5/trade/order", order_body)
+                log_event(f"⚡ Emergency Sell odpoveď OKX pre {symbol}: {res}")
+
                 pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100
                 invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
                 pnl_usdc = invested * (pnl_pct / 100.0)
-                record_closed_trade(symbol, pnl_pct, pnl_usdc, "Ručný okamžitý predaj (UI)")
-                log_event(f"⚡ Okamžitý ručný predaj pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-                send_telegram_msg(f"⚡ <b>OKAMŽITÝ RUČNÝ PREDAJ</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+                record_closed_trade(symbol, pnl_pct, pnl_usdc, "Ručný okamžitý predaj (Emergency)")
+                send_telegram_msg(f"⚡ <b>OKAMŽITÝ RUČNÝ PREDAJ (EMERGENCY)</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
                 sold.append(symbol)
             except Exception as e:
                 log_event(f"⚠️ Chyba pri Emergency Sell pre {symbol}: {e}")
@@ -796,7 +857,7 @@ async def sell_now():
 
         return JSONResponse({"status": "success", "sold": sold})
 
-# --- VIZUÁLNA HTML ŠABLÓNA (JEMNÉ ŠEDÉ OKRAJE BEZ ŽTOJCH RÁMIKOV) ---
+# --- VIZUÁLNA HTML ŠABLÓNA (APEX TERMINAL UI) ---
 
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
@@ -807,92 +868,64 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #000000;
-            --card-bg: #0c0c0c;
-            --border-color: #2e3440;
-            --border-hover: #4c566a;
-            --text-main: #ffffff;
-            --text-muted: #888888;
+            --bg-color: #08090c;
+            --card-bg: #111318;
+            --border-color: #1f232b;
+            --border-hover: #2e3440;
+            --text-main: #eceff4;
+            --text-muted: #6c788e;
             --accent-white: #ffffff;
             --green: #10b981;
             --red: #ef4444;
-            --yellow: #facc15;
+            --yellow: #f59e0b;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; }
         body { background-color: var(--bg-color); color: var(--text-main); padding: 16px; min-height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
         .container { max-width: 1250px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
-        .top-bar { display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--border-color); background: var(--card-bg); padding: 15px 20px; border-radius: 6px; flex-wrap: wrap; gap: 12px; }
+        .top-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 12px; flex-wrap: wrap; gap: 12px; }
         .brand h1 { font-size: 1.05rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
         .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.8px; display: flex; gap: 12px; flex-wrap: wrap; }
         .balance-tag { color: var(--yellow); font-weight: 700; }
         .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-        
-        .btn { background: #000000; border: 1px solid var(--border-color); color: var(--text-main); padding: 6px 12px; font-size: 0.7rem; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px; }
-        .btn:hover { background: #1a1a1a; border-color: var(--border-hover); }
-        
-        .btn-on { background: rgba(16, 185, 129, 0.2) !important; color: var(--green) !important; border-color: var(--green) !important; }
-        .btn-off { background: rgba(239, 68, 68, 0.2) !important; color: var(--red) !important; border-color: var(--red) !important; }
-        .btn-yellow { background: rgba(250, 204, 21, 0.2) !important; color: var(--yellow) !important; border-color: var(--yellow) !important; font-weight: 700 !important; }
-        
-        .btn-sell { background: rgba(239, 68, 68, 0.2); color: var(--red); border-color: var(--red); font-weight: 700; }
-        .btn-sell:hover { background: var(--red); color: #fff; }
+        .btn { background: transparent; border: 1px solid var(--border-hover); color: var(--text-main); padding: 5px 10px; font-size: 0.7rem; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px; }
+        .btn:hover { border-color: var(--text-muted); background: rgba(255,255,255,0.03); }
+        .btn-on { border-color: var(--green); color: var(--green); }
+        .btn-off { border-color: var(--text-muted); color: var(--text-muted); }
+        .btn-yellow { border-color: var(--yellow) !important; color: var(--yellow) !important; background: rgba(245, 158, 11, 0.12) !important; font-weight: 700 !important; }
+        .btn-sell { background: var(--accent-white); color: var(--bg-color); font-weight: 700; border-color: var(--accent-white); }
+        .btn-sell:hover { background: #e4e4e7; }
         .btn-sell:disabled { opacity: 0.25; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
-        
-        .status-ticker { font-size: 0.75rem; color: var(--yellow); background: var(--card-bg); border: 1px solid var(--border-color); padding: 10px 18px; border-radius: 6px; display: flex; align-items: center; gap: 10px; font-weight: 600; }
+        .status-ticker { font-size: 0.75rem; color: var(--yellow); background: var(--card-bg); border: 1px solid var(--border-color); padding: 9px 14px; border-radius: 5px; display: flex; align-items: center; gap: 10px; font-weight: 600; }
         .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
-        
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-        .stat-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; padding: 12px 16px; }
+        .stat-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; }
         .stat-title { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; }
         .stat-value { font-size: 1.15rem; font-weight: 700; margin-top: 4px; color: var(--accent-white); }
-        
         .section-title { font-size: 0.72rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-top: 8px; margin-bottom: 5px; font-weight: 600; }
-        .terminal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; }
-        
+        .terminal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; overflow: hidden; }
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.75rem; }
-        th { color: var(--text-muted); font-weight: 600; padding: 10px 14px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; background: rgba(255, 255, 255, 0.02); position: sticky; top: 0; z-index: 2; }
-        td { padding: 10px 14px; border-bottom: 1px solid #1f232b; color: var(--text-main); }
+        th { color: var(--text-muted); font-weight: 500; padding: 9px 12px; border-bottom: 1px solid var(--border-color); font-size: 0.65rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
+        td { padding: 10px 12px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
         tr:last-child td { border-bottom: none; }
-        
         .scrollable-card { max-height: 180px; overflow-y: auto; }
-        .logs-box { 
-            background: var(--card-bg); 
-            border: 1px solid var(--border-color); 
-            border-radius: 6px; 
-            padding: 12px 16px; 
-            height: 200px; 
-            max-height: 200px;
-            overflow-y: auto; 
-            font-size: 0.7rem; 
-            color: var(--green); 
-            display: flex; 
-            flex-direction: column; 
-            gap: 6px; 
-        }
-        .log-line { 
-            white-space: pre-wrap; 
-            word-break: break-all; 
-            line-height: 1.4;
-            border-bottom: 1px dashed rgba(255,255,255,0.05);
-            padding-bottom: 4px;
-        }
+        .logs-box { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 10px 12px; height: 200px; max-height: 200px; overflow-y: auto; font-size: 0.7rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 6px; }
+        .log-line { white-space: pre-wrap; word-break: break-all; line-height: 1.4; border-bottom: 1px dashed rgba(255,255,255,0.03); padding-bottom: 4px; }
         .text-green { color: var(--green); font-weight: 700; }
         .text-red { color: var(--red); font-weight: 700; }
         .text-yellow-highlight { color: var(--yellow); font-weight: 700; }
-        
-        .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-color); padding: 2px 6px; border-radius: 4px; background: #000; }
-        .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 65px; outline: none; text-transform: uppercase; font-weight: 600; }
+        .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.01); }
+        .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PRO TERMINAL</h1>
+                <h1>APEX SCALPER // AUTO-PILOT (Pine Script All Green)</h1>
                 <p>
-                    <span id="header-pair">Multi-TF · OKX Demo</span>
+                    <span id="header-pair">Top USDC · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
-                    <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
+                    <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span> (TP +0.75%)</span>
                 </p>
             </div>
             <div class="actions">
@@ -903,6 +936,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
 
+                <!-- Paralelné obchody (1x až 4x) -->
+                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
+                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
+                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 3 %}btn-yellow{% endif %}" data-val="3" onclick="setParallel(3)">3x</button>
+                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 4 %}btn-yellow{% endif %}" data-val="4" onclick="setParallel(4)">4x</button>
+
                 <!-- Rozpočet -->
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
@@ -910,32 +949,23 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
                 <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
 
-                <!-- Paralelné pozície -->
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 3 %}btn-yellow{% endif %}" data-val="3" onclick="setParallel(3)">3x</button>
-
                 <!-- Vlastný Manuálny Nákup -->
                 <div class="custom-buy-box">
-                    <input type="text" id="custom-coin" class="custom-buy-input" placeholder="BTC/ETH">
-                    <button class="btn btn-on" style="padding: 2px 6px;" onclick="manualBuyCustom()">🚀 BUY</button>
+                    <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL">
+                    <button class="btn btn-on" style="padding: 2px 5px;" onclick="manualBuyCustom()">BUY</button>
                 </div>
 
-                <!-- Rýchle tlačidlá -->
-                <button class="btn btn-on" onclick="manualBuy('SOL')">SOL</button>
-                <button class="btn btn-on" onclick="manualBuy('SUI')">SUI</button>
-
                 <!-- Prepínače -->
-                <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-on{% else %}btn-off{% endif %}" onclick="toggleCompounding()">
-                    COMPOUNDING: {% if SETTINGS.compounding_enabled %}ON{% else %}OFF{% endif %}
+                <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-yellow{% endif %}" onclick="toggleCompounding()">
+                    COMPOUND: {% if SETTINGS.compounding_enabled %}ON{% else %}OFF{% endif %}
                 </button>
                 <button id="btc-btn" class="btn {% if SETTINGS.use_btc_filter %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBtcFilter()">
                     BTC: {% if SETTINGS.use_btc_filter %}ON{% else %}OFF{% endif %}
                 </button>
                 <button id="bot-btn" class="btn {% if IS_BOT_ACTIVE %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBot()">
-                    {% if IS_BOT_ACTIVE %}ACTIVE{% else %}PAUSED{% endif %}
+                    {% if IS_BOT_ACTIVE %}● ACTIVE{% else %}○ PAUSED{% endif %}
                 </button>
-                <button id="sell-btn" class="btn btn-sell" onclick="sellNow()" disabled>EMERGENCY SELL</button>
+                <button id="sell-btn" class="btn btn-sell" onclick="sellNow()" disabled>⚡ SELL</button>
             </div>
         </div>
 
@@ -964,7 +994,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Active Positions & Autonomous Scanner Matrix</div>
+            <div class="section-title">Active Positions Matrix (100% TP / SL / BE)</div>
             <div class="terminal-card">
                 <table>
                     <thead>
@@ -972,13 +1002,32 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <th>Pair / TF</th>
                             <th>Entry Price</th>
                             <th>Current Price</th>
-                            <th>Invested</th>
-                            <th>Live PnL (%)</th>
-                            <th>Live PnL ($)</th>
+                            <th>Invested USDC</th>
+                            <th>Live PnL</th>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">No active positions. Scanning markets...</td></tr>
+                        <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script All Green signály...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- ŽIVÁ TABUĽKA VŠETKÝCH 20 SKENOVANÝCH TOKENOV -->
+        <div>
+            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs)</div>
+            <div class="terminal-card scrollable-card" style="max-height: 220px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Token / Pár</th>
+                            <th>Aktuálna Cena</th>
+                            <th>Objemový Oscilátor</th>
+                            <th>Pine Script Stav</th>
+                        </tr>
+                    </thead>
+                    <tbody id="scanner-tbody">
+                        <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Načítavam stav skenera...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -997,7 +1046,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody id="history-tbody">
-                        <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No closed trades recorded yet.</td></tr>
+                        <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Zatiaľ žiadne ukončené obchody.</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1006,7 +1055,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         <div>
             <div class="section-title">System Execution Logs</div>
             <div class="logs-box" id="logs-container">
-                <div class="log-line">[System Initialized] Čakám na prvé udalosti...</div>
+                <div class="log-line">[System Initialized] Autonómny režim pripravený.</div>
             </div>
         </div>
     </div>
@@ -1016,13 +1065,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             let res = await fetch('/api/toggle-bot', {method: 'POST'});
             let data = await res.json();
             let btn = document.getElementById('bot-btn');
-            if (data.is_bot_active) {
-                btn.className = "btn btn-on";
-                btn.innerText = "ACTIVE";
-            } else {
-                btn.className = "btn btn-off";
-                btn.innerText = "PAUSED";
-            }
+            btn.className = data.is_bot_active ? "btn btn-on" : "btn btn-off";
+            btn.innerText = data.is_bot_active ? "● ACTIVE" : "○ PAUSED";
             updateState();
         }
 
@@ -1030,13 +1074,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             let res = await fetch('/api/toggle-btc-filter', {method: 'POST'});
             let data = await res.json();
             let btn = document.getElementById('btc-btn');
-            if (data.use_btc_filter) {
-                btn.className = "btn btn-on";
-                btn.innerText = "BTC: ON";
-            } else {
-                btn.className = "btn btn-off";
-                btn.innerText = "BTC: OFF";
-            }
+            btn.className = data.use_btc_filter ? "btn btn-on" : "btn btn-off";
+            btn.innerText = data.use_btc_filter ? "BTC: ON" : "BTC: OFF";
         }
 
         async function toggleCompounding() {
@@ -1044,11 +1083,11 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             let data = await res.json();
             let btn = document.getElementById('compounding-btn');
             if (data.compounding_enabled) {
-                btn.className = "btn btn-on";
-                btn.innerText = "COMPOUNDING: ON";
+                btn.className = "btn btn-yellow";
+                btn.innerText = "COMPOUND: ON";
             } else {
-                btn.className = "btn btn-off";
-                btn.innerText = "COMPOUNDING: OFF";
+                btn.className = "btn";
+                btn.innerText = "COMPOUND: OFF";
             }
         }
 
@@ -1092,24 +1131,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             }
         }
 
-        async function manualBuy(coin) {
-            if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDC za zvolený rozpočet?`)) return;
-            let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
-            let data = await res.json();
-            if (data.status === 'success') {
-                updateState();
-            } else {
-                alert("Chyba pri manuálnom nákupe: " + data.message);
-            }
-        }
-
         async function manualBuyCustom() {
             let coinInput = document.getElementById('custom-coin');
             let coin = coinInput.value.trim().toUpperCase();
-            if (!coin) {
-                alert("Zadajte skratku tokenu (napr. BTC, ETH, ADA)!");
-                return;
-            }
+            if (!coin) { alert("Zadajte skratku tokenu (napr. SOL, SUI)!"); return; }
             if (!confirm(`Naozaj vykonať manuálny nákup ${coin}-USDC?`)) return;
             
             let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
@@ -1118,14 +1143,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 coinInput.value = "";
                 updateState();
             } else {
-                alert("Chyba pri manuálnom nákupe: " + data.message);
+                alert("Chyba: " + data.message);
             }
         }
 
         async function sellNow() {
-            if (!confirm("Naozaj vykonať núdzový predaj všetkých pozícií?")) return;
-            let res = await fetch('/api/sell-now', {method: 'POST'});
-            let data = await res.json();
+            if (!confirm("Naozaj núdzovo zatvoriť všetky pozície?")) return;
+            await fetch('/api/sell-now', {method: 'POST'});
             updateState();
         }
 
@@ -1151,22 +1175,38 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     let html = "";
                     for (let [coin, t] of Object.entries(data.active_trades)) {
                         let pnlClass = t.live_pnl_pct >= 0 ? "text-green" : "text-red";
-                        let usdcClass = t.live_pnl_usdc >= 0 ? "text-green" : "text-red";
-                        
                         html += `<tr>
                             <td><b>${t.market_pair}</b><br><span style="font-size:0.6rem; color:var(--text-muted);">TF: ${t.tf}</span></td>
                             <td>${t.entry_price.toFixed(4)}</td>
                             <td>${t.current_price.toFixed(4)}</td>
                             <td>${t.invested_usdc.toFixed(2)} USDC</td>
-                            <td class="${pnlClass}">${t.live_pnl_pct >= 0 ? "+" : ""}${t.live_pnl_pct.toFixed(2)}%</td>
-                            <td class="${usdcClass}">${t.live_pnl_usdc >= 0 ? "+" : ""}${t.live_pnl_usdc.toFixed(2)} $</td>
+                            <td class="${pnlClass}">${t.live_pnl_pct >= 0 ? "+" : ""}${t.live_pnl_pct.toFixed(2)}% (${t.live_pnl_usdc >= 0 ? "+" : ""}${t.live_pnl_usdc.toFixed(2)} $)</td>
                         </tr>`;
                     }
                     activeTbody.innerHTML = html;
                     sellBtn.disabled = false;
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">No active positions. Scanning markets...</td></tr>`;
+                    activeTbody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script All Green signály...</td></tr>`;
                     sellBtn.disabled = true;
+                }
+
+                // Renderovanie živej tabuľky 20 tokenov
+                let scannerTbody = document.getElementById('scanner-tbody');
+                let scannerData = data.scanner_cache || {};
+                if (Object.keys(scannerData).length > 0) {
+                    let sHtml = "";
+                    for (let [coin, info] of Object.entries(scannerData)) {
+                        let oscClass = info.oscillator >= 0 ? "text-green" : "text-red";
+                        sHtml += `<tr>
+                            <td><b>${info.symbol}</b></td>
+                            <td>${info.price ? info.price.toFixed(4) : '--'}</td>
+                            <td class="${oscClass}">${info.oscillator}</td>
+                            <td>${info.signal}</td>
+                        </tr>`;
+                    }
+                    scannerTbody.innerHTML = sHtml;
+                } else {
+                    scannerTbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Prebieha úvodné skenovanie trhu...</td></tr>`;
                 }
 
                 let historyTbody = document.getElementById('history-tbody');
@@ -1183,7 +1223,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     }
                     historyTbody.innerHTML = hHtml;
                 } else {
-                    historyTbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No closed trades recorded yet.</td></tr>`;
+                    historyTbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Zatiaľ žiadne ukončené obchody.</td></tr>`;
                 }
 
                 let logsBox = document.getElementById('logs-container');
@@ -1227,6 +1267,7 @@ async def get_state():
         "current_stage": CURRENT_STAGE,
         "stats": stats,
         "active_trades": ACTIVE_TRADES,
+        "scanner_cache": MARKET_SCANNER_CACHE,
         "history": CLOSED_TRADES_HISTORY[:20],
         "logs": SYSTEM_LOGS
     })
