@@ -332,14 +332,13 @@ def calc_wma_series(values, length):
 def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     """
     Vyhodnocuje presne signály BUY (ultimate_buy_condition) a SELL (ultimate_sell_condition)
-    z priloženého Pine Scriptu na uzavretých sviečkach.
+    z priloženého Pine Scriptu na uzavretých sviečkach podľa aktuálne nastavených parametrov v SETTINGS.
     Vracia dict: {"buy": bool, "sell": bool, "sell_reason": str}
     """
     global MARKET_SCANNER_CACHE, ACTIVE_TRADES
     coin_key = symbol.split("-")[0]
 
     try:
-        # Sťahujeme 120 sviečok pre presné ustálenie Heikin-Ashi a EMA
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=120"
         res = okx_public_request(url)
         if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 30:
@@ -371,13 +370,23 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             volumes.append(v)
 
         n = len(ha_closes)
-        fast_len = SETTINGS["fast_len"]
-        slow_len = SETTINGS["slow_len"]
-        signal_len = SETTINGS["signal_len"]
-        pred_look = SETTINGS["pred_look"]
-        pivot_len = SETTINGS["pivot_len"]
-        fib_choice = SETTINGS["fib_choice"]
-        mode_choice = SETTINGS["mode_choice"]
+        fast_len = max(1, int(SETTINGS.get("fast_len", 5)))
+        slow_len = max(1, int(SETTINGS.get("slow_len", 20)))
+        signal_len = max(1, int(SETTINGS.get("signal_len", 9)))
+        pred_look = max(1, min(10, int(SETTINGS.get("pred_look", 3))))
+        pivot_len = max(1, min(10, int(SETTINGS.get("pivot_len", 2))))
+        fib_choice = str(SETTINGS.get("fib_choice", "0.786"))
+        mode_choice = str(SETTINGS.get("mode_choice", "ALL_GREEN")).upper()
+
+        use_trailing = bool(SETTINGS.get("use_trailing", True))
+        trail_pct = float(SETTINGS.get("trail_pct", 1.5))
+        use_breakeven = bool(SETTINGS.get("use_breakeven", True))
+        be_trigger_pct = float(SETTINGS.get("be_trigger_pct", 0.35))
+        use_trailing_tp = bool(SETTINGS.get("use_trailing_tp", True))
+        ttp_trigger_pct = float(SETTINGS.get("ttp_trigger_pct", 0.8))
+        ttp_callback_pct = float(SETTINGS.get("ttp_callback_pct", 0.2))
+        use_ha_exit = bool(SETTINGS.get("use_ha_exit", True))
+        ha_exit_consecutive = max(1, min(3, int(SETTINGS.get("ha_exit_consecutive", 2))))
 
         vol_dirs = [volumes[i] if ha_closes[i] > ha_opens[i] else -volumes[i] for i in range(n)]
         fast_ma = calc_ema_series(vol_dirs, fast_len)
@@ -395,8 +404,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             for i in range(n)
         ]
 
-        # Simulácia stavového automatu z Pine Scriptu naprieč uzavretými sviečkami,
-        # aby bol stav obchod_otvoreny, BE, TTP a TS zhodný s grafom
         last_high = None
         last_low = None
 
@@ -406,7 +413,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         breakeven_active = False
         trailing_tp_active = False
         trailing_tp_stop_level = None
-        effective_stop = None
 
         last_bar_buy = False
         last_bar_sell = False
@@ -415,7 +421,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         last_buy_trigger = False
 
         for i in range(n):
-            # Pivot high / low (potvrdzuje sa pivot_len sviečok dozadu)
             if i >= 2 * pivot_len:
                 p_idx = i - pivot_len
                 left_h = ha_highs[p_idx - pivot_len: p_idx]
@@ -474,32 +479,31 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 if cl_i > highest_since_buy:
                     highest_since_buy = cl_i
 
-                if SETTINGS["use_breakeven"] and not breakeven_active:
-                    if cl_i >= pine_entry_price * (1.0 + (SETTINGS["be_trigger_pct"] / 100.0)):
+                if use_breakeven and not breakeven_active:
+                    if cl_i >= pine_entry_price * (1.0 + (be_trigger_pct / 100.0)):
                         breakeven_active = True
 
-                if SETTINGS["use_trailing_tp"]:
-                    if cl_i >= pine_entry_price * (1.0 + (SETTINGS["ttp_trigger_pct"] / 100.0)):
+                if use_trailing_tp:
+                    if cl_i >= pine_entry_price * (1.0 + (ttp_trigger_pct / 100.0)):
                         trailing_tp_active = True
                     if trailing_tp_active:
-                        trailing_tp_stop_level = highest_since_buy * (1.0 - (SETTINGS["ttp_callback_pct"] / 100.0))
+                        trailing_tp_stop_level = highest_since_buy * (1.0 - (ttp_callback_pct / 100.0))
 
-            trail_stop_level = highest_since_buy * (1.0 - (SETTINGS["trail_pct"] / 100.0))
+            trail_stop_level = highest_since_buy * (1.0 - (trail_pct / 100.0))
             effective_stop = max(trail_stop_level, pine_entry_price) if (breakeven_active and pine_entry_price is not None) else trail_stop_level
 
             ha_is_red = ha_closes[i] < ha_opens[i]
             ha_exit_triggered = False
-            if SETTINGS["use_ha_exit"]:
-                consec = SETTINGS["ha_exit_consecutive"]
-                if consec == 1:
+            if use_ha_exit:
+                if ha_exit_consecutive == 1:
                     ha_exit_triggered = ha_is_red
-                elif consec == 2:
+                elif ha_exit_consecutive == 2:
                     ha_exit_triggered = (i >= 1) and ha_is_red and (ha_closes[i - 1] < ha_opens[i - 1])
                 else:
                     ha_exit_triggered = (i >= 2) and ha_is_red and (ha_closes[i - 1] < ha_opens[i - 1]) and (ha_closes[i - 2] < ha_opens[i - 2])
 
-            cond_trail_triggered = SETTINGS["use_trailing"] and obchod_otvoreny and (cl_i < effective_stop)
-            cond_ttp_triggered = trailing_tp_active and (trailing_tp_stop_level is not None) and (cl_i <= trailing_tp_stop_level)
+            cond_trail_triggered = use_trailing and obchod_otvoreny and (cl_i < effective_stop)
+            cond_ttp_triggered = use_trailing_tp and trailing_tp_active and (trailing_tp_stop_level is not None) and (cl_i <= trailing_tp_stop_level)
 
             raw_sell = obchod_otvoreny and (cond_trail_triggered or cond_ttp_triggered or ha_exit_triggered)
             sell_reason = ""
@@ -507,7 +511,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 if cond_ttp_triggered:
                     sell_reason = "Pine SELL (Trailing TP)"
                 elif ha_exit_triggered:
-                    sell_reason = "Pine SELL (Heikin-Ashi Exit)"
+                    sell_reason = f"Pine SELL (HA Exit {ha_exit_consecutive}x)"
                 else:
                     sell_reason = "Pine SELL (Trailing Stop)"
 
@@ -534,8 +538,8 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         impulse_str = "AKTÍVNY (V TRHU)" if impuls_active else "ČAKÁ"
 
         trade_status_txt = f"{ACTIVE_TRADES[coin_key]['entry_price']:.4f}" if is_in_trade else "---"
-        be_status_txt = f"{ACTIVE_TRADES[coin_key]['entry_price']:.4f}" if (is_in_trade and breakeven_active) else ("ČAKÁ" if is_in_trade else "VYPNUTÝ")
-        ttp_status_txt = f"{trailing_tp_stop_level:.4f}" if (is_in_trade and trailing_tp_active and trailing_tp_stop_level) else ("V TRHU" if is_in_trade else "VYPNUTÝ")
+        be_status_txt = f"{ACTIVE_TRADES[coin_key]['entry_price']:.4f}" if (is_in_trade and use_breakeven and breakeven_active) else ("ČAKÁ" if (is_in_trade and use_breakeven) else "VYPNUTÝ")
+        ttp_status_txt = f"{trailing_tp_stop_level:.4f}" if (is_in_trade and use_trailing_tp and trailing_tp_active and trailing_tp_stop_level) else ("V TRHU" if (is_in_trade and use_trailing_tp) else "VYPNUTÝ")
         ts_status_txt = f"{ACTIVE_TRADES[coin_key]['fixed_sl_price']:.4f}" if is_in_trade else f"-{SETTINGS['fixed_sl_pct']}%"
 
         if last_bar_buy and not is_in_trade:
@@ -582,7 +586,6 @@ async def autonomous_scanner_loop():
             tf_str = CURRENT_TIMEFRAME.lower()
             max_allowed = SETTINGS.get("max_parallel", 1)
 
-            # 1. Najprv skontrolujeme otvorené pozície, či pre ne neprišiel SELL signál z Pine Scriptu
             for coin_name in list(ACTIVE_TRADES.keys()):
                 if coin_name not in ACTIVE_TRADES:
                     continue
@@ -594,7 +597,6 @@ async def autonomous_scanner_loop():
                     await close_trade_position(coin_name, sig["sell_reason"])
                 await asyncio.sleep(0.25)
 
-            # 2. Potom skenujeme trh pre nové BUY signály
             if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
                 if check_btc_health():
                     for symbol in list(TOP_LIQUID_SYMBOLS):
@@ -806,7 +808,6 @@ async def fixed_stoploss_monitor_loop():
                     fixed_sl_pct = trade["fixed_sl_pct"]
                     CURRENT_STAGE = f"STAV: Pozícií: {len(ACTIVE_TRADES)} | {symbol} ({pnl_pct:+.2f}%) | Fixný SL: -{fixed_sl_pct}%"
 
-                    # Jediná fixná poistka: ak cena klesne na alebo pod pevný Stop-Loss
                     if current_price <= fixed_sl_price:
                         await close_trade_position(coin, f"Fixný Stop-Loss (-{fixed_sl_pct}%)")
                         continue
@@ -909,6 +910,72 @@ async def set_tf(tf_val: str):
         log_event(f"⏱️ Časový rámec (TF) zmenený na: {CURRENT_TIMEFRAME} (bez zmeny profilov, riadi sa Pine BUY/SELL)")
         return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
     return JSONResponse({"status": "error", "message": "Neplatný časový rámec."})
+
+@app.post("/api/update-pine-settings")
+async def update_pine_settings(request: Request):
+    """Uloží a uplatní všetky nastavenia z Pine Scriptu priamo na stránke Apex."""
+    global MARKET_SCANNER_CACHE
+    try:
+        payload = await request.json()
+        mode_val = str(payload.get("mode_choice", SETTINGS["mode_choice"])).upper()
+        if mode_val not in ["ALL_GREEN", "BREAKOUT", "FIB"]:
+            mode_val = "ALL_GREEN"
+
+        fib_val = str(payload.get("fib_choice", SETTINGS["fib_choice"]))
+        if fib_val not in ["0.50", "0.618", "0.786"]:
+            fib_val = "0.786"
+
+        SETTINGS["mode_choice"] = mode_val
+        SETTINGS["fast_len"] = max(1, min(200, int(payload.get("fast_len", SETTINGS["fast_len"]))))
+        SETTINGS["slow_len"] = max(1, min(300, int(payload.get("slow_len", SETTINGS["slow_len"]))))
+        SETTINGS["signal_len"] = max(1, min(200, int(payload.get("signal_len", SETTINGS["signal_len"]))))
+        SETTINGS["pred_look"] = max(1, min(10, int(payload.get("pred_look", SETTINGS["pred_look"]))))
+
+        SETTINGS["pivot_len"] = max(1, min(10, int(payload.get("pivot_len", SETTINGS["pivot_len"]))))
+        SETTINGS["fib_choice"] = fib_val
+
+        SETTINGS["use_trailing"] = bool(payload.get("use_trailing", SETTINGS["use_trailing"]))
+        SETTINGS["trail_pct"] = max(0.1, min(50.0, float(payload.get("trail_pct", SETTINGS["trail_pct"]))))
+        SETTINGS["use_breakeven"] = bool(payload.get("use_breakeven", SETTINGS["use_breakeven"]))
+        SETTINGS["be_trigger_pct"] = max(0.05, min(50.0, float(payload.get("be_trigger_pct", SETTINGS["be_trigger_pct"]))))
+
+        SETTINGS["use_trailing_tp"] = bool(payload.get("use_trailing_tp", SETTINGS["use_trailing_tp"]))
+        SETTINGS["ttp_trigger_pct"] = max(0.1, min(100.0, float(payload.get("ttp_trigger_pct", SETTINGS["ttp_trigger_pct"]))))
+        SETTINGS["ttp_callback_pct"] = max(0.05, min(50.0, float(payload.get("ttp_callback_pct", SETTINGS["ttp_callback_pct"]))))
+
+        SETTINGS["use_ha_exit"] = bool(payload.get("use_ha_exit", SETTINGS["use_ha_exit"]))
+        SETTINGS["ha_exit_consecutive"] = max(1, min(3, int(payload.get("ha_exit_consecutive", SETTINGS["ha_exit_consecutive"]))))
+
+        MARKET_SCANNER_CACHE.clear()
+        log_event(
+            f"🎛️ Pine nastavenia aktualizované: Režim={mode_val}, Osc({SETTINGS['fast_len']}/{SETTINGS['slow_len']}/{SETTINGS['signal_len']}, pred={SETTINGS['pred_look']}), "
+            f"Fib={fib_val}(piv={SETTINGS['pivot_len']}), TS={SETTINGS['use_trailing']}({SETTINGS['trail_pct']}%), "
+            f"BE={SETTINGS['use_breakeven']}({SETTINGS['be_trigger_pct']}%), TTP={SETTINGS['use_trailing_tp']}({SETTINGS['ttp_trigger_pct']}%/{SETTINGS['ttp_callback_pct']}%), "
+            f"HA_Exit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x)"
+        )
+        return JSONResponse({"status": "success", "pine_settings": get_pine_settings_dict()})
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)})
+
+def get_pine_settings_dict():
+    return {
+        "mode_choice": SETTINGS["mode_choice"],
+        "fast_len": SETTINGS["fast_len"],
+        "slow_len": SETTINGS["slow_len"],
+        "signal_len": SETTINGS["signal_len"],
+        "pred_look": SETTINGS["pred_look"],
+        "pivot_len": SETTINGS["pivot_len"],
+        "fib_choice": SETTINGS["fib_choice"],
+        "use_trailing": SETTINGS["use_trailing"],
+        "trail_pct": SETTINGS["trail_pct"],
+        "use_breakeven": SETTINGS["use_breakeven"],
+        "be_trigger_pct": SETTINGS["be_trigger_pct"],
+        "use_trailing_tp": SETTINGS["use_trailing_tp"],
+        "ttp_trigger_pct": SETTINGS["ttp_trigger_pct"],
+        "ttp_callback_pct": SETTINGS["ttp_callback_pct"],
+        "use_ha_exit": SETTINGS["use_ha_exit"],
+        "ha_exit_consecutive": SETTINGS["ha_exit_consecutive"]
+    }
 
 @app.post("/api/manual-buy/{coin}")
 async def manual_buy(coin: str):
@@ -1043,7 +1110,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .stat-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; }
         .stat-title { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; }
         .stat-value { font-size: 1.15rem; font-weight: 700; margin-top: 4px; color: var(--accent-white); }
-        .section-title { font-size: 0.72rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-top: 8px; margin-bottom: 5px; font-weight: 600; }
+        .section-title { font-size: 0.72rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-top: 8px; margin-bottom: 5px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
         .terminal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; overflow: hidden; }
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.72rem; }
         th { color: var(--text-muted); font-weight: 500; padding: 9px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.62rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
@@ -1057,6 +1124,22 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .text-yellow { color: var(--yellow); font-weight: 700; }
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.01); }
         .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
+
+        /* Panel nastavení Pine Scriptu */
+        .pine-panel { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+        .pine-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+        @media (max-width: 1100px) { .pine-grid { grid-template-columns: repeat(2, 1fr); } .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 650px) { .pine-grid { grid-template-columns: 1fr; } .stats-grid { grid-template-columns: 1fr; } }
+        .pine-group { background: #0c0e13; border: 1px solid var(--border-color); border-radius: 4px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+        .pine-group-title { font-size: 0.65rem; font-weight: 700; color: var(--yellow); text-transform: uppercase; letter-spacing: 0.6px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .pine-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 0.68rem; color: var(--text-main); }
+        .pine-row label { color: var(--text-muted); flex: 1; }
+        .pine-input, .pine-select { background: var(--card-bg); border: 1px solid var(--border-hover); color: var(--text-main); border-radius: 3px; padding: 3px 6px; font-size: 0.68rem; outline: none; }
+        .pine-input { width: 72px; text-align: right; }
+        .pine-select { max-width: 155px; }
+        .pine-checkbox { width: 15px; height: 15px; accent-color: var(--green); cursor: pointer; }
+        .pine-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; border-top: 1px solid var(--border-color); padding-top: 10px; }
+        .pine-save-status { font-size: 0.68rem; color: var(--green); font-weight: 600; }
     </style>
 </head>
 <body>
@@ -1132,6 +1215,115 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="stat-card">
                 <div class="stat-title">Net PnL</div>
                 <div class="stat-value" id="stat-pnl">+0.00 $</div>
+            </div>
+        </div>
+
+        <div>
+            <div class="section-title">
+                <span>Nastavenia Pine Script Indikátora (BUY / SELL Sync)</span>
+                <span id="pine-active-badge" class="text-yellow">REŽIM: {{ SETTINGS.mode_choice }}</span>
+            </div>
+            <div class="pine-panel">
+                <div class="pine-grid">
+                    <div class="pine-group">
+                        <div class="pine-group-title">0. Režim & 1. Objemový Oscilátor</div>
+                        <div class="pine-row">
+                            <label for="pine-mode">Režim stratégie</label>
+                            <select id="pine-mode" class="pine-select">
+                                <option value="ALL_GREEN" {% if SETTINGS.mode_choice == 'ALL_GREEN' %}selected{% endif %}>All Green</option>
+                                <option value="BREAKOUT" {% if SETTINGS.mode_choice == 'BREAKOUT' %}selected{% endif %}>Breakout</option>
+                                <option value="FIB" {% if SETTINGS.mode_choice == 'FIB' %}selected{% endif %}>Fibonacci Touch</option>
+                            </select>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-fast-len">Rýchla dĺžka (Vol)</label>
+                            <input type="number" id="pine-fast-len" class="pine-input" min="1" max="200" step="1" value="{{ SETTINGS.fast_len }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-slow-len">Pomalá dĺžka (Vol)</label>
+                            <input type="number" id="pine-slow-len" class="pine-input" min="1" max="300" step="1" value="{{ SETTINGS.slow_len }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-signal-len">Signálna čiara (MA)</label>
+                            <input type="number" id="pine-signal-len" class="pine-input" min="1" max="200" step="1" value="{{ SETTINGS.signal_len }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-pred-look">Citlivosť predikcie</label>
+                            <input type="number" id="pine-pred-look" class="pine-input" min="1" max="10" step="1" value="{{ SETTINGS.pred_look }}">
+                        </div>
+                    </div>
+
+                    <div class="pine-group">
+                        <div class="pine-group-title">2. Fibonacci Hladiny</div>
+                        <div class="pine-row">
+                            <label for="pine-pivot-len">Rýchlosť potvrdenia (Pivot)</label>
+                            <input type="number" id="pine-pivot-len" class="pine-input" min="1" max="10" step="1" value="{{ SETTINGS.pivot_len }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-fib-choice">Nákupná Fib hladina</label>
+                            <select id="pine-fib-choice" class="pine-select">
+                                <option value="0.50" {% if SETTINGS.fib_choice == '0.50' %}selected{% endif %}>0.50</option>
+                                <option value="0.618" {% if SETTINGS.fib_choice == '0.618' %}selected{% endif %}>0.618</option>
+                                <option value="0.786" {% if SETTINGS.fib_choice == '0.786' %}selected{% endif %}>0.786</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="pine-group">
+                        <div class="pine-group-title">3. Trailing Stop, BE & Trailing TP</div>
+                        <div class="pine-row">
+                            <label for="pine-use-trailing">Zapnúť Trailing Stop</label>
+                            <input type="checkbox" id="pine-use-trailing" class="pine-checkbox" {% if SETTINGS.use_trailing %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-trail-pct">Vzdialenosť TS (%)</label>
+                            <input type="number" id="pine-trail-pct" class="pine-input" min="0.1" max="50.0" step="0.1" value="{{ SETTINGS.trail_pct }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-use-be">Zapnúť Break-Even</label>
+                            <input type="checkbox" id="pine-use-be" class="pine-checkbox" {% if SETTINGS.use_breakeven %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-be-trigger">Zisk % pre Break-Even</label>
+                            <input type="number" id="pine-be-trigger" class="pine-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.be_trigger_pct }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-use-ttp">Zapnúť Trailing TP</label>
+                            <input type="checkbox" id="pine-use-ttp" class="pine-checkbox" {% if SETTINGS.use_trailing_tp %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-ttp-trigger">Aktivácia TTP (%)</label>
+                            <input type="number" id="pine-ttp-trigger" class="pine-input" min="0.1" max="100.0" step="0.1" value="{{ SETTINGS.ttp_trigger_pct }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-ttp-callback">Odstup z maxima TTP (%)</label>
+                            <input type="number" id="pine-ttp-callback" class="pine-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.ttp_callback_pct }}">
+                        </div>
+                    </div>
+
+                    <div class="pine-group">
+                        <div class="pine-group-title">3.2. Exit pri Otočení Heikin-Ashi</div>
+                        <div class="pine-row">
+                            <label for="pine-use-ha-exit">Povoliť exit pri otočení HA</label>
+                            <input type="checkbox" id="pine-use-ha-exit" class="pine-checkbox" {% if SETTINGS.use_ha_exit %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-ha-consec">Počet červených HA sviečok</label>
+                            <select id="pine-ha-consec" class="pine-select">
+                                <option value="1" {% if SETTINGS.ha_exit_consecutive == 1 %}selected{% endif %}>1</option>
+                                <option value="2" {% if SETTINGS.ha_exit_consecutive == 2 %}selected{% endif %}>2</option>
+                                <option value="3" {% if SETTINGS.ha_exit_consecutive == 3 %}selected{% endif %}>3</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="pine-footer">
+                    <span id="pine-save-status" class="pine-save-status">Pripravené – zmeny sa okamžite premietnu do BUY / SELL skenera.</span>
+                    <div style="display: flex; gap: 6px;">
+                        <button class="btn" onclick="resetPineDefaults()">OBNOVIŤ ZÁKLAD</button>
+                        <button class="btn btn-on" onclick="savePineSettings()">ULOŽIŤ PINE NASTAVENIA</button>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -1294,6 +1486,88 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             }
         }
 
+        function applyPineFormValues(ps) {
+            if (!ps) return;
+            document.getElementById('pine-mode').value = ps.mode_choice;
+            document.getElementById('pine-fast-len').value = ps.fast_len;
+            document.getElementById('pine-slow-len').value = ps.slow_len;
+            document.getElementById('pine-signal-len').value = ps.signal_len;
+            document.getElementById('pine-pred-look').value = ps.pred_look;
+            document.getElementById('pine-pivot-len').value = ps.pivot_len;
+            document.getElementById('pine-fib-choice').value = ps.fib_choice;
+            document.getElementById('pine-use-trailing').checked = !!ps.use_trailing;
+            document.getElementById('pine-trail-pct').value = ps.trail_pct;
+            document.getElementById('pine-use-be').checked = !!ps.use_breakeven;
+            document.getElementById('pine-be-trigger').value = ps.be_trigger_pct;
+            document.getElementById('pine-use-ttp').checked = !!ps.use_trailing_tp;
+            document.getElementById('pine-ttp-trigger').value = ps.ttp_trigger_pct;
+            document.getElementById('pine-ttp-callback').value = ps.ttp_callback_pct;
+            document.getElementById('pine-use-ha-exit').checked = !!ps.use_ha_exit;
+            document.getElementById('pine-ha-consec').value = String(ps.ha_exit_consecutive);
+            document.getElementById('pine-active-badge').innerText = `REŽIM: ${ps.mode_choice}`;
+        }
+
+        async function savePineSettings() {
+            const payload = {
+                mode_choice: document.getElementById('pine-mode').value,
+                fast_len: parseInt(document.getElementById('pine-fast-len').value, 10),
+                slow_len: parseInt(document.getElementById('pine-slow-len').value, 10),
+                signal_len: parseInt(document.getElementById('pine-signal-len').value, 10),
+                pred_look: parseInt(document.getElementById('pine-pred-look').value, 10),
+                pivot_len: parseInt(document.getElementById('pine-pivot-len').value, 10),
+                fib_choice: document.getElementById('pine-fib-choice').value,
+                use_trailing: document.getElementById('pine-use-trailing').checked,
+                trail_pct: parseFloat(document.getElementById('pine-trail-pct').value),
+                use_breakeven: document.getElementById('pine-use-be').checked,
+                be_trigger_pct: parseFloat(document.getElementById('pine-be-trigger').value),
+                use_trailing_tp: document.getElementById('pine-use-ttp').checked,
+                ttp_trigger_pct: parseFloat(document.getElementById('pine-ttp-trigger').value),
+                ttp_callback_pct: parseFloat(document.getElementById('pine-ttp-callback').value),
+                use_ha_exit: document.getElementById('pine-use-ha-exit').checked,
+                ha_exit_consecutive: parseInt(document.getElementById('pine-ha-consec').value, 10)
+            };
+
+            let res = await fetch('/api/update-pine-settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            let data = await res.json();
+            let statusEl = document.getElementById('pine-save-status');
+            if (data.status === 'success') {
+                applyPineFormValues(data.pine_settings);
+                statusEl.style.color = 'var(--green)';
+                statusEl.innerText = 'Uložené! Skener teraz počíta BUY a SELL podľa nových nastavení.';
+                updateState();
+            } else {
+                statusEl.style.color = 'var(--red)';
+                statusEl.innerText = 'Chyba: ' + data.message;
+            }
+        }
+
+        async function resetPineDefaults() {
+            const defaults = {
+                mode_choice: "ALL_GREEN",
+                fast_len: 5,
+                slow_len: 20,
+                signal_len: 9,
+                pred_look: 3,
+                pivot_len: 2,
+                fib_choice: "0.786",
+                use_trailing: true,
+                trail_pct: 1.5,
+                use_breakeven: true,
+                be_trigger_pct: 0.35,
+                use_trailing_tp: true,
+                ttp_trigger_pct: 0.8,
+                ttp_callback_pct: 0.2,
+                use_ha_exit: true,
+                ha_exit_consecutive: 2
+            };
+            applyPineFormValues(defaults);
+            await savePineSettings();
+        }
+
         async function manualBuyCustom() {
             let coinInput = document.getElementById('custom-coin');
             let coin = coinInput.value.trim().toUpperCase();
@@ -1325,6 +1599,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 document.getElementById('current-stage').innerText = data.current_stage;
                 document.getElementById('header-tf').innerText = data.current_tf;
                 document.getElementById('header-sl').innerText = `-${data.fixed_sl_pct}%`;
+                if (data.pine_settings) {
+                    document.getElementById('pine-active-badge').innerText = `REŽIM: ${data.pine_settings.mode_choice}`;
+                }
 
                 let stats = data.stats;
                 document.getElementById('stat-winrate').innerText = stats.win_rate.toFixed(1) + "%";
@@ -1440,6 +1717,7 @@ async def get_state():
         "current_stage": CURRENT_STAGE,
         "current_tf": CURRENT_TIMEFRAME,
         "fixed_sl_pct": SETTINGS.get("fixed_sl_pct", 1.5),
+        "pine_settings": get_pine_settings_dict(),
         "stats": stats,
         "active_trades": ACTIVE_TRADES,
         "scanner_cache": MARKET_SCANNER_CACHE,
