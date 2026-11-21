@@ -28,6 +28,15 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
 ALLOWED_TIMEFRAMES = ["1m", "5m", "8m", "15m", "30m", "45m", "1h", "2h", "3h", "4h"]
 
+EXCLUDED_SYMBOLS = {
+    "ZEC-USDC",
+    "ENA-USDC",
+    "LIT-USDC",
+    "CT-USDC",
+    "XMSTR-USDC",
+    "XSOXL-USDC",
+}
+
 ACTIVE_TRADES = {}
 DAILY_PNL_CALENDAR = []
 CLOSED_TRADES_HISTORY = []
@@ -36,6 +45,10 @@ CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na BUY signál z Pine Scriptu..."
 LAST_TRADE_TIME = {}
 MARKET_SCANNER_CACHE = {}
 trade_lock = asyncio.Lock()
+
+IS_SIDEWAYS_MARKET = False
+LAST_SIDEWAYS_ALERT_TS = 0.0
+SIDEWAYS_ALERT_COOLDOWN_SEC = 3600
 
 IS_BOT_ACTIVE = True
 CURRENT_TIMEFRAME = "15M"
@@ -255,9 +268,79 @@ def check_btc_health() -> bool:
         pass
     return True
 
+def detect_sideways_market(bar_tf: str) -> bool:
+    """
+    Rozpozná bočný trh (Chop / Sideways) na posledných 12 uzavretých sviečkach BTC-USDC:
+    1. Úzke cenové rozpätie sviečok pod prahom prispôsobeným TF.
+    2. Časté kríženie priemerov EMA9 a EMA20 bez jasného smerového trendu.
+    """
+    try:
+        url = f"/api/v5/market/candles?instId=BTC-USDC&bar={bar_tf}&limit=25"
+        res = okx_public_request(url)
+        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 15:
+            return False
+
+        candles = res["data"]
+        candles.reverse()
+        closed = candles[:-1]
+        if len(closed) < 12:
+            return False
+
+        closes = [safe_float(c[4]) for c in closed]
+        ema9 = calc_ema_series(closes, 9)
+        ema20 = calc_ema_series(closes, 20)
+
+        window = closed[-12:]
+        highs = [safe_float(c[2]) for c in window]
+        lows = [safe_float(c[3]) for c in window]
+        min_low = min(lows)
+        max_high = max(highs)
+        if min_low <= 0:
+            return False
+
+        range_pct = ((max_high - min_low) / min_low) * 100.0
+
+        tf_lower = bar_tf.lower()
+        if tf_lower in ["1m", "5m", "8m"]:
+            max_range_pct = 0.65
+        elif tf_lower == "15m":
+            max_range_pct = 0.95
+        elif tf_lower == "30m":
+            max_range_pct = 1.35
+        else:
+            max_range_pct = 1.85
+
+        narrow_range = range_pct <= max_range_pct
+
+        start_idx = max(1, len(closes) - 12)
+        crosses = 0
+        for idx in range(start_idx, len(closes)):
+            prev_diff = closes[idx - 1] - ema9[idx - 1]
+            curr_diff = closes[idx] - ema9[idx]
+            if (prev_diff > 0 and curr_diff < 0) or (prev_diff < 0 and curr_diff > 0):
+                crosses += 1
+
+            prev_ema_diff = ema9[idx - 1] - ema20[idx - 1]
+            curr_ema_diff = ema9[idx] - ema20[idx]
+            if (prev_ema_diff > 0 and curr_ema_diff < 0) or (prev_ema_diff < 0 and curr_ema_diff > 0):
+                crosses += 1
+
+        choppy_crosses = crosses >= 4
+        return bool(narrow_range and choppy_crosses)
+    except Exception:
+        return False
+
 def update_top_liquid_symbols():
     global TOP_LIQUID_SYMBOLS
     try:
+        live_symbols = set()
+        inst_res = okx_public_request("/api/v5/public/instruments?instType=SPOT")
+        if inst_res.get("code") == "0" and inst_res.get("data"):
+            for inst in inst_res["data"]:
+                inst_id = inst.get("instId", "")
+                if inst.get("state") == "live" and inst_id.endswith("-USDC") and inst_id not in EXCLUDED_SYMBOLS:
+                    live_symbols.add(inst_id)
+
         res = okx_public_request("/api/v5/market/tickers?instType=SPOT")
         if res.get("code") == "0" and res.get("data"):
             tickers = res["data"]
@@ -265,6 +348,10 @@ def update_top_liquid_symbols():
             for t in tickers:
                 inst_id = t.get("instId", "")
                 if not inst_id.endswith("-USDC"):
+                    continue
+                if inst_id in EXCLUDED_SYMBOLS:
+                    continue
+                if live_symbols and inst_id not in live_symbols:
                     continue
                 coin = inst_id.split("-")[0]
                 if coin in ["BTC", "ETH"]:
@@ -276,9 +363,11 @@ def update_top_liquid_symbols():
             top_20 = [item[0] for item in valid[:20]]
             if len(top_20) >= 5:
                 TOP_LIQUID_SYMBOLS = top_20
-            elif top_20:
-                merged = list(dict.fromkeys(top_20 + TOP_LIQUID_SYMBOLS))
-                TOP_LIQUID_SYMBOLS = merged[:20]
+            else:
+                fallback_clean = [s for s in TOP_LIQUID_SYMBOLS if s not in EXCLUDED_SYMBOLS]
+                merged = list(dict.fromkeys(top_20 + fallback_clean))
+                if merged:
+                    TOP_LIQUID_SYMBOLS = merged[:20]
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
@@ -587,12 +676,25 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 # --- AUTONOMNA SKENOVACIA SLUCKA (BUY A SELL PODLA PINE SCRIPTU) ---
 
 async def autonomous_scanner_loop():
+    global IS_SIDEWAYS_MARKET, LAST_SIDEWAYS_ALERT_TS
     await asyncio.sleep(3)
     log_event(f"🤖 Autonómny Pine Script skener (BUY & SELL Sync) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             tf_str = CURRENT_TIMEFRAME.lower()
             max_allowed = SETTINGS.get("max_parallel", 1)
+
+            sideways_now = detect_sideways_market(tf_str)
+            IS_SIDEWAYS_MARKET = sideways_now
+            now_ts = datetime.now().timestamp()
+            if sideways_now and (now_ts - LAST_SIDEWAYS_ALERT_TS >= SIDEWAYS_ALERT_COOLDOWN_SEC):
+                LAST_SIDEWAYS_ALERT_TS = now_ts
+                log_event(f"🔻 POZOR: BOČNÝ TRH zistený na TF {CURRENT_TIMEFRAME} (úzke rozpätie + časté kríženie EMA).")
+                send_telegram_msg(
+                    f"🔻 <b>POZOR: BOČNÝ TRH</b>\n"
+                    f"<b>TF:</b> {CURRENT_TIMEFRAME}\n"
+                    f"Trh sa pohybuje v úzkom pásme s častými obratmi – zvýšené riziko falošných signálov."
+                )
 
             for coin_name in list(ACTIVE_TRADES.keys()):
                 if coin_name not in ACTIVE_TRADES:
@@ -610,6 +712,9 @@ async def autonomous_scanner_loop():
                     for symbol in list(TOP_LIQUID_SYMBOLS):
                         if not IS_BOT_ACTIVE or len(ACTIVE_TRADES) >= SETTINGS.get("max_parallel", 1):
                             break
+
+                        if symbol in EXCLUDED_SYMBOLS:
+                            continue
 
                         coin_name = symbol.split("-")[0]
                         now_ts = datetime.now().timestamp()
@@ -1028,6 +1133,9 @@ async def manual_buy(coin: str):
                 return JSONResponse({"status": "error", "message": "Dosiahnutý limit paralelných pozícií alebo pozícia už existuje."})
 
             okx_symbol = f"{coin_upper}-USDC"
+            if okx_symbol in EXCLUDED_SYMBOLS:
+                return JSONResponse({"status": "error", "message": f"Pár {okx_symbol} je na zozname vylúčených párov."})
+
             stable_ccy = "USDC"
             free_capital = fetch_account_capital(stable_ccy)
             budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
@@ -1148,7 +1256,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .btn-sell { background: var(--accent-white); color: var(--bg-color); font-weight: 700; border-color: var(--accent-white); }
         .btn-sell:hover { background: #e4e4e7; }
         .btn-sell:disabled { opacity: 0.25; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
-        .status-ticker { font-size: 0.75rem; color: var(--yellow); background: var(--card-bg); border: 1px solid var(--border-color); padding: 9px 14px; border-radius: 5px; display: flex; align-items: center; gap: 10px; font-weight: 600; }
+        .status-ticker { font-size: 0.75rem; color: var(--yellow); background: var(--card-bg); border: 1px solid var(--border-color); padding: 9px 14px; border-radius: 5px; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 600; flex-wrap: wrap; }
+        .status-left { display: flex; align-items: center; gap: 10px; }
+        .sideways-alert-badge { display: none; align-items: center; gap: 6px; color: var(--red); background: rgba(239, 68, 68, 0.14); border: 1px solid rgba(239, 68, 68, 0.55); padding: 3px 9px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.4px; }
+        .sideways-alert-badge.active { display: inline-flex; }
         .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
         .stat-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; }
@@ -1235,8 +1346,11 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div class="status-ticker">
-            <div class="status-dot"></div>
-            <span id="current-stage">{{ CURRENT_STAGE }}</span>
+            <div class="status-left">
+                <div class="status-dot"></div>
+                <span id="current-stage">{{ CURRENT_STAGE }}</span>
+            </div>
+            <span id="sideways-alert" class="sideways-alert-badge" title="Detekovaný bočný trh (úzke rozpätie + časté kríženie EMA)">🔻 POZOR: BOČNÝ TRH</span>
         </div>
 
         <div class="stats-grid">
@@ -1653,6 +1767,15 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     document.getElementById('pine-active-badge').innerText = `REŽIM: ${data.pine_settings.mode_choice}`;
                 }
 
+                let sidewaysEl = document.getElementById('sideways-alert');
+                if (sidewaysEl) {
+                    if (data.is_sideways_market) {
+                        sidewaysEl.classList.add('active');
+                    } else {
+                        sidewaysEl.classList.remove('active');
+                    }
+                }
+
                 let stats = data.stats;
                 document.getElementById('stat-winrate').innerText = stats.win_rate.toFixed(1) + "%";
                 document.getElementById('stat-trades').innerText = stats.total_trades;
@@ -1753,6 +1876,7 @@ async def get_state():
         "is_bot_active": IS_BOT_ACTIVE,
         "current_stage": CURRENT_STAGE,
         "current_tf": CURRENT_TIMEFRAME,
+        "is_sideways_market": IS_SIDEWAYS_MARKET,
         "fixed_sl_pct": SETTINGS.get("fixed_sl_pct", 1.5),
         "pine_settings": get_pine_settings_dict(),
         "stats": stats,
