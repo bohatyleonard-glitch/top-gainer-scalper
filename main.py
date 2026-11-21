@@ -55,6 +55,7 @@ SETTINGS = {
     "use_fixed_tp": False,          # Voliteľný pevný Take Profit v 2s monitore
     "fixed_tp_pct": 1.5,            # Pevný Take Profit (+1.5 % od vstupu)
     "mode_choice": "ALL_GREEN",     # "ALL_GREEN", "BREAKOUT", "FIB" (predvolené z Pine Scriptu: All Green)
+    "strict_buy_filter": False,     # Prísnejší BUY filter priamo na signálnej sviečke
     "fast_len": 5,
     "slow_len": 20,
     "signal_len": 9,
@@ -378,6 +379,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         pivot_len = max(1, min(10, int(SETTINGS.get("pivot_len", 2))))
         fib_choice = str(SETTINGS.get("fib_choice", "0.786"))
         mode_choice = str(SETTINGS.get("mode_choice", "ALL_GREEN")).upper()
+        strict_buy_filter = bool(SETTINGS.get("strict_buy_filter", False))
 
         use_trailing = bool(SETTINGS.get("use_trailing", True))
         trail_pct = float(SETTINGS.get("trail_pct", 1.5))
@@ -466,6 +468,11 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 buy_trigger = fib_trigger_cond
             else:
                 buy_trigger = all_green_condition
+
+            if strict_buy_filter and buy_trigger:
+                ha_green_body = ha_closes[i] > ha_opens[i]
+                above_prev_high = (i == 0) or (cl_i > ha_highs[i - 1])
+                buy_trigger = buy_trigger and ha_green_body and (cl_i > ema9_i) and above_prev_high
 
             raw_buy = buy_trigger and (not obchod_otvoreny)
             if raw_buy:
@@ -945,6 +952,7 @@ async def update_pine_settings(request: Request):
             fib_val = "0.786"
 
         SETTINGS["mode_choice"] = mode_val
+        SETTINGS["strict_buy_filter"] = bool(payload.get("strict_buy_filter", SETTINGS["strict_buy_filter"]))
         SETTINGS["fast_len"] = max(1, min(200, int(payload.get("fast_len", SETTINGS["fast_len"]))))
         SETTINGS["slow_len"] = max(1, min(300, int(payload.get("slow_len", SETTINGS["slow_len"]))))
         SETTINGS["signal_len"] = max(1, min(200, int(payload.get("signal_len", SETTINGS["signal_len"]))))
@@ -973,7 +981,7 @@ async def update_pine_settings(request: Request):
 
         MARKET_SCANNER_CACHE.clear()
         log_event(
-            f"🎛️ Pine nastavenia aktualizované: Režim={mode_val}, Osc({SETTINGS['fast_len']}/{SETTINGS['slow_len']}/{SETTINGS['signal_len']}, pred={SETTINGS['pred_look']}), "
+            f"🎛️ Pine nastavenia aktualizované: Režim={mode_val}, PrísnyBUY={SETTINGS['strict_buy_filter']}, Osc({SETTINGS['fast_len']}/{SETTINGS['slow_len']}/{SETTINGS['signal_len']}, pred={SETTINGS['pred_look']}), "
             f"Fib={fib_val}(piv={SETTINGS['pivot_len']}), FixSL=-{SETTINGS['fixed_sl_pct']}%, FixTP={SETTINGS['use_fixed_tp']}({SETTINGS['fixed_tp_pct']}%), "
             f"TS={SETTINGS['use_trailing']}({SETTINGS['trail_pct']}%), BE={SETTINGS['use_breakeven']}({SETTINGS['be_trigger_pct']}%), "
             f"TTP={SETTINGS['use_trailing_tp']}({SETTINGS['ttp_trigger_pct']}%/{SETTINGS['ttp_callback_pct']}%), HA_Exit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x)"
@@ -985,6 +993,7 @@ async def update_pine_settings(request: Request):
 def get_pine_settings_dict():
     return {
         "mode_choice": SETTINGS["mode_choice"],
+        "strict_buy_filter": SETTINGS["strict_buy_filter"],
         "fast_len": SETTINGS["fast_len"],
         "slow_len": SETTINGS["slow_len"],
         "signal_len": SETTINGS["signal_len"],
@@ -1267,6 +1276,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             </select>
                         </div>
                         <div class="pine-row">
+                            <label for="pine-strict-buy">Prísnejší filter BUY signálu</label>
+                            <input type="checkbox" id="pine-strict-buy" class="pine-checkbox" {% if SETTINGS.strict_buy_filter %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
                             <label for="pine-fast-len">Rýchla dĺžka (Vol)</label>
                             <input type="number" id="pine-fast-len" class="pine-input" min="1" max="200" step="1" value="{{ SETTINGS.fast_len }}">
                         </div>
@@ -1417,25 +1430,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Execution History (3-Month Persistent Storage)</div>
-            <div class="terminal-card scrollable-card">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Timestamp</th>
-                            <th>Pair</th>
-                            <th>Trigger Reason</th>
-                            <th>Net PnL</th>
-                        </tr>
-                    </thead>
-                    <tbody id="history-tbody">
-                        <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Zatiaľ žiadne ukončené obchody.</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <div>
             <div class="section-title">System Execution Logs</div>
             <div class="logs-box" id="logs-container">
                 <div class="log-line">[System Initialized] Pine BUY & SELL + Fixný SL pripravený.</div>
@@ -1528,6 +1522,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         function applyPineFormValues(ps) {
             if (!ps) return;
             document.getElementById('pine-mode').value = ps.mode_choice;
+            document.getElementById('pine-strict-buy').checked = !!ps.strict_buy_filter;
             document.getElementById('pine-fast-len').value = ps.fast_len;
             document.getElementById('pine-slow-len').value = ps.slow_len;
             document.getElementById('pine-signal-len').value = ps.signal_len;
@@ -1554,6 +1549,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         async function savePineSettings() {
             const payload = {
                 mode_choice: document.getElementById('pine-mode').value,
+                strict_buy_filter: document.getElementById('pine-strict-buy').checked,
                 fast_len: parseInt(document.getElementById('pine-fast-len').value, 10),
                 slow_len: parseInt(document.getElementById('pine-slow-len').value, 10),
                 signal_len: parseInt(document.getElementById('pine-signal-len').value, 10),
@@ -1598,6 +1594,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         async function resetPineDefaults() {
             const defaults = {
                 mode_choice: "ALL_GREEN",
+                strict_buy_filter: false,
                 fast_len: 5,
                 slow_len: 20,
                 signal_len: 9,
@@ -1714,23 +1711,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     scannerTbody.innerHTML = sHtml;
                 } else {
                     scannerTbody.innerHTML = `<tr><td colspan="9" style="text-align: center; color: var(--text-muted);">Prebieha úvodné skenovanie trhu...</td></tr>`;
-                }
-
-                let historyTbody = document.getElementById('history-tbody');
-                if (data.history.length > 0) {
-                    let hHtml = "";
-                    for (let h of data.history) {
-                        let pnlClass = h.pnl_usdc >= 0 ? "text-green" : "text-red";
-                        hHtml += `<tr>
-                            <td>${h.time}</td>
-                            <td><b>${h.pair}</b></td>
-                            <td>${h.reason}</td>
-                            <td class="${pnlClass}">${h.pnl_usdc >= 0 ? "+" : ""}${h.pnl_usdc.toFixed(2)} $ (${h.pnl_pct >= 0 ? "+" : ""}${h.pnl_pct.toFixed(2)}%)</td>
-                        </tr>`;
-                    }
-                    historyTbody.innerHTML = hHtml;
-                } else {
-                    historyTbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Zatiaľ žiadne ukončené obchody.</td></tr>`;
                 }
 
                 let logsBox = document.getElementById('logs-container');
