@@ -838,11 +838,11 @@ async def fixed_stoploss_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event(f"🚀 Autonómny Apex Scalper PRO (Pine BUY & SELL + Fixný SL -{SETTINGS['fixed_sl_pct']}%) spustený.")
+    log_event(f"🚀 Autonómny APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + Fixný SL -{SETTINGS['fixed_sl_pct']}%) spustený.")
     monitor_task = asyncio.create_task(fixed_stoploss_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg(f"🚀 Apex Scalper PRO (Pine BUY & SELL + Fixný SL -{SETTINGS['fixed_sl_pct']}%) pripravený!")
+    send_telegram_msg(f"🚀 APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + Fixný SL -{SETTINGS['fixed_sl_pct']}%) pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -1108,7 +1108,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Apex Scalper PRO Terminal</title>
+    <title>APEX MATRIX_SCALPER_v1_BOT</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -1181,7 +1181,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     <div class="container">
         <div class="top-bar">
             <div class="brand">
-                <h1>APEX SCALPER // PINE BUY & SELL + FIXNÝ SL</h1>
+                <h1>APEX MATRIX_SCALPER_v1_BOT</h1>
                 <p>
                     <span id="header-pair">Top USDC · OKX Demo</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
@@ -1195,10 +1195,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
-
-                <button class="sl-btn btn {% if SETTINGS.fixed_sl_pct == 1.0 %}btn-yellow{% endif %}" data-sl="1.0" onclick="setSl(1.0)">SL 1%</button>
-                <button class="sl-btn btn {% if SETTINGS.fixed_sl_pct == 1.5 %}btn-yellow{% endif %}" data-sl="1.5" onclick="setSl(1.5)">SL 1.5%</button>
-                <button class="sl-btn btn {% if SETTINGS.fixed_sl_pct == 2.0 %}btn-yellow{% endif %}" data-sl="2.0" onclick="setSl(2.0)">SL 2%</button>
 
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
@@ -1451,12 +1447,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         function syncSlUi(slVal) {
             const numVal = parseFloat(slVal);
             if (isNaN(numVal)) return;
-            document.querySelectorAll('.sl-btn').forEach(b => {
-                b.classList.remove('btn-yellow');
-                if (Math.abs(parseFloat(b.getAttribute('data-sl')) - numVal) < 1e-6) {
-                    b.classList.add('btn-yellow');
-                }
-            });
             document.getElementById('header-sl').innerText = `-${numVal}%`;
             const pineSlInput = document.getElementById('pine-fixed-sl-pct');
             if (pineSlInput) {
@@ -1517,15 +1507,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         b.classList.add('btn-yellow');
                     }
                 });
-            }
-        }
-
-        async function setSl(slVal) {
-            let res = await fetch(`/api/set-sl/${slVal}`, {method: 'POST'});
-            let data = await res.json();
-            if (data.status === 'success') {
-                syncSlUi(slVal);
-                updateState();
             }
         }
 
@@ -1671,12 +1652,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 document.getElementById('current-stage').innerText = data.current_stage;
                 document.getElementById('header-tf').innerText = data.current_tf;
                 document.getElementById('header-sl').innerText = `-${data.fixed_sl_pct}%`;
-                document.querySelectorAll('.sl-btn').forEach(b => {
-                    b.classList.remove('btn-yellow');
-                    if (Math.abs(parseFloat(b.getAttribute('data-sl')) - parseFloat(data.fixed_sl_pct)) < 1e-6) {
-                        b.classList.add('btn-yellow');
-                    }
-                });
                 if (data.pine_settings) {
                     document.getElementById('pine-active-badge').innerText = `REŽIM: ${data.pine_settings.mode_choice}`;
                 }
