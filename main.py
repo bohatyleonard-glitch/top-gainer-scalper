@@ -24,7 +24,7 @@ WEBHOOK_SECRET = "moje_tajne_heslo_123"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-# --- NASTAVENIA PODLA PINE SCRIPTU + FIXNY STOP-LOSS ---
+# --- NASTAVENIA PODLA PINE SCRIPTU + FIXNY STOP-LOSS & FIXNY TP ---
 
 ALLOWED_TIMEFRAMES = ["1m", "5m", "8m", "15m", "30m", "45m", "1h", "2h", "3h", "4h"]
 
@@ -49,10 +49,11 @@ TOP_LIQUID_SYMBOLS = [
     "TIA-USDC", "SEI-USDC", "DOT-USDC", "ATOM-USDC", "UNI-USDC"
 ]
 
-# Žiadne TIMEFRAME_PROFILES ani pevný target_pct.
-# Vstup a výstup riadi BUY / SELL z Pine Scriptu + jediná fixná poistka (Stop-Loss).
+# Vstup a výstup riadi BUY / SELL z Pine Scriptu + fixný Stop-Loss + voliteľný fixný Take Profit.
 SETTINGS = {
-    "fixed_sl_pct": 1.5,            # Jediná fixná poistka: pevný Stop-Loss (-1.5 % od vstupu)
+    "fixed_sl_pct": 1.5,            # Pevný Stop-Loss (-1.5 % od vstupu)
+    "use_fixed_tp": False,          # Voliteľný pevný Take Profit v 2s monitore
+    "fixed_tp_pct": 1.5,            # Pevný Take Profit (+1.5 % od vstupu)
     "mode_choice": "ALL_GREEN",     # "ALL_GREEN", "BREAKOUT", "FIB" (predvolené z Pine Scriptu: All Green)
     "fast_len": 5,
     "slow_len": 20,
@@ -687,12 +688,18 @@ async def execute_autonomous_buy(okx_symbol: str):
         actual_spent_usdc = coin_amount * current_price
         fixed_sl_pct = SETTINGS.get("fixed_sl_pct", 1.5)
         fixed_sl_price = current_price * (1.0 - (fixed_sl_pct / 100.0))
+        use_fixed_tp = bool(SETTINGS.get("use_fixed_tp", False))
+        fixed_tp_pct = float(SETTINGS.get("fixed_tp_pct", 1.5))
+        fixed_tp_price = current_price * (1.0 + (fixed_tp_pct / 100.0))
 
         ACTIVE_TRADES[coin_name] = {
             "entry_price": current_price,
             "current_price": current_price,
             "fixed_sl_price": fixed_sl_price,
             "fixed_sl_pct": fixed_sl_pct,
+            "use_fixed_tp": use_fixed_tp,
+            "fixed_tp_price": fixed_tp_price,
+            "fixed_tp_pct": fixed_tp_pct,
             "amount": coin_amount,
             "initial_amount": coin_amount,
             "lot_sz": lot_sz,
@@ -706,7 +713,8 @@ async def execute_autonomous_buy(okx_symbol: str):
             "tf": CURRENT_TIMEFRAME
         }
 
-        log_event(f"🛒 NÁKUP (Pine BUY) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Investícia: {actual_spent_usdc:.2f} USDC | Fixný SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f})")
+        tp_info = f" | Fixný TP: +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp else ""
+        log_event(f"🛒 NÁKUP (Pine BUY) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Investícia: {actual_spent_usdc:.2f} USDC | Fixný SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}")
 
         inline_keyboard = {
             "inline_keyboard": [
@@ -722,7 +730,8 @@ async def execute_autonomous_buy(okx_symbol: str):
             f"<b>Vstup:</b> {current_price:.4f}\n"
             f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
             f"🛡️ <b>Fixný Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})\n"
-            f"📤 <b>Výstup:</b> Pine SELL signál alebo Fixný SL",
+            + (f"🎯 <b>Fixný Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})\n" if use_fixed_tp else "")
+            + f"📤 <b>Výstup:</b> Pine SELL signál alebo Fixný SL" + (" / Fixný TP" if use_fixed_tp else ""),
             reply_markup=inline_keyboard
         )
 
@@ -764,7 +773,7 @@ async def close_trade_position(coin: str, reason: str):
             if coin in ACTIVE_TRADES:
                 del ACTIVE_TRADES[coin]
 
-# --- MONITOR RIZIK (JEDINA FIXNA POISTKA: PEVNY STOP-LOSS) ---
+# --- MONITOR RIZIK (FIXNY STOP-LOSS A VOLITELNY FIXNY TP) ---
 
 async def fixed_stoploss_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
@@ -774,7 +783,8 @@ async def fixed_stoploss_monitor_loop():
             if IS_BOT_ACTIVE:
                 max_p = SETTINGS.get("max_parallel", 1)
                 sl_p = SETTINGS.get("fixed_sl_pct", 1.5)
-                CURRENT_STAGE = f"STAV: Bot aktívny (Max {max_p}x | Fixný SL: -{sl_p}%). Čakám na BUY/SELL..."
+                tp_txt = f" | Fixný TP: +{SETTINGS.get('fixed_tp_pct', 1.5)}%" if SETTINGS.get("use_fixed_tp", False) else ""
+                CURRENT_STAGE = f"STAV: Bot aktívny (Max {max_p}x | Fixný SL: -{sl_p}%{tp_txt}). Čakám na BUY/SELL..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -806,10 +816,19 @@ async def fixed_stoploss_monitor_loop():
 
                     fixed_sl_price = trade["fixed_sl_price"]
                     fixed_sl_pct = trade["fixed_sl_pct"]
-                    CURRENT_STAGE = f"STAV: Pozícií: {len(ACTIVE_TRADES)} | {symbol} ({pnl_pct:+.2f}%) | Fixný SL: -{fixed_sl_pct}%"
+                    use_fixed_tp = bool(trade.get("use_fixed_tp", False))
+                    fixed_tp_price = trade.get("fixed_tp_price")
+                    fixed_tp_pct = trade.get("fixed_tp_pct", SETTINGS.get("fixed_tp_pct", 1.5))
+
+                    tp_stage = f" | Fixný TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
+                    CURRENT_STAGE = f"STAV: Pozícií: {len(ACTIVE_TRADES)} | {symbol} ({pnl_pct:+.2f}%) | Fixný SL: -{fixed_sl_pct}%{tp_stage}"
 
                     if current_price <= fixed_sl_price:
                         await close_trade_position(coin, f"Fixný Stop-Loss (-{fixed_sl_pct}%)")
+                        continue
+
+                    if use_fixed_tp and fixed_tp_price is not None and current_price >= fixed_tp_price:
+                        await close_trade_position(coin, f"Fixný Take-Profit (+{fixed_tp_pct}%)")
                         continue
         except Exception:
             pass
@@ -934,6 +953,9 @@ async def update_pine_settings(request: Request):
         SETTINGS["pivot_len"] = max(1, min(10, int(payload.get("pivot_len", SETTINGS["pivot_len"]))))
         SETTINGS["fib_choice"] = fib_val
 
+        SETTINGS["use_fixed_tp"] = bool(payload.get("use_fixed_tp", SETTINGS["use_fixed_tp"]))
+        SETTINGS["fixed_tp_pct"] = max(0.1, min(100.0, float(payload.get("fixed_tp_pct", SETTINGS["fixed_tp_pct"]))))
+
         SETTINGS["use_trailing"] = bool(payload.get("use_trailing", SETTINGS["use_trailing"]))
         SETTINGS["trail_pct"] = max(0.1, min(50.0, float(payload.get("trail_pct", SETTINGS["trail_pct"]))))
         SETTINGS["use_breakeven"] = bool(payload.get("use_breakeven", SETTINGS["use_breakeven"]))
@@ -949,9 +971,9 @@ async def update_pine_settings(request: Request):
         MARKET_SCANNER_CACHE.clear()
         log_event(
             f"🎛️ Pine nastavenia aktualizované: Režim={mode_val}, Osc({SETTINGS['fast_len']}/{SETTINGS['slow_len']}/{SETTINGS['signal_len']}, pred={SETTINGS['pred_look']}), "
-            f"Fib={fib_val}(piv={SETTINGS['pivot_len']}), TS={SETTINGS['use_trailing']}({SETTINGS['trail_pct']}%), "
-            f"BE={SETTINGS['use_breakeven']}({SETTINGS['be_trigger_pct']}%), TTP={SETTINGS['use_trailing_tp']}({SETTINGS['ttp_trigger_pct']}%/{SETTINGS['ttp_callback_pct']}%), "
-            f"HA_Exit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x)"
+            f"Fib={fib_val}(piv={SETTINGS['pivot_len']}), FixTP={SETTINGS['use_fixed_tp']}({SETTINGS['fixed_tp_pct']}%), "
+            f"TS={SETTINGS['use_trailing']}({SETTINGS['trail_pct']}%), BE={SETTINGS['use_breakeven']}({SETTINGS['be_trigger_pct']}%), "
+            f"TTP={SETTINGS['use_trailing_tp']}({SETTINGS['ttp_trigger_pct']}%/{SETTINGS['ttp_callback_pct']}%), HA_Exit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x)"
         )
         return JSONResponse({"status": "success", "pine_settings": get_pine_settings_dict()})
     except Exception as e:
@@ -966,6 +988,8 @@ def get_pine_settings_dict():
         "pred_look": SETTINGS["pred_look"],
         "pivot_len": SETTINGS["pivot_len"],
         "fib_choice": SETTINGS["fib_choice"],
+        "use_fixed_tp": SETTINGS["use_fixed_tp"],
+        "fixed_tp_pct": SETTINGS["fixed_tp_pct"],
         "use_trailing": SETTINGS["use_trailing"],
         "trail_pct": SETTINGS["trail_pct"],
         "use_breakeven": SETTINGS["use_breakeven"],
@@ -1030,12 +1054,18 @@ async def manual_buy(coin: str):
             actual_spent_usdc = coin_amount * current_price
             fixed_sl_pct = SETTINGS.get("fixed_sl_pct", 1.5)
             fixed_sl_price = current_price * (1.0 - (fixed_sl_pct / 100.0))
+            use_fixed_tp = bool(SETTINGS.get("use_fixed_tp", False))
+            fixed_tp_pct = float(SETTINGS.get("fixed_tp_pct", 1.5))
+            fixed_tp_price = current_price * (1.0 + (fixed_tp_pct / 100.0))
 
             ACTIVE_TRADES[coin_upper] = {
                 "entry_price": current_price,
                 "current_price": current_price,
                 "fixed_sl_price": fixed_sl_price,
                 "fixed_sl_pct": fixed_sl_pct,
+                "use_fixed_tp": use_fixed_tp,
+                "fixed_tp_price": fixed_tp_price,
+                "fixed_tp_pct": fixed_tp_pct,
                 "amount": coin_amount,
                 "initial_amount": coin_amount,
                 "lot_sz": lot_sz,
@@ -1048,8 +1078,9 @@ async def manual_buy(coin: str):
                 "live_pnl_usdc": 0.0,
                 "tf": CURRENT_TIMEFRAME
             }
-            log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$ | Fixný SL: -{fixed_sl_pct}%")
-            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n🛡️ <b>Fixný SL:</b> -{fixed_sl_pct}%")
+            tp_info = f" | Fixný TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
+            log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$ | Fixný SL: -{fixed_sl_pct}%{tp_info}")
+            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n🛡️ <b>Fixný SL:</b> -{fixed_sl_pct}%" + (f"\n🎯 <b>Fixný TP:</b> +{fixed_tp_pct}%" if use_fixed_tp else ""))
 
             return JSONResponse({"status": "success", "symbol": okx_symbol})
         except Exception as e:
@@ -1272,6 +1303,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <div class="pine-group">
                         <div class="pine-group-title">3. Trailing Stop, BE & Trailing TP</div>
                         <div class="pine-row">
+                            <label for="pine-use-fixed-tp">Zapnúť Fixný TP</label>
+                            <input type="checkbox" id="pine-use-fixed-tp" class="pine-checkbox" {% if SETTINGS.use_fixed_tp %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-fixed-tp-pct">Fixný TP (%)</label>
+                            <input type="number" id="pine-fixed-tp-pct" class="pine-input" min="0.1" max="100.0" step="0.1" value="{{ SETTINGS.fixed_tp_pct }}">
+                        </div>
+                        <div class="pine-row">
                             <label for="pine-use-trailing">Zapnúť Trailing Stop</label>
                             <input type="checkbox" id="pine-use-trailing" class="pine-checkbox" {% if SETTINGS.use_trailing %}checked{% endif %}>
                         </div>
@@ -1328,7 +1367,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Active Positions Matrix (Pine SELL alebo Fixný SL)</div>
+            <div class="section-title">Active Positions Matrix (Pine SELL, Fixný TP alebo Fixný SL)</div>
             <div class="terminal-card">
                 <table>
                     <thead>
@@ -1336,13 +1375,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <th>Pair / TF</th>
                             <th>Entry Price</th>
                             <th>Current Price</th>
+                            <th>Fixed TP Price</th>
                             <th>Fixed SL Price</th>
                             <th>Invested USDC</th>
                             <th>Live PnL</th>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script BUY signály...</td></tr>
+                        <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script BUY signály...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1495,6 +1535,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             document.getElementById('pine-pred-look').value = ps.pred_look;
             document.getElementById('pine-pivot-len').value = ps.pivot_len;
             document.getElementById('pine-fib-choice').value = ps.fib_choice;
+            document.getElementById('pine-use-fixed-tp').checked = !!ps.use_fixed_tp;
+            document.getElementById('pine-fixed-tp-pct').value = ps.fixed_tp_pct;
             document.getElementById('pine-use-trailing').checked = !!ps.use_trailing;
             document.getElementById('pine-trail-pct').value = ps.trail_pct;
             document.getElementById('pine-use-be').checked = !!ps.use_breakeven;
@@ -1516,6 +1558,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 pred_look: parseInt(document.getElementById('pine-pred-look').value, 10),
                 pivot_len: parseInt(document.getElementById('pine-pivot-len').value, 10),
                 fib_choice: document.getElementById('pine-fib-choice').value,
+                use_fixed_tp: document.getElementById('pine-use-fixed-tp').checked,
+                fixed_tp_pct: parseFloat(document.getElementById('pine-fixed-tp-pct').value),
                 use_trailing: document.getElementById('pine-use-trailing').checked,
                 trail_pct: parseFloat(document.getElementById('pine-trail-pct').value),
                 use_breakeven: document.getElementById('pine-use-be').checked,
@@ -1554,6 +1598,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 pred_look: 3,
                 pivot_len: 2,
                 fib_choice: "0.786",
+                use_fixed_tp: false,
+                fixed_tp_pct: 1.5,
                 use_trailing: true,
                 trail_pct: 1.5,
                 use_breakeven: true,
@@ -1617,10 +1663,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     let html = "";
                     for (let [coin, t] of Object.entries(data.active_trades)) {
                         let pnlClass = t.live_pnl_pct >= 0 ? "text-green" : "text-red";
+                        let tpCell = (t.use_fixed_tp && t.fixed_tp_price)
+                            ? `<span class="text-green">${t.fixed_tp_price.toFixed(4)} (+${t.fixed_tp_pct}%)</span>`
+                            : `<span style="color:var(--text-muted);">VYPNUTÝ</span>`;
                         html += `<tr>
                             <td><b>${t.market_pair}</b><br><span style="font-size:0.6rem; color:var(--text-muted);">TF: ${t.tf}</span></td>
                             <td>${t.entry_price.toFixed(4)}</td>
                             <td>${t.current_price.toFixed(4)}</td>
+                            <td>${tpCell}</td>
                             <td class="text-red">${t.fixed_sl_price.toFixed(4)} (-${t.fixed_sl_pct}%)</td>
                             <td>${t.invested_usdc.toFixed(2)} USDC</td>
                             <td class="${pnlClass}">${t.live_pnl_pct >= 0 ? "+" : ""}${t.live_pnl_pct.toFixed(2)}% (${t.live_pnl_usdc >= 0 ? "+" : ""}${t.live_pnl_usdc.toFixed(2)} $)</td>
@@ -1629,7 +1679,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     activeTbody.innerHTML = html;
                     sellBtn.disabled = false;
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script BUY signály...</td></tr>`;
+                    activeTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script BUY signály...</td></tr>`;
                     sellBtn.disabled = true;
                 }
 
