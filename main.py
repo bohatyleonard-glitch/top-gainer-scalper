@@ -48,6 +48,7 @@ MARKET_SCANNER_CACHE = {}
 trade_lock = asyncio.Lock()
 
 IS_SIDEWAYS_MARKET = False
+MARKET_REGIME = "BULL"  # "BULL", "BEAR", "SIDEWAYS"
 LAST_SIDEWAYS_ALERT_TS = 0.0
 SIDEWAYS_ALERT_COOLDOWN_SEC = 3600
 
@@ -269,23 +270,24 @@ def check_btc_health() -> bool:
         pass
     return True
 
-def detect_sideways_market(bar_tf: str) -> bool:
+def get_market_regime_and_sideways(bar_tf: str) -> tuple[str, bool]:
     """
-    Rozpozná bočný trh (Chop / Sideways) na posledných 12 uzavretých sviečkach BTC-USDC:
-    1. Úzke cenové rozpätie sviečok pod prahom prispôsobeným TF.
-    2. Časté kríženie priemerov EMA9 a EMA20 bez jasného smerového trendu.
+    Určí stav trhu podľa BTC-USDC na zvolenom TF:
+    - "SIDEWAYS" (True): úzke rozpätie posledných 12 uzavretých sviečok + časté kríženie EMA9 / EMA20
+    - "BULL" (False): nie je bočný trh a cena / EMA20 ukazujú rastový trend
+    - "BEAR" (False): nie je bočný trh a cena / EMA20 ukazujú klesajúci trend
     """
     try:
         url = f"/api/v5/market/candles?instId=BTC-USDC&bar={bar_tf}&limit=25"
         res = okx_public_request(url)
         if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 15:
-            return False
+            return ("BULL", False)
 
         candles = res["data"]
         candles.reverse()
         closed = candles[:-1]
         if len(closed) < 12:
-            return False
+            return ("BULL", False)
 
         closes = [safe_float(c[4]) for c in closed]
         ema9 = calc_ema_series(closes, 9)
@@ -297,7 +299,7 @@ def detect_sideways_market(bar_tf: str) -> bool:
         min_low = min(lows)
         max_high = max(highs)
         if min_low <= 0:
-            return False
+            return ("BULL", False)
 
         range_pct = ((max_high - min_low) / min_low) * 100.0
 
@@ -327,9 +329,16 @@ def detect_sideways_market(bar_tf: str) -> bool:
                 crosses += 1
 
         choppy_crosses = crosses >= 4
-        return bool(narrow_range and choppy_crosses)
+        if narrow_range and choppy_crosses:
+            return ("SIDEWAYS", True)
+
+        curr_close = closes[-1]
+        curr_ema20 = ema20[-1]
+        if curr_close >= curr_ema20:
+            return ("BULL", False)
+        return ("BEAR", False)
     except Exception:
-        return False
+        return ("BULL", False)
 
 def update_top_liquid_symbols():
     global TOP_LIQUID_SYMBOLS
@@ -677,7 +686,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 # --- AUTONOMNA SKENOVACIA SLUCKA (BUY A SELL PODLA PINE SCRIPTU) ---
 
 async def autonomous_scanner_loop():
-    global IS_SIDEWAYS_MARKET, LAST_SIDEWAYS_ALERT_TS
+    global IS_SIDEWAYS_MARKET, MARKET_REGIME, LAST_SIDEWAYS_ALERT_TS
     await asyncio.sleep(3)
     log_event(f"🤖 Autonómny Pine Script skener (BUY & SELL Sync) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
@@ -685,7 +694,8 @@ async def autonomous_scanner_loop():
             tf_str = CURRENT_TIMEFRAME.lower()
             max_allowed = SETTINGS.get("max_parallel", 1)
 
-            sideways_now = detect_sideways_market(tf_str)
+            regime_now, sideways_now = get_market_regime_and_sideways(tf_str)
+            MARKET_REGIME = regime_now
             IS_SIDEWAYS_MARKET = sideways_now
             now_ts = datetime.now().timestamp()
             if sideways_now and (now_ts - LAST_SIDEWAYS_ALERT_TS >= SIDEWAYS_ALERT_COOLDOWN_SEC):
@@ -1034,11 +1044,14 @@ async def set_sl(sl_val: float):
 
 @app.post("/api/set-tf/{tf_val}")
 async def set_tf(tf_val: str):
-    global CURRENT_TIMEFRAME, MARKET_SCANNER_CACHE
+    global CURRENT_TIMEFRAME, MARKET_SCANNER_CACHE, MARKET_REGIME, IS_SIDEWAYS_MARKET
     tf_lower = tf_val.lower()
     if tf_lower in ALLOWED_TIMEFRAMES:
         CURRENT_TIMEFRAME = tf_val.upper()
         MARKET_SCANNER_CACHE.clear()
+        regime_now, sideways_now = get_market_regime_and_sideways(tf_lower)
+        MARKET_REGIME = regime_now
+        IS_SIDEWAYS_MARKET = sideways_now
         log_event(f"⏱️ Časový rámec (TF) zmenený na: {CURRENT_TIMEFRAME} (bez zmeny profilov, riadi sa Pine BUY/SELL)")
         return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
     return JSONResponse({"status": "error", "message": "Neplatný časový rámec."})
@@ -1259,8 +1272,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .btn-sell:disabled { opacity: 0.25; cursor: not-allowed; background: transparent; color: var(--text-muted); border-color: var(--border-color); }
         .status-ticker { font-size: 0.75rem; color: var(--yellow); background: var(--card-bg); border: 1px solid var(--border-color); padding: 9px 14px; border-radius: 5px; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 600; flex-wrap: wrap; }
         .status-left { display: flex; align-items: center; gap: 10px; }
-        .sideways-alert-badge { display: none; align-items: center; gap: 6px; color: var(--red); background: rgba(239, 68, 68, 0.14); border: 1px solid rgba(239, 68, 68, 0.55); padding: 3px 9px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.4px; }
-        .sideways-alert-badge.active { display: inline-flex; }
+        .regime-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.4px; border: 1px solid var(--border-hover); }
+        .regime-bull { color: var(--green); background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.45); }
+        .regime-bear { color: var(--red); background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.45); }
+        .regime-sideways { color: var(--red); background: rgba(239, 68, 68, 0.18); border-color: rgba(239, 68, 68, 0.65); }
         .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
         .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
         .stat-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; }
@@ -1351,7 +1366,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <div class="status-dot"></div>
                 <span id="current-stage">{{ CURRENT_STAGE }}</span>
             </div>
-            <span id="sideways-alert" class="sideways-alert-badge" title="Detekovaný bočný trh (úzke rozpätie + časté kríženie EMA)">🔻 POZOR: BOČNÝ TRH</span>
+            <span id="market-regime-badge" class="regime-badge regime-bull" title="Stav trhu (BTC-USDC) na aktívnom TF">🐂 BÝČÍ TRH</span>
         </div>
 
         <div class="stats-grid">
@@ -1768,12 +1783,19 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     document.getElementById('pine-active-badge').innerText = `REŽIM: ${data.pine_settings.mode_choice}`;
                 }
 
-                let sidewaysEl = document.getElementById('sideways-alert');
-                if (sidewaysEl) {
-                    if (data.is_sideways_market) {
-                        sidewaysEl.classList.add('active');
+                let regimeBadge = document.getElementById('market-regime-badge');
+                if (regimeBadge) {
+                    const regime = data.market_regime || (data.is_sideways_market ? "SIDEWAYS" : "BULL");
+                    regimeBadge.classList.remove('regime-bull', 'regime-bear', 'regime-sideways');
+                    if (regime === "SIDEWAYS") {
+                        regimeBadge.classList.add('regime-sideways');
+                        regimeBadge.innerText = `🔻 BOČNÝ TRH (${data.current_tf})`;
+                    } else if (regime === "BEAR") {
+                        regimeBadge.classList.add('regime-bear');
+                        regimeBadge.innerText = `🐻 MEDVEDÍ TRH (${data.current_tf})`;
                     } else {
-                        sidewaysEl.classList.remove('active');
+                        regimeBadge.classList.add('regime-bull');
+                        regimeBadge.innerText = `🐂 BÝČÍ TRH (${data.current_tf})`;
                     }
                 }
 
@@ -1878,6 +1900,7 @@ async def get_state():
         "current_stage": CURRENT_STAGE,
         "current_tf": CURRENT_TIMEFRAME,
         "is_sideways_market": IS_SIDEWAYS_MARKET,
+        "market_regime": MARKET_REGIME,
         "fixed_sl_pct": SETTINGS.get("fixed_sl_pct", 1.5),
         "pine_settings": get_pine_settings_dict(),
         "stats": stats,
