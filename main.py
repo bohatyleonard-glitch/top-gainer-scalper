@@ -35,6 +35,7 @@ EXCLUDED_SYMBOLS = {
     "CT-USDC",
     "XMSTR-USDC",
     "XSOXL-USDC",
+    "XANT-USDC",
 }
 
 ACTIVE_TRADES = {}
