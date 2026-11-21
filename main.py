@@ -912,12 +912,12 @@ async def set_parallel(count: int):
 
 @app.post("/api/set-sl/{sl_val}")
 async def set_sl(sl_val: float):
-    if 0.2 <= sl_val <= 20.0:
+    if 0.1 <= sl_val <= 50.0:
         SETTINGS["fixed_sl_pct"] = float(sl_val)
         log_event(f"🛡️ Fixný Stop-Loss zmenený na: -{sl_val}%")
         send_telegram_msg(f"🛡️ Zmena Stop-Lossu: Fixný SL pre nové obchody je teraz -{sl_val}%.")
         return JSONResponse({"status": "success", "fixed_sl_pct": sl_val})
-    return JSONResponse({"status": "error", "message": "Neplatná hodnota SL (povolene 0.2 - 20.0 %)."})
+    return JSONResponse({"status": "error", "message": "Neplatná hodnota SL (povolene 0.1 - 50.0 %)."})
 
 @app.post("/api/set-tf/{tf_val}")
 async def set_tf(tf_val: str):
@@ -953,6 +953,9 @@ async def update_pine_settings(request: Request):
         SETTINGS["pivot_len"] = max(1, min(10, int(payload.get("pivot_len", SETTINGS["pivot_len"]))))
         SETTINGS["fib_choice"] = fib_val
 
+        if "fixed_sl_pct" in payload and payload["fixed_sl_pct"] is not None:
+            SETTINGS["fixed_sl_pct"] = max(0.1, min(50.0, float(payload.get("fixed_sl_pct", SETTINGS["fixed_sl_pct"]))))
+
         SETTINGS["use_fixed_tp"] = bool(payload.get("use_fixed_tp", SETTINGS["use_fixed_tp"]))
         SETTINGS["fixed_tp_pct"] = max(0.1, min(100.0, float(payload.get("fixed_tp_pct", SETTINGS["fixed_tp_pct"]))))
 
@@ -971,7 +974,7 @@ async def update_pine_settings(request: Request):
         MARKET_SCANNER_CACHE.clear()
         log_event(
             f"🎛️ Pine nastavenia aktualizované: Režim={mode_val}, Osc({SETTINGS['fast_len']}/{SETTINGS['slow_len']}/{SETTINGS['signal_len']}, pred={SETTINGS['pred_look']}), "
-            f"Fib={fib_val}(piv={SETTINGS['pivot_len']}), FixTP={SETTINGS['use_fixed_tp']}({SETTINGS['fixed_tp_pct']}%), "
+            f"Fib={fib_val}(piv={SETTINGS['pivot_len']}), FixSL=-{SETTINGS['fixed_sl_pct']}%, FixTP={SETTINGS['use_fixed_tp']}({SETTINGS['fixed_tp_pct']}%), "
             f"TS={SETTINGS['use_trailing']}({SETTINGS['trail_pct']}%), BE={SETTINGS['use_breakeven']}({SETTINGS['be_trigger_pct']}%), "
             f"TTP={SETTINGS['use_trailing_tp']}({SETTINGS['ttp_trigger_pct']}%/{SETTINGS['ttp_callback_pct']}%), HA_Exit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x)"
         )
@@ -988,6 +991,7 @@ def get_pine_settings_dict():
         "pred_look": SETTINGS["pred_look"],
         "pivot_len": SETTINGS["pivot_len"],
         "fib_choice": SETTINGS["fib_choice"],
+        "fixed_sl_pct": SETTINGS["fixed_sl_pct"],
         "use_fixed_tp": SETTINGS["use_fixed_tp"],
         "fixed_tp_pct": SETTINGS["fixed_tp_pct"],
         "use_trailing": SETTINGS["use_trailing"],
@@ -1303,6 +1307,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <div class="pine-group">
                         <div class="pine-group-title">3. Trailing Stop, BE & Trailing TP</div>
                         <div class="pine-row">
+                            <label for="pine-fixed-sl-pct">Fixný SL (%)</label>
+                            <input type="number" id="pine-fixed-sl-pct" class="pine-input" min="0.1" max="50.0" step="0.1" value="{{ SETTINGS.fixed_sl_pct }}">
+                        </div>
+                        <div class="pine-row">
                             <label for="pine-use-fixed-tp">Zapnúť Fixný TP</label>
                             <input type="checkbox" id="pine-use-fixed-tp" class="pine-checkbox" {% if SETTINGS.use_fixed_tp %}checked{% endif %}>
                         </div>
@@ -1440,6 +1448,22 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     </div>
 
     <script>
+        function syncSlUi(slVal) {
+            const numVal = parseFloat(slVal);
+            if (isNaN(numVal)) return;
+            document.querySelectorAll('.sl-btn').forEach(b => {
+                b.classList.remove('btn-yellow');
+                if (Math.abs(parseFloat(b.getAttribute('data-sl')) - numVal) < 1e-6) {
+                    b.classList.add('btn-yellow');
+                }
+            });
+            document.getElementById('header-sl').innerText = `-${numVal}%`;
+            const pineSlInput = document.getElementById('pine-fixed-sl-pct');
+            if (pineSlInput) {
+                pineSlInput.value = numVal;
+            }
+        }
+
         async function toggleBot() {
             let res = await fetch('/api/toggle-bot', {method: 'POST'});
             let data = await res.json();
@@ -1500,13 +1524,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             let res = await fetch(`/api/set-sl/${slVal}`, {method: 'POST'});
             let data = await res.json();
             if (data.status === 'success') {
-                document.querySelectorAll('.sl-btn').forEach(b => {
-                    b.classList.remove('btn-yellow');
-                    if (parseFloat(b.getAttribute('data-sl')) === slVal) {
-                        b.classList.add('btn-yellow');
-                    }
-                });
-                document.getElementById('header-sl').innerText = `-${slVal}%`;
+                syncSlUi(slVal);
                 updateState();
             }
         }
@@ -1535,6 +1553,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             document.getElementById('pine-pred-look').value = ps.pred_look;
             document.getElementById('pine-pivot-len').value = ps.pivot_len;
             document.getElementById('pine-fib-choice').value = ps.fib_choice;
+            if (ps.fixed_sl_pct !== undefined) {
+                document.getElementById('pine-fixed-sl-pct').value = ps.fixed_sl_pct;
+            }
             document.getElementById('pine-use-fixed-tp').checked = !!ps.use_fixed_tp;
             document.getElementById('pine-fixed-tp-pct').value = ps.fixed_tp_pct;
             document.getElementById('pine-use-trailing').checked = !!ps.use_trailing;
@@ -1558,6 +1579,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 pred_look: parseInt(document.getElementById('pine-pred-look').value, 10),
                 pivot_len: parseInt(document.getElementById('pine-pivot-len').value, 10),
                 fib_choice: document.getElementById('pine-fib-choice').value,
+                fixed_sl_pct: parseFloat(document.getElementById('pine-fixed-sl-pct').value),
                 use_fixed_tp: document.getElementById('pine-use-fixed-tp').checked,
                 fixed_tp_pct: parseFloat(document.getElementById('pine-fixed-tp-pct').value),
                 use_trailing: document.getElementById('pine-use-trailing').checked,
@@ -1580,6 +1602,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             let statusEl = document.getElementById('pine-save-status');
             if (data.status === 'success') {
                 applyPineFormValues(data.pine_settings);
+                if (data.pine_settings && data.pine_settings.fixed_sl_pct !== undefined) {
+                    syncSlUi(data.pine_settings.fixed_sl_pct);
+                }
                 statusEl.style.color = 'var(--green)';
                 statusEl.innerText = 'Uložené! Skener teraz počíta BUY a SELL podľa nových nastavení.';
                 updateState();
@@ -1598,6 +1623,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 pred_look: 3,
                 pivot_len: 2,
                 fib_choice: "0.786",
+                fixed_sl_pct: 1.5,
                 use_fixed_tp: false,
                 fixed_tp_pct: 1.5,
                 use_trailing: true,
@@ -1645,6 +1671,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 document.getElementById('current-stage').innerText = data.current_stage;
                 document.getElementById('header-tf').innerText = data.current_tf;
                 document.getElementById('header-sl').innerText = `-${data.fixed_sl_pct}%`;
+                document.querySelectorAll('.sl-btn').forEach(b => {
+                    b.classList.remove('btn-yellow');
+                    if (Math.abs(parseFloat(b.getAttribute('data-sl')) - parseFloat(data.fixed_sl_pct)) < 1e-6) {
+                        b.classList.add('btn-yellow');
+                    }
+                });
                 if (data.pine_settings) {
                     document.getElementById('pine-active-badge').innerText = `REŽIM: ${data.pine_settings.mode_choice}`;
                 }
