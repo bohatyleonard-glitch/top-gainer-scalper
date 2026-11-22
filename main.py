@@ -77,11 +77,11 @@ TOP_LIQUID_SYMBOLS = [
 ]
 
 SETTINGS = {
-    "fixed_sl_pct": 1.5,            # Pevny Stop-Loss (-1.5 % od vstupu)
-    "use_fixed_tp": False,          # Volitelny pevny Take Profit v 2s monitore
-    "fixed_tp_pct": 1.5,            # Pevny Take Profit (+1.5 % od vstupu)
+    "fixed_sl_pct": 1.2,            # Pevny Stop-Loss (-1.2 % od vstupu pre vlnu 0.75-2%)
+    "use_fixed_tp": True,           # Volitelny pevny Take Profit v 2s monitore
+    "fixed_tp_pct": 1.8,            # Pevny Take Profit (+1.8 % od vstupu - horna zona vlny 0.75-2%)
     "mode_choice": "ALL_GREEN",     # "ALL_GREEN", "BREAKOUT", "FIB"
-    "strict_buy_filter": False,     # Prisnejsi BUY filter priamo na signalnej sviecke
+    "strict_buy_filter": True,      # Prisnejsi BUY filter priamo na signalnej sviecke
     "fast_len": 5,
     "slow_len": 20,
     "signal_len": 9,
@@ -89,12 +89,12 @@ SETTINGS = {
     "pivot_len": 2,
     "fib_choice": "0.786",
     "use_trailing": True,
-    "trail_pct": 1.5,
+    "trail_pct": 1.2,
     "use_breakeven": True,
-    "be_trigger_pct": 0.35,
+    "be_trigger_pct": 0.45,
     "use_trailing_tp": True,
     "ttp_trigger_pct": 0.8,
-    "ttp_callback_pct": 0.2,
+    "ttp_callback_pct": 0.25,
     "use_ha_exit": True,
     "ha_exit_consecutive": 2,
     "use_btc_filter": True,
@@ -494,6 +494,12 @@ def get_market_regime_and_sideways(bar_tf: str) -> tuple[str, bool]:
 
 def update_top_liquid_symbols():
     global TOP_LIQUID_SYMBOLS
+    fallback_symbols = [
+        "SOL-USDC", "SUI-USDC", "XRP-USDC", "ADA-USDC", "AVAX-USDC",
+        "LINK-USDC", "DOGE-USDC", "PEPE-USDC", "NEAR-USDC", "RUNE-USDC",
+        "RENDER-USDC", "APT-USDC", "ARB-USDC", "OP-USDC", "INJ-USDC",
+        "TIA-USDC", "SEI-USDC", "DOT-USDC", "ATOM-USDC", "UNI-USDC"
+    ]
     try:
         live_symbols = set()
         inst_res = okx_public_request("/api/v5/public/instruments?instType=SPOT")
@@ -519,17 +525,14 @@ def update_top_liquid_symbols():
                 if coin in ["BTC", "ETH"]:
                     continue
                 vol = safe_float(t.get("volCcy24h", 0))
-                if vol >= 500000.0:
+                if vol >= 300000.0:
                     valid.append((inst_id, vol))
             valid.sort(key=lambda x: x[1], reverse=True)
             top_20 = [item[0] for item in valid[:20]]
-            if len(top_20) >= 5:
-                TOP_LIQUID_SYMBOLS = top_20
-            else:
-                fallback_clean = [s for s in TOP_LIQUID_SYMBOLS if s not in EXCLUDED_SYMBOLS]
-                merged = list(dict.fromkeys(top_20 + fallback_clean))
-                if merged:
-                    TOP_LIQUID_SYMBOLS = merged[:20]
+            clean_fallback = [s for s in fallback_symbols if s not in EXCLUDED_SYMBOLS and (not live_symbols or s in live_symbols)]
+            merged = list(dict.fromkeys(top_20 + clean_fallback))
+            if merged:
+                TOP_LIQUID_SYMBOLS = merged[:20]
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizacii top symbolov: {e}")
 
@@ -537,13 +540,17 @@ def update_top_liquid_symbols():
 # --- AI SAMOUCIACI MODUL: ZBER DAT, HODNOTENIE RIZIKA & ZASTAVENIE ZLYCH OBCHODOV ---
 
 def collect_market_context(symbol: str, bar_tf: str) -> dict:
-    """Ziska trhove informacie a metriky sviecok / volatility / objemu pre AI vyhodnotenie."""
+    """Ziska trhove informacie a metriky sviecok / volatility / objemu + Pine indikatora pre AI vyhodnotenie."""
     ctx = {
         "symbol": symbol,
         "tf": bar_tf.upper(),
         "regime": MARKET_REGIME,
         "is_sideways": IS_SIDEWAYS_MARKET,
         "oscillator": 0.0,
+        "signal_line": 0.0,
+        "osc_slope": 0.0,
+        "mode_choice": SETTINGS.get("mode_choice", "ALL_GREEN"),
+        "strict_buy_filter": bool(SETTINGS.get("strict_buy_filter", False)),
         "momentum": "SLABÉ",
         "volatility_pct": 0.0,
         "last_candle_bullish": False,
@@ -554,6 +561,10 @@ def collect_market_context(symbol: str, bar_tf: str) -> dict:
     cached = MARKET_SCANNER_CACHE.get(coin_key)
     if cached:
         ctx["oscillator"] = safe_float(cached.get("oscillator", 0.0))
+        ctx["signal_line"] = safe_float(cached.get("signal_line", 0.0))
+        ctx["osc_slope"] = safe_float(cached.get("osc_slope", 0.0))
+        ctx["mode_choice"] = cached.get("mode_choice", SETTINGS.get("mode_choice", "ALL_GREEN"))
+        ctx["strict_buy_filter"] = bool(cached.get("strict_buy_filter", SETTINGS.get("strict_buy_filter", False)))
         ctx["momentum"] = cached.get("momentum", "SLABÉ")
         ctx["price"] = safe_float(cached.get("price", 0.0))
 
@@ -583,7 +594,7 @@ def ai_evaluate_trade_candidate(symbol: str, bar_tf: str) -> dict:
     AI vyhodnoti planovany vstup do obchodu na zaklade:
     1) historickej uspesnosti daneho paru a rezimu trhu,
     2) podobnosti s ulozenymi zlymi / falosnymi obchodmi na disku,
-    3) aktualneho stavu trhu (bocny trh, slabe momentum, extremna volatilita).
+    3) aktualneho stavu trhu a hodnot Pine Script indikatora.
     """
     global AI_MEMORY
     ctx = collect_market_context(symbol, bar_tf)
@@ -608,6 +619,10 @@ def ai_evaluate_trade_candidate(symbol: str, bar_tf: str) -> dict:
     if ctx["vol_ratio"] < 0.75:
         risk_score += 0.12
         reasons.append(f"Nízky objem sviečky ({ctx['vol_ratio']}x priemer)")
+
+    if ctx.get("osc_slope", 0.0) <= 0:
+        risk_score += 0.12
+        reasons.append("Slabnúci sklon Pine oscilátora")
 
     if ctx["volatility_pct"] > 3.5:
         risk_score += 0.18
@@ -646,10 +661,11 @@ def ai_evaluate_trade_candidate(symbol: str, bar_tf: str) -> dict:
         same_sym = (pat.get("symbol") == symbol)
         same_regime = (pat.get("regime") == ctx["regime"])
         same_mom = (pat.get("momentum") == ctx["momentum"])
-        if same_sym and same_regime:
-            similar_bad += 1.0
-        elif same_regime and same_mom:
-            similar_bad += 0.5
+        same_mode = (pat.get("mode_choice", ctx.get("mode_choice")) == ctx.get("mode_choice"))
+        if same_sym and same_regime and same_mode:
+            similar_bad += 1.2
+        elif same_regime and same_mom and same_mode:
+            similar_bad += 0.6
 
     if similar_bad >= 2.0:
         risk_score += 0.24
@@ -696,6 +712,10 @@ def ai_learn_from_closed_trade(trade: dict, pnl_pct: float, pnl_usdc: float, rea
         "regime": MARKET_REGIME,
         "is_sideways": IS_SIDEWAYS_MARKET,
         "oscillator": 0.0,
+        "signal_line": 0.0,
+        "osc_slope": 0.0,
+        "mode_choice": SETTINGS.get("mode_choice", "ALL_GREEN"),
+        "strict_buy_filter": bool(SETTINGS.get("strict_buy_filter", False)),
         "momentum": "SLABÉ",
         "volatility_pct": 0.0,
         "vol_ratio": 1.0
@@ -743,6 +763,10 @@ def ai_learn_from_closed_trade(trade: dict, pnl_pct: float, pnl_usdc: float, rea
         "tf": tf,
         "regime": regime,
         "is_sideways": bool(entry_ctx.get("is_sideways", False)),
+        "oscillator": entry_ctx.get("oscillator", 0.0),
+        "osc_slope": entry_ctx.get("osc_slope", 0.0),
+        "mode_choice": entry_ctx.get("mode_choice", SETTINGS.get("mode_choice", "ALL_GREEN")),
+        "strict_buy_filter": bool(entry_ctx.get("strict_buy_filter", False)),
         "momentum": entry_ctx.get("momentum", "SLABÉ"),
         "volatility_pct": entry_ctx.get("volatility_pct", 0.0),
         "vol_ratio": entry_ctx.get("vol_ratio", 1.0),
@@ -758,6 +782,10 @@ def ai_learn_from_closed_trade(trade: dict, pnl_pct: float, pnl_usdc: float, rea
             "tf": tf,
             "regime": regime,
             "is_sideways": bool(entry_ctx.get("is_sideways", False)),
+            "oscillator": entry_ctx.get("oscillator", 0.0),
+            "osc_slope": entry_ctx.get("osc_slope", 0.0),
+            "mode_choice": entry_ctx.get("mode_choice", SETTINGS.get("mode_choice", "ALL_GREEN")),
+            "strict_buy_filter": bool(entry_ctx.get("strict_buy_filter", False)),
             "momentum": entry_ctx.get("momentum", "SLABÉ"),
             "volatility_pct": entry_ctx.get("volatility_pct", 0.0),
             "vol_ratio": entry_ctx.get("vol_ratio", 1.0),
@@ -773,6 +801,93 @@ def ai_learn_from_closed_trade(trade: dict, pnl_pct: float, pnl_usdc: float, rea
         log_event(f"🧠 AI uložila úspešný obchod {symbol} ({regime}/{tf}, PnL {pnl_pct:+.2f}%) na disk.")
 
     save_ai_memory()
+
+
+def ai_pretrain_from_chart_history(bar_tf: str = "15m", max_symbols: int = 12):
+    """
+    Stiahne historicke sviecky z OKX, nasimuluje na nich impulzy podla Pine logiky
+    a ulozi ziskove / stratove vzory do AI_MEMORY na disk.
+    """
+    global AI_MEMORY
+    learned_wins = 0
+    learned_losses = 0
+
+    for symbol in TOP_LIQUID_SYMBOLS[:max_symbols]:
+        try:
+            url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=120"
+            res = okx_public_request(url)
+            if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 40:
+                continue
+
+            candles = res["data"]
+            candles.reverse()
+            closes = [safe_float(c[4]) for c in candles]
+            highs = [safe_float(c[2]) for c in candles]
+            lows = [safe_float(c[3]) for c in candles]
+            vols = [safe_float(c[5]) for c in candles]
+
+            ema9 = calc_ema_series(closes, 9)
+            ema20 = calc_ema_series(closes, 20)
+            sl_pct = safe_float(SETTINGS.get("fixed_sl_pct", 1.2), 1.2)
+            tp_pct = 0.75
+
+            for i in range(22, len(closes) - 8):
+                avg_vol = sum(vols[i - 8:i]) / 8.0
+                if avg_vol <= 0:
+                    continue
+                vol_ratio = vols[i] / avg_vol
+                if not (closes[i] > ema9[i] > ema20[i] and closes[i] > closes[i - 1] and vol_ratio >= 1.1):
+                    continue
+
+                entry_p = closes[i]
+                sl_p = entry_p * (1.0 - sl_pct / 100.0)
+                tp_p = entry_p * (1.0 + tp_pct / 100.0)
+                outcome_pnl = 0.0
+
+                for j in range(i + 1, min(i + 9, len(closes))):
+                    if lows[j] <= sl_p:
+                        outcome_pnl = -sl_pct
+                        break
+                    if highs[j] >= tp_p:
+                        outcome_pnl = tp_pct
+                        break
+                else:
+                    outcome_pnl = ((closes[min(i + 8, len(closes) - 1)] - entry_p) / entry_p) * 100.0
+
+                regime_est = "BULL" if closes[i] >= ema20[i] else "BEAR"
+                mom_est = "SILNÉ" if vol_ratio >= 1.2 else "SLABÉ"
+                vol_pct = round(((highs[i] - lows[i]) / max(lows[i], 1e-9)) * 100.0, 3)
+
+                if outcome_pnl <= -0.3:
+                    AI_MEMORY.setdefault("bad_trade_patterns", []).append({
+                        "time": get_sk_time_str(),
+                        "symbol": symbol,
+                        "tf": bar_tf.upper(),
+                        "regime": regime_est,
+                        "is_sideways": False,
+                        "oscillator": 0.0,
+                        "osc_slope": 0.0,
+                        "mode_choice": SETTINGS.get("mode_choice", "ALL_GREEN"),
+                        "strict_buy_filter": bool(SETTINGS.get("strict_buy_filter", True)),
+                        "momentum": mom_est,
+                        "volatility_pct": vol_pct,
+                        "vol_ratio": round(vol_ratio, 2),
+                        "pnl_pct": round(outcome_pnl, 2),
+                        "pnl_usdc": 0.0,
+                        "reason": "AI Chart Pretrain (História grafu)"
+                    })
+                    learned_losses += 1
+                elif outcome_pnl >= tp_pct:
+                    learned_wins += 1
+        except Exception:
+            continue
+
+    if learned_losses > 0 or learned_wins > 0:
+        save_ai_memory()
+        log_event(
+            f"📚 AI samotréning z grafu ({bar_tf.upper()}) dokončený: "
+            f"{learned_wins} ziskových vĺn, {learned_losses} zlých vzorov uložených na disk."
+        )
 
 
 def calculate_stats():
@@ -814,6 +929,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 30:
             MARKET_SCANNER_CACHE[coin_key] = {
                 "symbol": symbol, "price": 0.0, "oscillator": 0.0,
+                "signal_line": 0.0, "predicted_next": 0.0, "osc_slope": 0.0,
+                "mode_choice": SETTINGS.get("mode_choice", "ALL_GREEN"),
+                "strict_buy_filter": bool(SETTINGS.get("strict_buy_filter", False)),
                 "momentum": "SLABÉ", "impulse": "ČAKÁ", "trade_status": "---",
                 "be_status": "VYPNUTÝ", "ttp_status": "VYPNUTÝ", "ts_status": "VYPNUTÝ",
                 "exec_signal": "ČAKAJ", "signal": "⚠️ CHYBA DÁT", "is_green": False
@@ -1005,6 +1123,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
         curr_close = ha_closes[-1]
         curr_osc = oscillator[-1]
+        curr_sig = signal_line[-1]
+        curr_pred = predicted_next[-1]
+        curr_slope = round(curr_pred - curr_osc, 2)
         is_in_trade = coin_key in ACTIVE_TRADES
 
         momentum_str = "SILNÉ" if last_cond_volume_bullish else "SLABÉ"
@@ -1029,6 +1150,11 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "symbol": symbol,
             "price": curr_close,
             "oscillator": round(curr_osc, 2),
+            "signal_line": round(curr_sig, 2),
+            "predicted_next": round(curr_pred, 2),
+            "osc_slope": curr_slope,
+            "mode_choice": mode_choice,
+            "strict_buy_filter": strict_buy_filter,
             "momentum": momentum_str,
             "impulse": impulse_str,
             "trade_status": trade_status_txt,
@@ -1044,6 +1170,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     except Exception:
         MARKET_SCANNER_CACHE[coin_key] = {
             "symbol": symbol, "price": 0.0, "oscillator": 0.0,
+            "signal_line": 0.0, "predicted_next": 0.0, "osc_slope": 0.0,
+            "mode_choice": SETTINGS.get("mode_choice", "ALL_GREEN"),
+            "strict_buy_filter": bool(SETTINGS.get("strict_buy_filter", False)),
             "momentum": "SLABÉ", "impulse": "ČAKÁ", "trade_status": "---",
             "be_status": "VYPNUTÝ", "ttp_status": "VYPNUTÝ", "ts_status": "VYPNUTÝ",
             "exec_signal": "ČAKAJ", "signal": "⚠️ VÝNIMKA", "is_green": False
@@ -1070,8 +1199,10 @@ async def autonomous_scanner_loop():
                 LAST_SIDEWAYS_ALERT_TS = now_ts
                 log_event(f"🔻 POZOR: BOČNÝ TRH zistený na TF {CURRENT_TIMEFRAME} (úzke rozpätie + časté kríženie EMA).")
                 send_telegram_msg(
-                    f"🔻 <b>POZOR: BOČNÝ TRH</b>\n"
-                    f"<b>TF:</b> {CURRENT_TIMEFRAME}\n"
+                    f"🔻 <b>POZOR: BOČNÝ TRH</b>
+"
+                    f"<b>TF:</b> {CURRENT_TIMEFRAME}
+"
                     f"Trh sa pohybuje v úzkom pásme s častými obratmi – AI sleduje riziko falošných signálov."
                 )
 
@@ -1229,12 +1360,18 @@ async def execute_autonomous_buy(okx_symbol: str, ai_context: dict = None):
             ]
         }
         send_telegram_msg(
-            f"🟢 <b>PINE BUY + AI NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
-            f"<b>Pár:</b> {okx_symbol}\n"
-            f"<b>Vstup:</b> {current_price:.4f}\n"
-            f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
-            f"🛡️ <b>Fixný Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})\n"
-            + (f"🎯 <b>Fixný Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})\n" if use_fixed_tp else "")
+            f"🟢 <b>PINE BUY + AI NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>
+"
+            f"<b>Pár:</b> {okx_symbol}
+"
+            f"<b>Vstup:</b> {current_price:.4f}
+"
+            f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC
+"
+            f"🛡️ <b>Fixný Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})
+"
+            + (f"🎯 <b>Fixný Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})
+" if use_fixed_tp else "")
             + f"🧠 <b>AI ochrana:</b> Aktívna (pamäť uložená na disku)",
             reply_markup=inline_keyboard
         )
@@ -1271,7 +1408,9 @@ async def close_trade_position(coin: str, reason: str):
 
             emoji = "🎯" if pnl_usdc >= 0 else "🚨"
             log_event(f"{emoji} Uzavretá pozícia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-            send_telegram_msg(f"{emoji} <b>UZAVRETÁ POZÍCIA ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+            send_telegram_msg(f"{emoji} <b>UZAVRETÁ POZÍCIA ({reason})</b>
+<b>Pár:</b> {symbol}
+<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
         except Exception as e:
             log_event(f"⚠️ Chyba pri zatvarani {symbol}: {e}")
         finally:
@@ -1346,6 +1485,8 @@ async def fixed_stoploss_monitor_loop():
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
+    if len(AI_MEMORY.get("bad_trade_patterns", [])) < 10:
+        ai_pretrain_from_chart_history(CURRENT_TIMEFRAME.lower(), max_symbols=12)
     log_event(f"🚀 APEX MATRIX_SCALPER_v1_BOT + AI Engine spustený. Úložisko: {DATA_DIR} ({get_disk_usage_mb()} MB / 1024 MB).")
     monitor_task = asyncio.create_task(fixed_stoploss_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
@@ -1620,7 +1761,12 @@ async def manual_buy(coin: str):
             }
             tp_info = f" | Fixný TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
             log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$ | Fixný SL: -{fixed_sl_pct}%{tp_info}")
-            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n🛡️ <b>Fixný SL:</b> -{fixed_sl_pct}%" + (f"\n🎯 <b>Fixný TP:</b> +{fixed_tp_pct}%" if use_fixed_tp else ""))
+            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>
+<b>Pár:</b> {okx_symbol}
+<b>Vstup:</b> {current_price:.4f}
+<b>Investícia:</b> {actual_spent_usdc:.2f} USDC
+🛡️ <b>Fixný SL:</b> -{fixed_sl_pct}%" + (f"
+🎯 <b>Fixný TP:</b> +{fixed_tp_pct}%" if use_fixed_tp else ""))
 
             return JSONResponse({"status": "success", "symbol": okx_symbol})
         except Exception as e:
@@ -2160,23 +2306,23 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         async function resetPineDefaults() {
             const defaults = {
                 mode_choice: "ALL_GREEN",
-                strict_buy_filter: false,
+                strict_buy_filter: true,
                 fast_len: 5,
                 slow_len: 20,
                 signal_len: 9,
                 pred_look: 3,
                 pivot_len: 2,
                 fib_choice: "0.786",
-                fixed_sl_pct: 1.5,
-                use_fixed_tp: false,
-                fixed_tp_pct: 1.5,
+                fixed_sl_pct: 1.2,
+                use_fixed_tp: true,
+                fixed_tp_pct: 1.8,
                 use_trailing: true,
-                trail_pct: 1.5,
+                trail_pct: 1.2,
                 use_breakeven: true,
-                be_trigger_pct: 0.35,
+                be_trigger_pct: 0.45,
                 use_trailing_tp: true,
                 ttp_trigger_pct: 0.8,
-                ttp_callback_pct: 0.2,
+                ttp_callback_pct: 0.25,
                 use_ha_exit: true,
                 ha_exit_consecutive: 2,
                 ai_enabled: true,
