@@ -297,13 +297,14 @@ def format_amount(raw_amount: float, lot_sz: float, min_sz: float) -> str | None
     decimals = len(lot_str.split(".")[1]) if "." in lot_str else 0
     return f"{amt:.{decimals}f}"
 
-def record_closed_trade(symbol: str, pnl_pct: float, pnl_usdc: float, reason: str):
+def record_closed_trade(symbol: str, pnl_pct: float, pnl_usdc: float, reason: str, entry_features: list[float] | None = None):
     CLOSED_TRADES_HISTORY.insert(0, {
         "time": get_sk_time_str(),
         "symbol": symbol,
         "pnl_pct": round(pnl_pct, 2),
         "pnl_usdc": round(pnl_usdc, 2),
         "reason": reason,
+        "entry_features": entry_features,
     })
     if len(CLOSED_TRADES_HISTORY) > 200:
         del CLOSED_TRADES_HISTORY[200:]
@@ -619,6 +620,20 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         AI_STATE["_last_train_ts"] = now_ts
         save_ai_model()
 
+        for t in reversed(CLOSED_TRADES_HISTORY[:30]):
+            t_feats = t.get("entry_features")
+            if t_feats and len(t_feats) == 6:
+                y_real = 1.0 if safe_float(t.get("pnl_usdc")) > 0 else 0.0
+                for _ in range(8):
+                    z = AI_STATE["bias"] + sum(AI_STATE["weights"][k] * t_feats[k] for k in range(6))
+                    err = _sigmoid(z) - y_real
+                    for k in range(6):
+                        AI_STATE["weights"][k] -= 0.12 * (err * t_feats[k] + 0.03 * AI_STATE["weights"][k])
+                    AI_STATE["bias"] -= 0.12 * err
+                AI_STATE["weights"] = [round(w, 5) for w in AI_STATE["weights"]]
+                AI_STATE["bias"] = round(AI_STATE["bias"], 5)
+                save_ai_model()
+
         acc_pct = round((correct / len(dataset)) * 100.0, 1)
         log_event(f"🧠 AI model natrénovaný na {symbol} [{bar_tf.upper()}]: {len(dataset)} vzoriek | Historický úspech: {AI_STATE['win_rate_train']}% | Presnosť: {acc_pct}%.")
         return {"ok": True, "samples": len(dataset), "win_rate": AI_STATE["win_rate_train"], "accuracy": acc_pct}
@@ -633,6 +648,39 @@ def predict_ai_probability(feats: list[float]) -> float | None:
     z = b + sum(w[k] * feats[k] for k in range(min(len(w), len(feats))))
     z = max(-4.0, min(4.0, z))
     return round(_sigmoid(z), 3)
+
+def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float):
+    global AI_STATE
+    if not features or len(features) < 6:
+        return
+    y = 1.0 if pnl_usdc > 0 else 0.0
+    weights = list(AI_STATE.get("weights", [0.0] * 6))
+    while len(weights) < 6:
+        weights.append(0.0)
+    bias = float(AI_STATE.get("bias", 0.0))
+    lr = 0.15
+    reg = 0.03
+
+    for _ in range(12):
+        z = bias + sum(weights[k] * features[k] for k in range(6))
+        pred_p = _sigmoid(z)
+        err = pred_p - y
+        for k in range(6):
+            weights[k] -= lr * (err * features[k] + reg * weights[k])
+        bias -= lr * err
+
+    live_cnt = int(AI_STATE.get("live_learned_count", 0)) + 1
+    live_wins = int(AI_STATE.get("live_wins_count", 0)) + (1 if pnl_usdc > 0 else 0)
+    AI_STATE["weights"] = [round(w, 5) for w in weights]
+    AI_STATE["bias"] = round(bias, 5)
+    AI_STATE["live_learned_count"] = live_cnt
+    AI_STATE["live_wins_count"] = live_wins
+    AI_STATE["trained_at"] = get_sk_time_str()
+    save_ai_model()
+    log_event(
+        f"🧩 AI sa doučilo z reálneho obchodu ({'ZISK' if pnl_usdc > 0 else 'STRATA'} {pnl_usdc:+.2f} $) | Reálnych vzoriek: {live_cnt} ({live_wins}W)",
+        persist=True,
+    )
 
 # --- VYHODNOCOVANIE PINE SIGNÁLOV + KVALITA + AI ---
 
@@ -913,7 +961,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "is_green": final_buy
         }
 
-        return {"buy": final_buy, "sell": last_bar_sell, "sell_reason": last_bar_sell_reason, "ai_prob": ai_prob, "block_reason": block_reason}
+        return {"buy": final_buy, "sell": last_bar_sell, "sell_reason": last_bar_sell_reason, "ai_prob": ai_prob, "block_reason": block_reason, "features": feats}
     except Exception:
         MARKET_SCANNER_CACHE[coin_key] = {
             "symbol": symbol, "price": 0.0, "oscillator": 0.0,
@@ -981,7 +1029,7 @@ async def autonomous_scanner_loop():
                         if sig["buy"]:
                             prob_txt = f" (AI: {sig['ai_prob']*100:.1f}%)" if sig.get("ai_prob") is not None else ""
                             log_event(f"🚀 PINE SCRIPT + AI 'BUY' SIGNÁL PRE {symbol}{prob_txt}!")
-                            await execute_autonomous_buy(symbol, ai_prob=sig.get("ai_prob"))
+                            await execute_autonomous_buy(symbol, ai_prob=sig.get("ai_prob"), entry_features=sig.get("features"))
                         elif sig.get("block_reason"):
                             log_event(f"🛡️ Signál {symbol} [{CURRENT_TIMEFRAME}] pozastavený: {sig['block_reason']}")
 
@@ -998,7 +1046,7 @@ async def top_symbols_updater_loop():
             pass
         await asyncio.sleep(3600)
 
-async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None):
+async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, entry_features: list[float] | None = None):
     global ACTIVE_TRADES, LAST_TRADE_TIME
     async with trade_lock:
         coin_name = okx_symbol.split("-")[0]
@@ -1077,7 +1125,8 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None):
             "live_pnl_pct": 0.0,
             "live_pnl_usdc": 0.0,
             "tf": CURRENT_TIMEFRAME,
-            "ai_prob": ai_prob
+            "ai_prob": ai_prob,
+            "entry_features": entry_features
         }
 
         tp_info = f" | Fixný TP: +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp else ""
@@ -1129,7 +1178,8 @@ async def close_trade_position(coin: str, reason: str):
             invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
             pnl_usdc = invested * (pnl_pct / 100.0)
 
-            record_closed_trade(symbol, pnl_pct, pnl_usdc, reason)
+            record_closed_trade(symbol, pnl_pct, pnl_usdc, reason, trade.get("entry_features"))
+            learn_from_closed_trade(trade.get("entry_features"), pnl_usdc)
             LAST_TRADE_TIME[coin] = datetime.now().timestamp()
 
             emoji = "🎯" if pnl_usdc >= 0 else "🚨"
