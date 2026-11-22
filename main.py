@@ -153,18 +153,31 @@ def send_telegram_msg(text: str, reply_markup: dict | None = None):
 
 def _http_get_json(url: str, headers: dict | None = None) -> dict:
     try:
-        req_headers = {"User-Agent": "APEX-AI-BOT/1.0"}
+        req_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+        }
         if headers:
             req_headers.update(headers)
         req = urllib.request.Request(url, headers=req_headers, method="GET")
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="ignore")[:200]
+        except Exception:
+            pass
+        return {"code": str(e.code), "msg": f"HTTP {e.code} {e.reason}: {err_body}", "data": []}
     except Exception as e:
         return {"code": "-1", "msg": str(e), "data": []}
 
 def okx_public_request(path_and_query: str) -> dict:
-    url = f"{OKX_PUBLIC_URL}{path_and_query}"
-    return _http_get_json(url)
+    for base in [OKX_PUBLIC_URL, "https://www.okx.com", "https://aws.okx.com"]:
+        res = _http_get_json(f"{base.rstrip('/')}{path_and_query}")
+        if res.get("code") == "0":
+            return res
+    return _http_get_json(f"{OKX_PUBLIC_URL.rstrip('/')}{path_and_query}")
 
 def okx_request(method: str, request_path: str, body: str = "") -> dict:
     if not OKX_API_KEY or not OKX_SECRET_KEY or not OKX_PASSPHRASE:
@@ -179,6 +192,8 @@ def okx_request(method: str, request_path: str, body: str = "") -> dict:
         ).digest()
         sign_b64 = base64.b64encode(sig).decode("utf-8")
         headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
             "Content-Type": "application/json",
             "OK-ACCESS-KEY": OKX_API_KEY,
             "OK-ACCESS-SIGN": sign_b64,
@@ -188,11 +203,32 @@ def okx_request(method: str, request_path: str, body: str = "") -> dict:
         if OKX_SIMULATED == "1":
             headers["x-simulated-trading"] = "1"
 
-        url = f"{OKX_BASE_URL}{request_path}"
+        bases = []
+        for b in [OKX_BASE_URL, "https://www.okx.com", "https://eea.okx.com"]:
+            b_clean = b.rstrip("/")
+            if b_clean and b_clean not in bases:
+                bases.append(b_clean)
+
+        last_err = {"code": "-1", "msg": "Neznáma chyba OKX", "data": []}
         data_bytes = body.encode("utf-8") if body else None
-        req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method.upper())
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        for base in bases:
+            try:
+                req = urllib.request.Request(f"{base}{request_path}", data=data_bytes, headers=headers, method=method.upper())
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    parsed = json.loads(resp.read().decode("utf-8"))
+                    if parsed.get("code") == "0":
+                        return parsed
+                    last_err = parsed
+            except urllib.error.HTTPError as e:
+                err_body = ""
+                try:
+                    err_body = e.read().decode("utf-8", errors="ignore")[:200]
+                except Exception:
+                    pass
+                last_err = {"code": str(e.code), "msg": f"HTTP {e.code} {e.reason}: {err_body}", "data": []}
+            except Exception as e:
+                last_err = {"code": "-1", "msg": str(e), "data": []}
+        return last_err
     except Exception as e:
         return {"code": "-1", "msg": str(e), "data": []}
 
