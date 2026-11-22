@@ -24,7 +24,7 @@ WEBHOOK_SECRET = "moje_tajne_heslo_123"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-# --- NASTAVENIA PODLA PINE SCRIPTU + FIXNY STOP-LOSS + JEDNODUCHE AI ---
+# --- NASTAVENIA PODLA PINE SCRIPTU + FIXNY SL / FIXNY TP + JEDNODUCHE AI ---
 
 ALLOWED_TIMEFRAMES = ["1m", "5m", "8m", "15m", "30m", "45m", "1h", "2h", "3h", "4h"]
 
@@ -52,6 +52,8 @@ TOP_LIQUID_SYMBOLS = [
 
 SETTINGS = {
     "fixed_sl_pct": 1.5,
+    "use_fixed_tp": False,
+    "fixed_tp_pct": 0.8,
     "mode_choice": "ALL_GREEN",
     "fast_len": 5,
     "slow_len": 20,
@@ -82,9 +84,9 @@ SETTINGS = {
 }
 
 AI_MEMORY = {
-    "samples": [],          # zoznam nazbieranych obchodov: {key, symbol, tf, mode, osc_pos, pred_up, above_ema9, win, pnl_pct, time}
-    "pair_tf_stats": {},    # kluc "SYMBOL|TF|MODE" -> {wins, losses, bad_streak, blocked_until}
-    "feature_scores": {     # jednoduche skore priznakov (-1.0 az +1.0)
+    "samples": [],
+    "pair_tf_stats": {},
+    "feature_scores": {
         "osc_pos": 0.0,
         "pred_up": 0.0,
         "above_ema9": 0.0
@@ -173,10 +175,6 @@ def load_ai_memory():
 
 
 def check_ai_allows_buy(symbol: str, tf: str, features: dict):
-    """
-    Vracia (allowed: bool, reason: str, win_prob: float).
-    Ak sa rovnaky setup (par + TF + rezim) opakovane nevyplati, AI ho docasne zastavi.
-    """
     if not SETTINGS.get("use_ai_learning", True):
         return True, "AI vypnute", 0.5
 
@@ -196,7 +194,6 @@ def check_ai_allows_buy(symbol: str, tf: str, features: dict):
         val = 1.0 if features.get(feat_name) else -0.5
         raw_score += val * safe_float(scores.get(feat_name), 0.0)
 
-    # Jemny vplyv historie konkretneho paru/TF, ak uz ma aspon 2 obchody
     if stat and (stat.get("wins", 0) + stat.get("losses", 0)) >= 2:
         w = stat.get("wins", 0)
         l = stat.get("losses", 0)
@@ -205,7 +202,6 @@ def check_ai_allows_buy(symbol: str, tf: str, features: dict):
 
     win_prob = 1.0 / (1.0 + math.exp(-max(-5.0, min(5.0, raw_score))))
 
-    # Kym nema AI nazbieranych aspon 6 obchodov, neblokuje kvoli nizkej pravdepodobnosti
     if len(AI_MEMORY.get("samples", [])) >= 6:
         min_prob = safe_float(SETTINGS.get("ai_min_win_prob"), 0.45)
         if win_prob < min_prob:
@@ -215,7 +211,6 @@ def check_ai_allows_buy(symbol: str, tf: str, features: dict):
 
 
 def learn_from_closed_trade(trade: dict, pnl_pct: float, pnl_usdc: float, reason: str):
-    """Ulozi uzavrety obchod do AI pamate, upravi vahy a pri opakovanych stratach zablokuje setup."""
     if not SETTINGS.get("use_ai_learning", True):
         return
 
@@ -889,12 +884,18 @@ async def execute_autonomous_buy(okx_symbol: str, ai_features: dict = None):
         actual_spent_usdc = coin_amount * current_price
         fixed_sl_pct = SETTINGS.get("fixed_sl_pct", 1.5)
         fixed_sl_price = current_price * (1.0 - (fixed_sl_pct / 100.0))
+        use_fixed_tp = bool(SETTINGS.get("use_fixed_tp", False))
+        fixed_tp_pct = float(SETTINGS.get("fixed_tp_pct", 0.8))
+        fixed_tp_price = current_price * (1.0 + (fixed_tp_pct / 100.0)) if use_fixed_tp else None
 
         ACTIVE_TRADES[coin_name] = {
             "entry_price": current_price,
             "current_price": current_price,
             "fixed_sl_price": fixed_sl_price,
             "fixed_sl_pct": fixed_sl_pct,
+            "use_fixed_tp": use_fixed_tp,
+            "fixed_tp_pct": fixed_tp_pct,
+            "fixed_tp_price": fixed_tp_price,
             "amount": coin_amount,
             "initial_amount": coin_amount,
             "lot_sz": lot_sz,
@@ -910,7 +911,8 @@ async def execute_autonomous_buy(okx_symbol: str, ai_features: dict = None):
             "ai_features": ai_features or {"osc_pos": True, "pred_up": True, "above_ema9": True}
         }
 
-        log_event(f"NAKUP [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Investicia: {actual_spent_usdc:.2f} USDC | Fixny SL: -{fixed_sl_pct}%")
+        tp_info = f" | Fixny TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
+        log_event(f"NAKUP [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Investicia: {actual_spent_usdc:.2f} USDC | Fixny SL: -{fixed_sl_pct}%{tp_info}")
 
         inline_keyboard = {
             "inline_keyboard": [
@@ -921,11 +923,12 @@ async def execute_autonomous_buy(okx_symbol: str, ai_features: dict = None):
             ]
         }
         send_telegram_msg(
-            f"<b>PINE BUY NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
-            f"<b>Par:</b> {okx_symbol}\n"
-            f"<b>Vstup:</b> {current_price:.4f}\n"
-            f"<b>Investicia:</b> {actual_spent_usdc:.2f} USDC\n"
-            f"<b>Fixny Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})",
+            f"<b>PINE BUY NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\\n"
+            f"<b>Par:</b> {okx_symbol}\\n"
+            f"<b>Vstup:</b> {current_price:.4f}\\n"
+            f"<b>Investicia:</b> {actual_spent_usdc:.2f} USDC\\n"
+            f"<b>Fixny Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})"
+            + (f"\\n<b>Fixny Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp and fixed_tp_price else ""),
             reply_markup=inline_keyboard
         )
 
@@ -960,7 +963,7 @@ async def close_trade_position(coin: str, reason: str):
             LAST_TRADE_TIME[coin] = datetime.now().timestamp()
 
             log_event(f"Uzavreta pozicia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-            send_telegram_msg(f"<b>UZAVRETA POZICIA ({reason})</b>\n<b>Par:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+            send_telegram_msg(f"<b>UZAVRETA POZICIA ({reason})</b>\\n<b>Par:</b> {symbol}\\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
         except Exception as e:
             log_event(f"Chyba pri zatvarani {symbol}: {e}")
         finally:
@@ -968,7 +971,7 @@ async def close_trade_position(coin: str, reason: str):
                 del ACTIVE_TRADES[coin]
 
 
-# --- MONITOR RIZIK (JEDINA FIXNA POISTKA: PEVNY STOP-LOSS) ---
+# --- MONITOR RIZIK (FIXNY STOP-LOSS & VOLITELNY FIXNY TAKE PROFIT) ---
 
 async def fixed_stoploss_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
@@ -979,7 +982,8 @@ async def fixed_stoploss_monitor_loop():
                 max_p = SETTINGS.get("max_parallel", 1)
                 sl_p = SETTINGS.get("fixed_sl_pct", 1.5)
                 ai_cnt = len(AI_MEMORY.get("samples", []))
-                CURRENT_STAGE = f"STAV: Bot aktivny (Max {max_p}x | Fixny SL: -{sl_p}% | AI obchodov: {ai_cnt}). Cakam na BUY/SELL..."
+                tp_txt = f" | Fixny TP: +{SETTINGS['fixed_tp_pct']}%" if SETTINGS.get("use_fixed_tp", False) else ""
+                CURRENT_STAGE = f"STAV: Bot aktivny (Max {max_p}x | Fixny SL: -{sl_p}%{tp_txt} | AI obchodov: {ai_cnt}). Cakam na BUY/SELL..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastaveny."
             await asyncio.sleep(2)
@@ -1011,10 +1015,19 @@ async def fixed_stoploss_monitor_loop():
 
                     fixed_sl_price = trade["fixed_sl_price"]
                     fixed_sl_pct = trade["fixed_sl_pct"]
-                    CURRENT_STAGE = f"STAV: Pozicii: {len(ACTIVE_TRADES)} | {symbol} ({pnl_pct:+.2f}%) | Fixny SL: -{fixed_sl_pct}%"
+                    use_fixed_tp = bool(trade.get("use_fixed_tp", SETTINGS.get("use_fixed_tp", False)))
+                    fixed_tp_pct = float(trade.get("fixed_tp_pct", SETTINGS.get("fixed_tp_pct", 0.8)))
+                    fixed_tp_price = trade.get("fixed_tp_price")
+
+                    tp_stage = f" | TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
+                    CURRENT_STAGE = f"STAV: Pozicii: {len(ACTIVE_TRADES)} | {symbol} ({pnl_pct:+.2f}%) | Fixny SL: -{fixed_sl_pct}%{tp_stage}"
 
                     if current_price <= fixed_sl_price:
                         await close_trade_position(coin, f"Fixny Stop-Loss (-{fixed_sl_pct}%)")
+                        continue
+
+                    if use_fixed_tp and ((fixed_tp_price is not None and current_price >= fixed_tp_price) or pnl_pct >= fixed_tp_pct):
+                        await close_trade_position(coin, f"Fixny Take Profit (+{fixed_tp_pct}%)")
                         continue
         except Exception:
             pass
@@ -1144,6 +1157,9 @@ async def update_pine_settings(request: Request):
         SETTINGS["pivot_len"] = max(1, min(10, int(payload.get("pivot_len", SETTINGS["pivot_len"]))))
         SETTINGS["fib_choice"] = fib_val
 
+        SETTINGS["use_fixed_tp"] = bool(payload.get("use_fixed_tp", SETTINGS["use_fixed_tp"]))
+        SETTINGS["fixed_tp_pct"] = max(0.05, min(100.0, float(payload.get("fixed_tp_pct", SETTINGS["fixed_tp_pct"]))))
+
         SETTINGS["use_trailing"] = bool(payload.get("use_trailing", SETTINGS["use_trailing"]))
         SETTINGS["trail_pct"] = max(0.1, min(50.0, float(payload.get("trail_pct", SETTINGS["trail_pct"]))))
         SETTINGS["use_breakeven"] = bool(payload.get("use_breakeven", SETTINGS["use_breakeven"]))
@@ -1161,7 +1177,7 @@ async def update_pine_settings(request: Request):
         SETTINGS["ai_bad_cooldown_sec"] = max(60, min(86400, int(payload.get("ai_bad_cooldown_sec", SETTINGS["ai_bad_cooldown_sec"]))))
 
         MARKET_SCANNER_CACHE.clear()
-        log_event(f"Nastavenia aktualizovane (Rezim: {mode_val}, AI ucenie: {SETTINGS['use_ai_learning']}, Stop zlych opakovani: {SETTINGS['ai_block_bad_repeats']}).")
+        log_event(f"Nastavenia aktualizovane (Rezim: {mode_val}, Fixny TP: {SETTINGS['use_fixed_tp']} {SETTINGS['fixed_tp_pct']}%, AI: {SETTINGS['use_ai_learning']}).")
         return JSONResponse({"status": "success", "pine_settings": get_pine_settings_dict()})
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)})
@@ -1176,6 +1192,8 @@ def get_pine_settings_dict():
         "pred_look": SETTINGS["pred_look"],
         "pivot_len": SETTINGS["pivot_len"],
         "fib_choice": SETTINGS["fib_choice"],
+        "use_fixed_tp": SETTINGS["use_fixed_tp"],
+        "fixed_tp_pct": SETTINGS["fixed_tp_pct"],
         "use_trailing": SETTINGS["use_trailing"],
         "trail_pct": SETTINGS["trail_pct"],
         "use_breakeven": SETTINGS["use_breakeven"],
@@ -1245,12 +1263,18 @@ async def manual_buy(coin: str):
             actual_spent_usdc = coin_amount * current_price
             fixed_sl_pct = SETTINGS.get("fixed_sl_pct", 1.5)
             fixed_sl_price = current_price * (1.0 - (fixed_sl_pct / 100.0))
+            use_fixed_tp = bool(SETTINGS.get("use_fixed_tp", False))
+            fixed_tp_pct = float(SETTINGS.get("fixed_tp_pct", 0.8))
+            fixed_tp_price = current_price * (1.0 + (fixed_tp_pct / 100.0)) if use_fixed_tp else None
 
             ACTIVE_TRADES[coin_upper] = {
                 "entry_price": current_price,
                 "current_price": current_price,
                 "fixed_sl_price": fixed_sl_price,
                 "fixed_sl_pct": fixed_sl_pct,
+                "use_fixed_tp": use_fixed_tp,
+                "fixed_tp_pct": fixed_tp_pct,
+                "fixed_tp_price": fixed_tp_price,
                 "amount": coin_amount,
                 "initial_amount": coin_amount,
                 "lot_sz": lot_sz,
@@ -1365,6 +1389,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
                     <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
                     <span>Fixny SL: <span id="header-sl" class="balance-tag">-{{ SETTINGS.fixed_sl_pct }}%</span></span>
+                    <span>Fixny TP: <span id="header-tp" class="balance-tag">{% if SETTINGS.use_fixed_tp %}+{{ SETTINGS.fixed_tp_pct }}%{% else %}OFF{% endif %}</span></span>
                     <span>AI pamäť: <span id="header-ai" class="balance-tag">0 obch.</span></span>
                 </p>
             </div>
@@ -1484,7 +1509,15 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </div>
 
                     <div class="pine-group">
-                        <div class="pine-group-title">3. Trailing Stop, BE & Trailing TP</div>
+                        <div class="pine-group-title">3. Fixny TP, Trailing Stop, BE & Trailing TP</div>
+                        <div class="pine-row">
+                            <label for="pine-use-fixed-tp">Zapnut Fixny TP</label>
+                            <input type="checkbox" id="pine-use-fixed-tp" class="pine-checkbox" {% if SETTINGS.use_fixed_tp %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-fixed-tp-pct">Fixny TP (%)</label>
+                            <input type="number" id="pine-fixed-tp-pct" class="pine-input" min="0.05" max="100.0" step="0.05" value="{{ SETTINGS.fixed_tp_pct }}">
+                        </div>
                         <div class="pine-row">
                             <label for="pine-use-trailing">Zapnut Trailing Stop</label>
                             <input type="checkbox" id="pine-use-trailing" class="pine-checkbox" {% if SETTINGS.use_trailing %}checked{% endif %}>
@@ -1558,7 +1591,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Active Positions Matrix (Pine SELL alebo Fixny SL)</div>
+            <div class="section-title">Active Positions Matrix (Pine SELL, Fixny TP alebo Fixny SL)</div>
             <div class="terminal-card">
                 <table>
                     <thead>
@@ -1726,6 +1759,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             document.getElementById('pine-pred-look').value = ps.pred_look;
             document.getElementById('pine-pivot-len').value = ps.pivot_len;
             document.getElementById('pine-fib-choice').value = ps.fib_choice;
+            document.getElementById('pine-use-fixed-tp').checked = !!ps.use_fixed_tp;
+            document.getElementById('pine-fixed-tp-pct').value = ps.fixed_tp_pct;
             document.getElementById('pine-use-trailing').checked = !!ps.use_trailing;
             document.getElementById('pine-trail-pct').value = ps.trail_pct;
             document.getElementById('pine-use-be').checked = !!ps.use_breakeven;
@@ -1751,6 +1786,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 pred_look: parseInt(document.getElementById('pine-pred-look').value, 10),
                 pivot_len: parseInt(document.getElementById('pine-pivot-len').value, 10),
                 fib_choice: document.getElementById('pine-fib-choice').value,
+                use_fixed_tp: document.getElementById('pine-use-fixed-tp').checked,
+                fixed_tp_pct: parseFloat(document.getElementById('pine-fixed-tp-pct').value),
                 use_trailing: document.getElementById('pine-use-trailing').checked,
                 trail_pct: parseFloat(document.getElementById('pine-trail-pct').value),
                 use_breakeven: document.getElementById('pine-use-be').checked,
@@ -1793,6 +1830,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 pred_look: 3,
                 pivot_len: 2,
                 fib_choice: "0.786",
+                use_fixed_tp: false,
+                fixed_tp_pct: 0.8,
                 use_trailing: true,
                 trail_pct: 1.5,
                 use_breakeven: true,
@@ -1842,6 +1881,11 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 document.getElementById('current-stage').innerText = data.current_stage;
                 document.getElementById('header-tf').innerText = data.current_tf;
                 document.getElementById('header-sl').innerText = `-${data.fixed_sl_pct}%`;
+                if (data.pine_settings) {
+                    document.getElementById('header-tp').innerText = data.pine_settings.use_fixed_tp
+                        ? `+${data.pine_settings.fixed_tp_pct}%`
+                        : "OFF";
+                }
 
                 if (data.ai) {
                     document.getElementById('header-ai').innerText = `${data.ai.collected_trades} obch. (${data.ai.ai_win_rate}%)`;
@@ -1862,11 +1906,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     let html = "";
                     for (let [coin, t] of Object.entries(data.active_trades)) {
                         let pnlClass = t.live_pnl_pct >= 0 ? "text-green" : "text-red";
+                        let tpSub = t.use_fixed_tp ? `<br><span style="font-size:0.6rem; color:var(--green);">TP: +${t.fixed_tp_pct}%</span>` : "";
                         html += `<tr>
                             <td><b>${t.market_pair}</b><br><span style="font-size:0.6rem; color:var(--text-muted);">TF: ${t.tf}</span></td>
                             <td>${t.entry_price.toFixed(4)}</td>
                             <td>${t.current_price.toFixed(4)}</td>
-                            <td class="text-red">${t.fixed_sl_price.toFixed(4)} (-${t.fixed_sl_pct}%)</td>
+                            <td class="text-red">${t.fixed_sl_price.toFixed(4)} (-${t.fixed_sl_pct}%)${tpSub}</td>
                             <td>${t.invested_usdc.toFixed(2)} USDC</td>
                             <td class="${pnlClass}">${t.live_pnl_pct >= 0 ? "+" : ""}${t.live_pnl_pct.toFixed(2)}% (${t.live_pnl_usdc >= 0 ? "+" : ""}${t.live_pnl_usdc.toFixed(2)} $)</td>
                         </tr>`;
@@ -1978,3 +2023,5 @@ async def get_state():
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+''')
+print("main.py updated with fixed TP control.")
