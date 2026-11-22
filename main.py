@@ -185,30 +185,32 @@ def okx_public_request(path_and_query: str) -> dict:
             return res
     return _http_get_json(f"{OKX_PUBLIC_URL.rstrip('/')}{path_and_query}")
 
+def _build_okx_auth_headers(method: str, request_path: str, body: str = "") -> dict:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    prehash = f"{ts}{method.upper()}{request_path}{body}"
+    sig = hmac.new(
+        OKX_SECRET_KEY.encode("utf-8"),
+        prehash.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    sign_b64 = base64.b64encode(sig).decode("utf-8")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "OK-ACCESS-KEY": OKX_API_KEY,
+        "OK-ACCESS-SIGN": sign_b64,
+        "OK-ACCESS-TIMESTAMP": ts,
+        "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
+    }
+    if OKX_SIMULATED == "1":
+        headers["x-simulated-trading"] = "1"
+    return headers
+
 def okx_request(method: str, request_path: str, body: str = "") -> dict:
     if not OKX_API_KEY or not OKX_SECRET_KEY or not OKX_PASSPHRASE:
         return {"code": "-1", "msg": "Chýbajú OKX API kľúče", "data": []}
     try:
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-        prehash = f"{ts}{method.upper()}{request_path}{body}"
-        sig = hmac.new(
-            OKX_SECRET_KEY.encode("utf-8"),
-            prehash.encode("utf-8"),
-            hashlib.sha256,
-        ).digest()
-        sign_b64 = base64.b64encode(sig).decode("utf-8")
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-            "OK-ACCESS-KEY": OKX_API_KEY,
-            "OK-ACCESS-SIGN": sign_b64,
-            "OK-ACCESS-TIMESTAMP": ts,
-            "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
-        }
-        if OKX_SIMULATED == "1":
-            headers["x-simulated-trading"] = "1"
-
         bases = []
         for b in [OKX_BASE_URL, "https://www.okx.com", "https://eea.okx.com"]:
             b_clean = b.rstrip("/")
@@ -218,22 +220,27 @@ def okx_request(method: str, request_path: str, body: str = "") -> dict:
         last_err = {"code": "-1", "msg": "Neznáma chyba OKX", "data": []}
         data_bytes = body.encode("utf-8") if body else None
         for base in bases:
+            headers = _build_okx_auth_headers(method, request_path, body)
             try:
                 req = urllib.request.Request(f"{base}{request_path}", data=data_bytes, headers=headers, method=method.upper())
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     parsed = json.loads(resp.read().decode("utf-8"))
                     if parsed.get("code") == "0":
                         return parsed
-                    last_err = parsed
+                    last_err = {
+                        "code": str(parsed.get("code", "-1")),
+                        "msg": f"[{base}] {parsed.get('msg', 'Neznáma chyba OKX')} (code={parsed.get('code')})",
+                        "data": parsed.get("data", []),
+                    }
             except urllib.error.HTTPError as e:
                 err_body = ""
                 try:
                     err_body = e.read().decode("utf-8", errors="ignore")[:200]
                 except Exception:
                     pass
-                last_err = {"code": str(e.code), "msg": f"HTTP {e.code} {e.reason}: {err_body}", "data": []}
+                last_err = {"code": str(e.code), "msg": f"[{base}] HTTP {e.code} {e.reason}: {err_body}", "data": []}
             except Exception as e:
-                last_err = {"code": "-1", "msg": str(e), "data": []}
+                last_err = {"code": "-1", "msg": f"[{base}] {e}", "data": []}
         return last_err
     except Exception as e:
         return {"code": "-1", "msg": str(e), "data": []}
@@ -631,7 +638,6 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         AI_STATE["trained_at"] = get_sk_time_str()
         AI_STATE["last_symbol"] = f"{symbol} ({bar_tf.upper()})"
         AI_STATE["_last_train_ts"] = now_ts
-        save_ai_model()
 
         replayed_real = 0
         replayed_wins = 0
@@ -650,12 +656,12 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
                     AI_STATE["bias"] -= 0.12 * err
                 AI_STATE["weights"] = [round(w, 5) for w in AI_STATE["weights"]]
                 AI_STATE["bias"] = round(AI_STATE["bias"], 5)
-                save_ai_model()
 
         if replayed_real > 0:
             AI_STATE["live_learned_count"] = max(int(AI_STATE.get("live_learned_count", 0)), replayed_real)
             AI_STATE["live_wins_count"] = max(int(AI_STATE.get("live_wins_count", 0)), replayed_wins)
-            save_ai_model()
+
+        save_ai_model()
 
         acc_pct = round((correct / len(dataset)) * 100.0, 1)
         live_cnt = int(AI_STATE.get("live_learned_count", 0))
@@ -735,7 +741,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 "be_status": "VYPNUTÝ", "ttp_status": "VYPNUTÝ", "ts_status": "VYPNUTÝ",
                 "ai_score": "--", "exec_signal": "ČAKAJ", "signal": "⚠️ CHYBA DÁT", "is_green": False
             }
-            return {"buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "block_reason": ""}
+            return {"buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "block_reason": "", "features": None}
 
         candles = list(reversed(res["data"]))
         closed_candles = candles[:-1]
@@ -1022,7 +1028,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "be_status": "VYPNUTÝ", "ttp_status": "VYPNUTÝ", "ts_status": "VYPNUTÝ",
             "ai_score": "--", "exec_signal": "ČAKAJ", "signal": "⚠️ VÝNIMKA", "is_green": False
         }
-        return {"buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "block_reason": ""}
+        return {"buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "block_reason": "", "features": None}
 
 # --- AUTONÓMNA SKENOVACIA SLUČKA ---
 
