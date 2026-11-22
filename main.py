@@ -31,6 +31,7 @@ STATE_FILE = os.getenv("BOT_STATE_FILE", "apex_ai_bot_state.json")
 ALLOWED_TIMEFRAMES = ["5m", "8m", "15m", "30m", "45m"]
 
 EXCLUDED_SYMBOLS = {
+    "BTC-USDC", "ETH-USDC",
     "USDT-USDC", "DAI-USDC", "FDUSD-USDC",
     "ZEC-USDC", "ENA-USDC", "LIT-USDC", "CT-USDC",
     "XMSTR-USDC", "XSOXL-USDC", "XANT-USDC",
@@ -48,7 +49,7 @@ LAST_BALANCE_ERROR_LOG_TS = 0.0
 ACTIVE_BALANCE_CCY = "USDC"
 
 TOP_LIQUID_SYMBOLS = [
-    "SOL-USDC", "ETH-USDC", "BTC-USDC", "SUI-USDC", "XRP-USDC",
+    "SOL-USDC", "SUI-USDC", "XRP-USDC",
     "DOGE-USDC", "ADA-USDC", "AVAX-USDC", "LINK-USDC", "TON-USDC",
     "NEAR-USDC", "APT-USDC", "TRX-USDC", "LTC-USDC", "PEPE-USDC",
     "AAVE-USDC", "UNI-USDC", "POL-USDC", "RENDER-USDC", "TIA-USDC"
@@ -89,6 +90,9 @@ SETTINGS = {
     "ha_exit_consecutive": 2,
     "block_sideways_buy": False,
     "min_rel_volume": 0.55,
+    "use_anti_chase": True,
+    "max_candle_pump_pct": 0.65,
+    "max_ema9_dist_pct": 0.85,
     "use_ai_filter": True,
     "ai_min_prob": 0.52,
 }
@@ -97,6 +101,8 @@ AI_STATE = {
     "weights": [0.0] * 6,
     "bias": 0.0,
     "samples_count": 0,
+    "live_learned_count": 0,
+    "live_wins_count": 0,
     "win_rate_train": 0.0,
     "trained_at": "--",
     "last_symbol": "--",
@@ -354,6 +360,13 @@ def load_persistent_data():
             AI_STATE.update(data["ai_state"])
         if isinstance(data.get("history"), list):
             CLOSED_TRADES_HISTORY = data["history"][:100]
+            real_with_feats = [t for t in CLOSED_TRADES_HISTORY if t.get("entry_features") and len(t.get("entry_features")) == 6]
+            if real_with_feats:
+                AI_STATE["live_learned_count"] = max(int(AI_STATE.get("live_learned_count", 0)), len(real_with_feats))
+                AI_STATE["live_wins_count"] = max(
+                    int(AI_STATE.get("live_wins_count", 0)),
+                    sum(1 for t in real_with_feats if safe_float(t.get("pnl_usdc")) > 0),
+                )
         if isinstance(data.get("logs"), list):
             SYSTEM_LOGS = data["logs"][:100]
     except Exception:
@@ -620,10 +633,15 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         AI_STATE["_last_train_ts"] = now_ts
         save_ai_model()
 
-        for t in reversed(CLOSED_TRADES_HISTORY[:30]):
+        replayed_real = 0
+        replayed_wins = 0
+        for t in reversed(CLOSED_TRADES_HISTORY[:50]):
             t_feats = t.get("entry_features")
             if t_feats and len(t_feats) == 6:
+                replayed_real += 1
                 y_real = 1.0 if safe_float(t.get("pnl_usdc")) > 0 else 0.0
+                if y_real > 0.5:
+                    replayed_wins += 1
                 for _ in range(8):
                     z = AI_STATE["bias"] + sum(AI_STATE["weights"][k] * t_feats[k] for k in range(6))
                     err = _sigmoid(z) - y_real
@@ -634,9 +652,28 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
                 AI_STATE["bias"] = round(AI_STATE["bias"], 5)
                 save_ai_model()
 
+        if replayed_real > 0:
+            AI_STATE["live_learned_count"] = max(int(AI_STATE.get("live_learned_count", 0)), replayed_real)
+            AI_STATE["live_wins_count"] = max(int(AI_STATE.get("live_wins_count", 0)), replayed_wins)
+            save_ai_model()
+
         acc_pct = round((correct / len(dataset)) * 100.0, 1)
-        log_event(f"🧠 AI model natrénovaný na {symbol} [{bar_tf.upper()}]: {len(dataset)} vzoriek | Historický úspech: {AI_STATE['win_rate_train']}% | Presnosť: {acc_pct}%.")
-        return {"ok": True, "samples": len(dataset), "win_rate": AI_STATE["win_rate_train"], "accuracy": acc_pct}
+        live_cnt = int(AI_STATE.get("live_learned_count", 0))
+        live_wins = int(AI_STATE.get("live_wins_count", 0))
+        live_losses = max(0, live_cnt - live_wins)
+        log_event(
+            f"🧠 AI model natrénovaný na {symbol} [{bar_tf.upper()}]: {len(dataset)} vzoriek | "
+            f"Naštudované a uložené obchody: {live_cnt} ({live_wins}W/{live_losses}L) | Presnosť: {acc_pct}%."
+        )
+        return {
+            "ok": True,
+            "samples": len(dataset),
+            "win_rate": AI_STATE["win_rate_train"],
+            "accuracy": acc_pct,
+            "live_learned_count": live_cnt,
+            "live_wins_count": live_wins,
+            "live_losses_count": live_losses,
+        }
     except Exception as e:
         return {"ok": False, "msg": str(e)}
 
@@ -898,6 +935,22 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             if bool(SETTINGS.get("block_sideways_buy", False)) and IS_SIDEWAYS_MARKET:
                 final_buy = False
                 block_reason = "Bočný trh (SIDEWAYS)"
+
+            if final_buy and bool(SETTINGS.get("use_anti_chase", True)):
+                last_raw = closed_candles[-1]
+                raw_o = safe_float(last_raw[1])
+                raw_c = safe_float(last_raw[4])
+                candle_pump_pct = ((raw_c - raw_o) / raw_o * 100.0) if raw_o > 0 else 0.0
+                ema9_last = close_ema_9[-1] if close_ema_9[-1] and close_ema_9[-1] > 0 else raw_c
+                dist_ema9_pct = ((raw_c - ema9_last) / ema9_last * 100.0) if ema9_last > 0 else 0.0
+                max_pump = float(SETTINGS.get("max_candle_pump_pct", 0.65))
+                max_ema_dist = float(SETTINGS.get("max_ema9_dist_pct", 0.85))
+                if candle_pump_pct > max_pump:
+                    final_buy = False
+                    block_reason = f"Anti-Chase: sviečka +{candle_pump_pct:.2f}% > {max_pump:.2f}%"
+                elif dist_ema9_pct > max_ema_dist:
+                    final_buy = False
+                    block_reason = f"Anti-Chase: nad EMA9 +{dist_ema9_pct:.2f}% > {max_ema_dist:.2f}%"
 
             min_rel_vol = float(SETTINGS.get("min_rel_volume", 0.0))
             if final_buy and min_rel_vol > 0:
@@ -1296,6 +1349,9 @@ def get_pine_settings_dict():
         "ha_exit_consecutive": SETTINGS["ha_exit_consecutive"],
         "block_sideways_buy": SETTINGS["block_sideways_buy"],
         "min_rel_volume": SETTINGS["min_rel_volume"],
+        "use_anti_chase": SETTINGS["use_anti_chase"],
+        "max_candle_pump_pct": SETTINGS["max_candle_pump_pct"],
+        "max_ema9_dist_pct": SETTINGS["max_ema9_dist_pct"],
         "use_ai_filter": SETTINGS["use_ai_filter"],
         "ai_min_prob": SETTINGS["ai_min_prob"],
     }
@@ -1438,6 +1494,9 @@ async def update_pine_settings(request: Request):
 
         SETTINGS["block_sideways_buy"] = bool(payload.get("block_sideways_buy", SETTINGS["block_sideways_buy"]))
         SETTINGS["min_rel_volume"] = max(0.0, min(5.0, float(payload.get("min_rel_volume", SETTINGS["min_rel_volume"]))))
+        SETTINGS["use_anti_chase"] = bool(payload.get("use_anti_chase", SETTINGS["use_anti_chase"]))
+        SETTINGS["max_candle_pump_pct"] = max(0.10, min(5.0, float(payload.get("max_candle_pump_pct", SETTINGS["max_candle_pump_pct"]))))
+        SETTINGS["max_ema9_dist_pct"] = max(0.10, min(5.0, float(payload.get("max_ema9_dist_pct", SETTINGS["max_ema9_dist_pct"]))))
         SETTINGS["use_ai_filter"] = bool(payload.get("use_ai_filter", SETTINGS["use_ai_filter"]))
         SETTINGS["ai_min_prob"] = max(0.25, min(0.90, float(payload.get("ai_min_prob", SETTINGS["ai_min_prob"]))))
 
@@ -1641,6 +1700,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <span>Aktívny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
                     <span>Fixný SL: <span id="header-sl" class="balance-tag">-{{ SETTINGS.fixed_sl_pct }}%</span></span>
                     <span>AI Model: <span id="header-ai" class="balance-tag">Načítavam...</span></span>
+                    <span>AI Pamäť (uložené): <span id="header-ai-learned" class="balance-tag">0 obchodov (0W / 0L)</span></span>
                 </p>
             </div>
             <div class="actions">
@@ -1764,6 +1824,18 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <input type="checkbox" id="pine-block-sideways" class="pine-checkbox" {% if SETTINGS.block_sideways_buy %}checked{% endif %}>
                         </div>
                         <div class="pine-row">
+                            <label for="pine-use-anti-chase">Anti-Chase (nekupovať vrchol)</label>
+                            <input type="checkbox" id="pine-use-anti-chase" class="pine-checkbox" {% if SETTINGS.use_anti_chase %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-max-candle-pump">Max rast sviečky (%)</label>
+                            <input type="number" id="pine-max-candle-pump" class="pine-input" min="0.10" max="5.0" step="0.05" value="{{ SETTINGS.max_candle_pump_pct }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-max-ema9-dist">Max vzdialenosť nad EMA9 (%)</label>
+                            <input type="number" id="pine-max-ema9-dist" class="pine-input" min="0.10" max="5.0" step="0.05" value="{{ SETTINGS.max_ema9_dist_pct }}">
+                        </div>
+                        <div class="pine-row">
                             <label for="pine-pivot-len">Pivot dĺžka (Fib)</label>
                             <input type="number" id="pine-pivot-len" class="pine-input" min="1" max="10" step="1" value="{{ SETTINGS.pivot_len }}">
                         </div>
@@ -1838,7 +1910,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </div>
                 </div>
                 <div class="pine-footer">
-                    <span id="pine-save-status" class="pine-save-status">Pripravené – zmeny sa okamžite premietnu do BUY / SELL skenera.</span>
+                    <div style="display:flex; flex-direction:column; gap:3px;">
+                        <span id="pine-save-status" class="pine-save-status">Pripravené – zmeny sa okamžite premietnu do BUY / SELL skenera.</span>
+                        <span id="ai-learned-summary" style="font-size:0.68rem; color:var(--yellow); font-weight:600;">📚 AI naštudované a uložené obchody: 0 (0W / 0L)</span>
+                    </div>
                     <div style="display: flex; gap: 6px; flex-wrap: wrap;">
                         <button class="btn btn-yellow" onclick="trainAiNow()">🧠 TRÉNOVAŤ AI MODEL</button>
                         <button class="btn" onclick="resetPineDefaults()">OBNOVIŤ ZÁKLAD</button>
@@ -1990,8 +2065,11 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             let res = await fetch('/api/train-ai', {method: 'POST'});
             let data = await res.json();
             if (data.status === 'success') {
+                const lc = data.details.live_learned_count || 0;
+                const lw = data.details.live_wins_count || 0;
+                const ll = data.details.live_losses_count || 0;
                 statusEl.style.color = 'var(--green)';
-                statusEl.innerText = `AI natrénované (${data.details.samples} vzoriek, presnosť ${data.details.accuracy}%).`;
+                statusEl.innerText = `AI natrénované (${data.details.samples} vzoriek, presnosť ${data.details.accuracy}%) | Naštudované a uložené obchody: ${lc} (${lw}W / ${ll}L).`;
                 updateState();
             } else {
                 statusEl.style.color = 'var(--red)';
@@ -2011,6 +2089,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             document.getElementById('pine-ai-prob').value = ps.ai_min_prob;
             document.getElementById('pine-min-rel-vol').value = ps.min_rel_volume;
             document.getElementById('pine-block-sideways').checked = !!ps.block_sideways_buy;
+            if (ps.use_anti_chase !== undefined) document.getElementById('pine-use-anti-chase').checked = !!ps.use_anti_chase;
+            if (ps.max_candle_pump_pct !== undefined) document.getElementById('pine-max-candle-pump').value = ps.max_candle_pump_pct;
+            if (ps.max_ema9_dist_pct !== undefined) document.getElementById('pine-max-ema9-dist').value = ps.max_ema9_dist_pct;
             document.getElementById('pine-pivot-len').value = ps.pivot_len;
             document.getElementById('pine-fib-choice').value = ps.fib_choice;
             if (ps.fixed_sl_pct !== undefined) {
@@ -2042,6 +2123,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 ai_min_prob: parseFloat(document.getElementById('pine-ai-prob').value),
                 min_rel_volume: parseFloat(document.getElementById('pine-min-rel-vol').value),
                 block_sideways_buy: document.getElementById('pine-block-sideways').checked,
+                use_anti_chase: document.getElementById('pine-use-anti-chase').checked,
+                max_candle_pump_pct: parseFloat(document.getElementById('pine-max-candle-pump').value),
+                max_ema9_dist_pct: parseFloat(document.getElementById('pine-max-ema9-dist').value),
                 pivot_len: parseInt(document.getElementById('pine-pivot-len').value, 10),
                 fib_choice: document.getElementById('pine-fib-choice').value,
                 fixed_sl_pct: parseFloat(document.getElementById('pine-fixed-sl-pct').value),
@@ -2091,6 +2175,9 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 ai_min_prob: 0.52,
                 min_rel_volume: 0.55,
                 block_sideways_buy: false,
+                use_anti_chase: true,
+                max_candle_pump_pct: 0.65,
+                max_ema9_dist_pct: 0.85,
                 pivot_len: 2,
                 fib_choice: "0.786",
                 fixed_sl_pct: 1.5,
@@ -2146,7 +2233,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 if (data.ai_state) {
                     const sc = data.ai_state.samples_count || 0;
                     const wr = data.ai_state.win_rate_train || 0;
-                    document.getElementById('header-ai').innerText = sc > 0 ? `${sc} vz. (${wr}%)` : "ČAKÁ";
+                    const lc = data.ai_state.live_learned_count || 0;
+                    const lw = data.ai_state.live_wins_count || 0;
+                    const ll = Math.max(0, lc - lw);
+                    document.getElementById('header-ai').innerText = sc > 0 ? `${sc} vz. (${wr}%) | Uložené: ${lc}` : "ČAKÁ";
+                    const hLearned = document.getElementById('header-ai-learned');
+                    if (hLearned) hLearned.innerText = `${lc} obchodov (${lw}W / ${ll}L)`;
+                    const sumEl = document.getElementById('ai-learned-summary');
+                    if (sumEl) sumEl.innerText = `📚 AI naštudované a uložené obchody: ${lc} (${lw}W / ${ll}L) | Celkovo vzoriek v pamäti: ${sc}`;
                 }
 
                 if (data.pine_settings) {
