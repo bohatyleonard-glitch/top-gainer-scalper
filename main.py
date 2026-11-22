@@ -1199,10 +1199,8 @@ async def autonomous_scanner_loop():
                 LAST_SIDEWAYS_ALERT_TS = now_ts
                 log_event(f"🔻 POZOR: BOČNÝ TRH zistený na TF {CURRENT_TIMEFRAME} (úzke rozpätie + časté kríženie EMA).")
                 send_telegram_msg(
-                    f"🔻 <b>POZOR: BOČNÝ TRH</b>
-"
-                    f"<b>TF:</b> {CURRENT_TIMEFRAME}
-"
+                    f"🔻 <b>POZOR: BOČNÝ TRH</b>\n"
+                    f"<b>TF:</b> {CURRENT_TIMEFRAME}\n"
                     f"Trh sa pohybuje v úzkom pásme s častými obratmi – AI sleduje riziko falošných signálov."
                 )
 
@@ -1359,20 +1357,15 @@ async def execute_autonomous_buy(okx_symbol: str, ai_context: dict = None):
                 ]
             ]
         }
+        tp_line = f"🎯 <b>Fixný Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})\n" if use_fixed_tp else ""
         send_telegram_msg(
-            f"🟢 <b>PINE BUY + AI NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>
-"
-            f"<b>Pár:</b> {okx_symbol}
-"
-            f"<b>Vstup:</b> {current_price:.4f}
-"
-            f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC
-"
-            f"🛡️ <b>Fixný Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})
-"
-            + (f"🎯 <b>Fixný Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})
-" if use_fixed_tp else "")
-            + f"🧠 <b>AI ochrana:</b> Aktívna (pamäť uložená na disku)",
+            f"🟢 <b>PINE BUY + AI NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
+            f"<b>Pár:</b> {okx_symbol}\n"
+            f"<b>Vstup:</b> {current_price:.4f}\n"
+            f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
+            f"🛡️ <b>Fixný Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})\n"
+            f"{tp_line}"
+            f"🧠 <b>AI ochrana:</b> Aktívna (pamäť uložená na disku)",
             reply_markup=inline_keyboard
         )
 
@@ -1408,9 +1401,11 @@ async def close_trade_position(coin: str, reason: str):
 
             emoji = "🎯" if pnl_usdc >= 0 else "🚨"
             log_event(f"{emoji} Uzavretá pozícia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-            send_telegram_msg(f"{emoji} <b>UZAVRETÁ POZÍCIA ({reason})</b>
-<b>Pár:</b> {symbol}
-<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+            send_telegram_msg(
+                f"{emoji} <b>UZAVRETÁ POZÍCIA ({reason})</b>\n"
+                f"<b>Pár:</b> {symbol}\n"
+                f"<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
+            )
         except Exception as e:
             log_event(f"⚠️ Chyba pri zatvarani {symbol}: {e}")
         finally:
@@ -1760,13 +1755,15 @@ async def manual_buy(coin: str):
                 "ai_entry_context": collect_market_context(okx_symbol, CURRENT_TIMEFRAME.lower())
             }
             tp_info = f" | Fixný TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
+            tp_line = f"\n🎯 <b>Fixný TP:</b> +{fixed_tp_pct}%" if use_fixed_tp else ""
             log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$ | Fixný SL: -{fixed_sl_pct}%{tp_info}")
-            send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>
-<b>Pár:</b> {okx_symbol}
-<b>Vstup:</b> {current_price:.4f}
-<b>Investícia:</b> {actual_spent_usdc:.2f} USDC
-🛡️ <b>Fixný SL:</b> -{fixed_sl_pct}%" + (f"
-🎯 <b>Fixný TP:</b> +{fixed_tp_pct}%" if use_fixed_tp else ""))
+            send_telegram_msg(
+                f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
+                f"<b>Pár:</b> {okx_symbol}\n"
+                f"<b>Vstup:</b> {current_price:.4f}\n"
+                f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
+                f"🛡️ <b>Fixný SL:</b> -{fixed_sl_pct}%{tp_line}"
+            )
 
             return JSONResponse({"status": "success", "symbol": okx_symbol})
         except Exception as e:
