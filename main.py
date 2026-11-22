@@ -8,6 +8,7 @@ import json
 import math
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -16,16 +17,19 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Template
 import uvicorn
 
-# --- KONFIGURÁCIA OKX DEMO & TELEGRAM ---
-OKX_API_KEY = os.getenv("OKX_API_KEY", "54ebe9fe-1fd0-443d-8f76-0cd1a3439ddb")
-OKX_SECRET_KEY = os.getenv("OKX_SECRET_KEY", "FBD5C8332D88E3ED5662470CA9C3E813")
-OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Novyzeland111/")
-OKX_BASE_URL = os.getenv("OKX_BASE_URL", "https://eea.okx.com")
-OKX_PUBLIC_URL = os.getenv("OKX_PUBLIC_URL", "https://www.okx.com")
-OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1")  # "1" pre OKX Demo Trading
+# --- KONFIGURÁCIA OKX DEMO (ÚČET/OBCHODY) + OKX LIVE (GRAFY) + TELEGRAM ---
+OKX_API_KEY = os.getenv("OKX_API_KEY", "54ebe9fe-1fd0-443d-8f76-0cd1a3439ddb").strip()
+OKX_SECRET_KEY = (os.getenv("OKX_SECRET_KEY") or os.getenv("OKX_SECRET") or "FBD5C8332D88E3ED5662470CA9C3E813").strip()
+OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Novyzeland111/").strip()
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
+# Súkromné požiadavky (zostatok, nákup, predaj) -> OKX Demo EEA
+OKX_DEMO_BASE_URL = os.getenv("OKX_BASE_URL", "https://eea.okx.com").strip().rstrip("/")
+# Verejné trhové dáta (grafy/sviečky, tickery, inštrumenty) -> OKX Live
+OKX_PUBLIC_URL = os.getenv("OKX_PUBLIC_URL", "https://www.okx.com").strip().rstrip("/")
+OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1").strip()  # "1" pre OKX Demo Trading
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784").strip()
 
 STATE_FILE = os.getenv("BOT_STATE_FILE", "/var/data/apex_ai_bot_state.json")
 
@@ -195,11 +199,15 @@ def _http_get_json(url: str, headers: dict | None = None) -> dict:
         return {"code": "-1", "msg": str(e), "data": []}
 
 def okx_public_request(path_and_query: str) -> dict:
+    """Číta verejné trhové dáta (grafy/sviečky, ceny, pravidlá) z Live OKX."""
     for base in [OKX_PUBLIC_URL, "https://www.okx.com", "https://aws.okx.com"]:
-        res = _http_get_json(f"{base.rstrip('/')}{path_and_query}")
+        base_clean = base.strip().rstrip("/")
+        if not base_clean:
+            continue
+        res = _http_get_json(f"{base_clean}{path_and_query}")
         if res.get("code") == "0":
             return res
-    return _http_get_json(f"{OKX_PUBLIC_URL.rstrip('/')}{path_and_query}")
+    return _http_get_json(f"{OKX_PUBLIC_URL}{path_and_query}")
 
 def _build_okx_auth_headers(method: str, request_path: str, body: str = "") -> dict:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -224,40 +232,33 @@ def _build_okx_auth_headers(method: str, request_path: str, body: str = "") -> d
     return headers
 
 def okx_request(method: str, request_path: str, body: str = "") -> dict:
+    """Posiela súkromné požiadavky (zostatok, nákup, predaj) na OKX Demo endpoint."""
     if not OKX_API_KEY or not OKX_SECRET_KEY or not OKX_PASSPHRASE:
         return {"code": "-1", "msg": "Chýbajú OKX API kľúče", "data": []}
     try:
-        bases = []
-        for b in [OKX_BASE_URL, "https://www.okx.com", "https://eea.okx.com"]:
-            b_clean = b.rstrip("/")
-            if b_clean and b_clean not in bases:
-                bases.append(b_clean)
-
-        last_err = {"code": "-1", "msg": "Neznáma chyba OKX", "data": []}
+        target_base = OKX_DEMO_BASE_URL or "https://eea.okx.com"
         data_bytes = body.encode("utf-8") if body else None
-        for base in bases:
-            headers = _build_okx_auth_headers(method, request_path, body)
+        headers = _build_okx_auth_headers(method, request_path, body)
+        try:
+            req = urllib.request.Request(f"{target_base}{request_path}", data=data_bytes, headers=headers, method=method.upper())
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                parsed = json.loads(resp.read().decode("utf-8"))
+                if parsed.get("code") == "0":
+                    return parsed
+                return {
+                    "code": str(parsed.get("code", "-1")),
+                    "msg": f"[{target_base}] {parsed.get('msg', 'Neznáma chyba OKX')} (code={parsed.get('code')})",
+                    "data": parsed.get("data", []),
+                }
+        except urllib.error.HTTPError as e:
+            err_body = ""
             try:
-                req = urllib.request.Request(f"{base}{request_path}", data=data_bytes, headers=headers, method=method.upper())
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    parsed = json.loads(resp.read().decode("utf-8"))
-                    if parsed.get("code") == "0":
-                        return parsed
-                    last_err = {
-                        "code": str(parsed.get("code", "-1")),
-                        "msg": f"[{base}] {parsed.get('msg', 'Neznáma chyba OKX')} (code={parsed.get('code')})",
-                        "data": parsed.get("data", []),
-                    }
-            except urllib.error.HTTPError as e:
-                err_body = ""
-                try:
-                    err_body = e.read().decode("utf-8", errors="ignore")[:200]
-                except Exception:
-                    pass
-                last_err = {"code": str(e.code), "msg": f"[{base}] HTTP {e.code} {e.reason}: {err_body}", "data": []}
-            except Exception as e:
-                last_err = {"code": "-1", "msg": f"[{base}] {e}", "data": []}
-        return last_err
+                err_body = e.read().decode("utf-8", errors="ignore")[:200]
+            except Exception:
+                pass
+            return {"code": str(e.code), "msg": f"[{target_base}] HTTP {e.code} {e.reason}: {err_body}", "data": []}
+        except Exception as e:
+            return {"code": "-1", "msg": f"[{target_base}] {e}", "data": []}
     except Exception as e:
         return {"code": "-1", "msg": str(e), "data": []}
 
@@ -1374,7 +1375,10 @@ async def close_trade_position(coin: str, reason: str):
                 "instId": symbol, "tdMode": "cash", "side": "sell",
                 "ordType": "market", "sz": fmt_sz
             })
-            okx_request("POST", "/api/v5/trade/order", order_body)
+            sell_res = okx_request("POST", "/api/v5/trade/order", order_body)
+            if sell_res.get("code") != "0":
+                log_event(f"⚠️ Predaj {symbol} vrátil chybu z OKX Demo ({sell_res.get('msg')}) – pozícia ostáva otvorená na ďalší pokus.", persist=True)
+                return
 
             pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100.0
             invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
@@ -1394,7 +1398,9 @@ async def close_trade_position(coin: str, reason: str):
         except Exception as e:
             log_event(f"⚠️ Chyba pri zatváraní {symbol}: {e}")
         finally:
-            if coin in ACTIVE_TRADES:
+            if coin not in ACTIVE_TRADES:
+                pass
+            elif "sell_res" in locals() and locals()["sell_res"].get("code") == "0":
                 del ACTIVE_TRADES[coin]
 
 # --- MONITOR RIZÍK ---
@@ -1469,13 +1475,13 @@ async def lifespan(app: FastAPI):
     else:
         save_ai_memory()
     log_event(
-        f"🚀 Autonómny APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) spustený | AI pamäť: {AI_MEMORY_FILE}",
+        f"🚀 Autonómny APEX MATRIX_SCALPER_v1_BOT (Live grafy + OKX Demo obchod + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) spustený | AI pamäť: {AI_MEMORY_FILE}",
         persist=True,
     )
     monitor_task = asyncio.create_task(fixed_stoploss_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg(f"🚀 APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) pripravený!")
+    send_telegram_msg(f"🚀 APEX MATRIX_SCALPER_v1_BOT (Live grafy + OKX Demo obchod + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) pripravený!")
     yield
     save_persistent_data()
     monitor_task.cancel()
@@ -1861,7 +1867,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="brand">
                 <h1>APEX MATRIX_SCALPER_v1_BOT + AI</h1>
                 <p>
-                    <span id="header-pair">Top USDC · OKX Demo</span>
+                    <span id="header-pair">Top USDC · OKX Demo (Live Grafy)</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
                     <span>Aktívny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
                     <span>Fixný SL: <span id="header-sl" class="balance-tag">-{{ SETTINGS.fixed_sl_pct }}%</span></span>
@@ -2545,3 +2551,6 @@ async def get_state():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+```[cite: 3]
+
+Ak by aj po nasadení tohto kódu pri nákupe OKX vrátilo chybu autentifikácie (napr. `50119` alebo `50101`), znamená to, že konkrétny kľúč v prostredí patrí k inému režimu/účtu na OKX – vtedy stačí skontrolovať priamo kľúče v OKX Demo. Chcete pomôcť aj s niečím ďalším, napríklad s úpravou logiky predaja alebo AI trénovania?
