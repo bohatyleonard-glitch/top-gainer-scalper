@@ -29,8 +29,9 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "moje_tajne_heslo_123").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784").strip()
 
-# Súkromné požiadavky (zostatok, nákup, predaj) -> OKX Demo EEA
-OKX_DEMO_BASE_URL = os.getenv("OKX_BASE_URL", "https://eea.okx.com").strip().rstrip("/")
+# Súkromné požiadavky (zostatok, nákup, predaj) -> OKX Demo EEA (oddelené od OKX_BASE_URL)
+_env_demo_url = os.getenv("OKX_DEMO_BASE_URL", os.getenv("OKX_BASE_URL", "https://eea.okx.com")).strip().rstrip("/")
+OKX_DEMO_BASE_URL = "https://eea.okx.com" if (not _env_demo_url or "www.okx.com" in _env_demo_url) else _env_demo_url
 # Verejné trhové dáta (grafy/sviečky, tickery, inštrumenty) -> OKX Live
 OKX_PUBLIC_URL = os.getenv("OKX_PUBLIC_URL", "https://www.okx.com").strip().rstrip("/")
 OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1").strip()  # "1" pre OKX Demo Trading
@@ -69,13 +70,15 @@ IS_SIDEWAYS_MARKET = False
 LAST_SIDEWAYS_ALERT_TS = 0.0
 SIDEWAYS_ALERT_COOLDOWN_SEC = 1800
 LAST_BALANCE_ERROR_LOG_TS = 0.0
+LAST_BLOCK_LOG_TS: dict[str, float] = {}
 ACTIVE_BALANCE_CCY = "USDC"
 
 TOP_LIQUID_SYMBOLS = [
-    "SOL-USDC", "SUI-USDC", "XRP-USDC",
+    "SOL-USDC", "SUI-USDC", "XRP-USDC", "TAO-USDC",
     "DOGE-USDC", "ADA-USDC", "AVAX-USDC", "LINK-USDC", "TON-USDC",
     "NEAR-USDC", "APT-USDC", "TRX-USDC", "LTC-USDC", "PEPE-USDC",
-    "AAVE-USDC", "UNI-USDC", "POL-USDC", "RENDER-USDC", "TIA-USDC"
+    "AAVE-USDC", "UNI-USDC", "POL-USDC", "RENDER-USDC", "TIA-USDC",
+    "PUMP-USDC"
 ]
 
 ACTIVE_TRADES: dict[str, dict] = {}
@@ -160,6 +163,14 @@ def log_event(msg: str, persist: bool = False):
     print(line, flush=True)
     if persist:
         save_persistent_data()
+
+def log_block_throttled(symbol: str, reason: str, cooldown_sec: float = 60.0):
+    key = f"{symbol}:{reason}"
+    now_ts = time.time()
+    last_ts = LAST_BLOCK_LOG_TS.get(key, 0.0)
+    if now_ts - last_ts >= cooldown_sec:
+        LAST_BLOCK_LOG_TS[key] = now_ts
+        log_event(f"🛡️ Signál {symbol} [{CURRENT_TIMEFRAME}] pozastavený: {reason}")
 
 def send_telegram_msg(text: str, reply_markup: dict | None = None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -524,6 +535,7 @@ def update_top_liquid_symbols():
     try:
         res = okx_public_request("/api/v5/market/tickers?instType=SPOT")
         if res.get("code") != "0" or not res.get("data"):
+            log_event(f"⚠️ Nepodarilo sa načítať tickery pre 20 symbolov: {res.get('msg')}")
             return
         candidates = []
         for t in res["data"]:
@@ -1163,7 +1175,8 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         }
 
         return {"buy": final_buy, "sell": last_bar_sell, "sell_reason": last_bar_sell_reason, "ai_prob": ai_prob, "block_reason": block_reason, "features": feats}
-    except Exception:
+    except Exception as e:
+        log_event(f"⚠️ Výnimka pri vyhodnocovaní {symbol}: {e}")
         MARKET_SCANNER_CACHE[coin_key] = {
             "symbol": symbol, "price": 0.0, "oscillator": 0.0,
             "momentum": "SLABÉ", "impulse": "ČAKÁ", "trade_status": "---",
@@ -1232,7 +1245,7 @@ async def autonomous_scanner_loop():
                             log_event(f"🚀 PINE SCRIPT + AI 'BUY' SIGNÁL PRE {symbol}{prob_txt}!")
                             await execute_autonomous_buy(symbol, ai_prob=sig.get("ai_prob"), entry_features=sig.get("features"))
                         elif sig.get("block_reason"):
-                            log_event(f"🛡️ Signál {symbol} [{CURRENT_TIMEFRAME}] pozastavený: {sig['block_reason']}")
+                            log_block_throttled(symbol, sig["block_reason"], cooldown_sec=60.0)
 
                         await asyncio.sleep(0.3)
         except Exception as e:
@@ -1243,8 +1256,8 @@ async def top_symbols_updater_loop():
     while True:
         try:
             update_top_liquid_symbols()
-        except Exception:
-            pass
+        except Exception as e:
+            log_event(f"⚠️ Chyba v slučke top symbolov: {e}")
         await asyncio.sleep(3600)
 
 async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, entry_features: list[float] | None = None):
@@ -1465,8 +1478,8 @@ async def fixed_stoploss_monitor_loop():
                     if use_fixed_tp and fixed_tp_price is not None and current_price >= fixed_tp_price:
                         await close_trade_position(coin, f"Fixný Take-Profit (+{fixed_tp_pct}%)")
                         continue
-        except Exception:
-            pass
+        except Exception as e:
+            log_event(f"⚠️ Chyba v monitore rizík: {e}")
         await asyncio.sleep(2)
 
 @asynccontextmanager
@@ -1479,13 +1492,13 @@ async def lifespan(app: FastAPI):
     else:
         save_ai_memory()
     log_event(
-        f"🚀 Autonómny APEX MATRIX_SCALPER_v1_BOT (Live grafy + OKX Demo obchod + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) spustený | AI pamäť: {AI_MEMORY_FILE}",
+        f"🚀 Autonómny APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Live grafy + OKX Demo obchod + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) spustený | AI pamäť: {AI_MEMORY_FILE}",
         persist=True,
     )
     monitor_task = asyncio.create_task(fixed_stoploss_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg(f"🚀 APEX MATRIX_SCALPER_v1_BOT (Live grafy + OKX Demo obchod + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) pripravený!")
+    send_telegram_msg(f"🚀 APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Live grafy + OKX Demo obchod + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) pripravený!")
     yield
     save_persistent_data()
     monitor_task.cancel()
@@ -1540,8 +1553,8 @@ async def telegram_webhook(request: Request):
                 send_telegram_msg("⚡ Ručný predaj aktivovaný z Telegramu!")
             elif cb_data == "toggle_bot":
                 await toggle_bot()
-    except Exception:
-        pass
+    except Exception as e:
+        log_event(f"⚠️ Chyba v Telegram webhooku: {e}")
     return {"status": "ok"}
 
 @app.post("/api/toggle-bot")
@@ -1874,7 +1887,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="brand">
                 <h1>APEX MATRIX_SCALPER_v1_BOT + AI</h1>
                 <p>
-                    <span id="header-pair">Top USDC · OKX Demo (Live Grafy)</span>
+                    <span id="header-pair">Top 20 USDC · OKX Demo (Live Grafy)</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
                     <span>Aktívny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
                     <span>Fixný SL: <span id="header-sl" class="balance-tag">-{{ SETTINGS.fixed_sl_pct }}%</span></span>
