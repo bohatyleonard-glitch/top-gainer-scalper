@@ -923,12 +923,12 @@ async def execute_autonomous_buy(okx_symbol: str, ai_features: dict = None):
             ]
         }
         send_telegram_msg(
-            f"<b>PINE BUY NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\\n"
-            f"<b>Par:</b> {okx_symbol}\\n"
-            f"<b>Vstup:</b> {current_price:.4f}\\n"
-            f"<b>Investicia:</b> {actual_spent_usdc:.2f} USDC\\n"
+            f"<b>PINE BUY NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
+            f"<b>Par:</b> {okx_symbol}\n"
+            f"<b>Vstup:</b> {current_price:.4f}\n"
+            f"<b>Investicia:</b> {actual_spent_usdc:.2f} USDC\n"
             f"<b>Fixny Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})"
-            + (f"\\n<b>Fixny Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp and fixed_tp_price else ""),
+            + (f"\n<b>Fixny Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp and fixed_tp_price else ""),
             reply_markup=inline_keyboard
         )
 
@@ -963,7 +963,7 @@ async def close_trade_position(coin: str, reason: str):
             LAST_TRADE_TIME[coin] = datetime.now().timestamp()
 
             log_event(f"Uzavreta pozicia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
-            send_telegram_msg(f"<b>UZAVRETA POZICIA ({reason})</b>\\n<b>Par:</b> {symbol}\\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+            send_telegram_msg(f"<b>UZAVRETA POZICIA ({reason})</b>\n<b>Par:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
         except Exception as e:
             log_event(f"Chyba pri zatvarani {symbol}: {e}")
         finally:
@@ -1043,7 +1043,7 @@ async def lifespan(app: FastAPI):
     monitor_task = asyncio.create_task(fixed_stoploss_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg(f"Apex Scalper PRO + jednoduche AI pripraveny!")
+    send_telegram_msg("Apex Scalper PRO + jednoduche AI pripraveny!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
@@ -2022,6 +2022,5 @@ async def get_state():
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-''')
-print("main.py updated with fixed TP control.")
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
