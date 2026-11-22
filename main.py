@@ -17,19 +17,23 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Template
 import uvicorn
 
-# --- KONFIGURÁCIA OKX DEMO (ÚČET/OBCHODY) + OKX LIVE (GRAFY) + TELEGRAM ---
+# --- OKX KLUCE & BEZPECNOST ---
+
 OKX_API_KEY = os.getenv("OKX_API_KEY", "54ebe9fe-1fd0-443d-8f76-0cd1a3439ddb").strip()
-OKX_SECRET_KEY = (os.getenv("OKX_SECRET_KEY") or os.getenv("OKX_SECRET") or "FBD5C8332D88E3ED5662470CA9C3E813").strip()
+OKX_SECRET = os.getenv("OKX_SECRET", "FBD5C8332D88E3ED5662470CA9C3E813").strip()
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Novyzeland111/").strip()
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "moje_tajne_heslo_123").strip()
+
+# --- TELEGRAM NOTIFIKACIE & INTERAKTIVNY BOT ---
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784").strip()
 
 # Súkromné požiadavky (zostatok, nákup, predaj) -> OKX Demo EEA
 OKX_DEMO_BASE_URL = os.getenv("OKX_BASE_URL", "https://eea.okx.com").strip().rstrip("/")
 # Verejné trhové dáta (grafy/sviečky, tickery, inštrumenty) -> OKX Live
 OKX_PUBLIC_URL = os.getenv("OKX_PUBLIC_URL", "https://www.okx.com").strip().rstrip("/")
 OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1").strip()  # "1" pre OKX Demo Trading
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784").strip()
 
 STATE_FILE = os.getenv("BOT_STATE_FILE", "/var/data/apex_ai_bot_state.json")
 
@@ -213,7 +217,7 @@ def _build_okx_auth_headers(method: str, request_path: str, body: str = "") -> d
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     prehash = f"{ts}{method.upper()}{request_path}{body}"
     sig = hmac.new(
-        OKX_SECRET_KEY.encode("utf-8"),
+        OKX_SECRET.encode("utf-8"),
         prehash.encode("utf-8"),
         hashlib.sha256,
     ).digest()
@@ -233,7 +237,7 @@ def _build_okx_auth_headers(method: str, request_path: str, body: str = "") -> d
 
 def okx_request(method: str, request_path: str, body: str = "") -> dict:
     """Posiela súkromné požiadavky (zostatok, nákup, predaj) na OKX Demo endpoint."""
-    if not OKX_API_KEY or not OKX_SECRET_KEY or not OKX_PASSPHRASE:
+    if not OKX_API_KEY or not OKX_SECRET or not OKX_PASSPHRASE:
         return {"code": "-1", "msg": "Chýbajú OKX API kľúče", "data": []}
     try:
         target_base = OKX_DEMO_BASE_URL or "https://eea.okx.com"
@@ -1363,6 +1367,7 @@ async def close_trade_position(coin: str, reason: str):
             return
         trade = ACTIVE_TRADES[coin]
         symbol = trade["market_pair"]
+        sell_ok = False
         try:
             ticker_res = okx_public_request(f"/api/v5/market/ticker?instId={symbol}")
             curr_p = safe_float(ticker_res["data"][0]["last"]) if ticker_res.get("code") == "0" and ticker_res.get("data") else trade.get("current_price", trade["entry_price"])
@@ -1380,6 +1385,7 @@ async def close_trade_position(coin: str, reason: str):
                 log_event(f"⚠️ Predaj {symbol} vrátil chybu z OKX Demo ({sell_res.get('msg')}) – pozícia ostáva otvorená na ďalší pokus.", persist=True)
                 return
 
+            sell_ok = True
             pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100.0
             invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
             pnl_usdc = invested * (pnl_pct / 100.0)
@@ -1398,9 +1404,7 @@ async def close_trade_position(coin: str, reason: str):
         except Exception as e:
             log_event(f"⚠️ Chyba pri zatváraní {symbol}: {e}")
         finally:
-            if coin not in ACTIVE_TRADES:
-                pass
-            elif "sell_res" in locals() and locals()["sell_res"].get("code") == "0":
+            if sell_ok and coin in ACTIVE_TRADES:
                 del ACTIVE_TRADES[coin]
 
 # --- MONITOR RIZÍK ---
@@ -1524,6 +1528,9 @@ def get_pine_settings_dict():
 @app.post("/api/telegram-webhook")
 async def telegram_webhook(request: Request):
     try:
+        secret_hdr = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if WEBHOOK_SECRET and secret_hdr and secret_hdr != WEBHOOK_SECRET:
+            return JSONResponse({"status": "unauthorized"}, status_code=401)
         data = await request.json()
         if "callback_query" in data:
             cb = data["callback_query"]
@@ -2551,6 +2558,3 @@ async def get_state():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
-```[cite: 3]
-
-Ak by aj po nasadení tohto kódu pri nákupe OKX vrátilo chybu autentifikácie (napr. `50119` alebo `50101`), znamená to, že konkrétny kľúč v prostredí patrí k inému režimu/účtu na OKX – vtedy stačí skontrolovať priamo kľúče v OKX Demo. Chcete pomôcť aj s niečím ďalším, napríklad s úpravou logiky predaja alebo AI trénovania?
