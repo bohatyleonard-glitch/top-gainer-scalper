@@ -17,15 +17,17 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Template
 import uvicorn
 
-# --- KONFIGURÁCIA OKX DEMO & TELEGRAM (DOPLŇ SVOJE KĽÚČE ALEBO ENV PREMENNÉ) ---
-OKX_API_KEY = os.getenv("OKX_API_KEY", "")
-OKX_SECRET_KEY = os.getenv("OKX_SECRET_KEY", "")
-OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "")
-OKX_BASE_URL = os.getenv("OKX_BASE_URL", "https://www.okx.com")
-OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1")  # "1" pre OKX Demo Trading
+# --- OKX KLUCE & BEZPECNOST ---
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+OKX_API_KEY = os.getenv("OKX_API_KEY", "54ebe9fe-1fd0-443d-8f76-0cd1a3439ddb")
+OKX_SECRET = os.getenv("OKX_SECRET", "FBD5C8332D88E3ED5662470CA9C3E813")
+OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Novyzeland111/")
+WEBHOOK_SECRET = "moje_tajne_heslo_123"
+
+# --- TELEGRAM NOTIFIKACIE & INTERAKTIVNY BOT ---
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
 STATE_FILE = os.getenv("BOT_STATE_FILE", "apex_ai_bot_state.json")
 ALLOWED_TIMEFRAMES = ["5m", "8m", "15m", "30m", "45m"]
