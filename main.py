@@ -17,14 +17,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import Template
 import uvicorn
 
-# --- OKX KLUCE & BEZPECNOST ---
-
+# --- KONFIGURÁCIA OKX DEMO & TELEGRAM ---
 OKX_API_KEY = os.getenv("OKX_API_KEY", "54ebe9fe-1fd0-443d-8f76-0cd1a3439ddb")
-OKX_SECRET = os.getenv("OKX_SECRET", "FBD5C8332D88E3ED5662470CA9C3E813")
+OKX_SECRET_KEY = os.getenv("OKX_SECRET_KEY", "FBD5C8332D88E3ED5662470CA9C3E813")
 OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Novyzeland111/")
-WEBHOOK_SECRET = "moje_tajne_heslo_123"
-
-# --- TELEGRAM NOTIFIKACIE & INTERAKTIVNY BOT ---
+OKX_BASE_URL = os.getenv("OKX_BASE_URL", "https://eea.okx.com")
+OKX_PUBLIC_URL = os.getenv("OKX_PUBLIC_URL", "https://www.okx.com")
+OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1")  # "1" pre OKX Demo Trading
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
@@ -116,14 +115,15 @@ def get_sk_time_str() -> str:
     sk_tz = timezone(timedelta(hours=1))
     return datetime.now(sk_tz).strftime("%H:%M:%S")
 
-def log_event(msg: str):
+def log_event(msg: str, persist: bool = False):
     ts = get_sk_time_str()
     line = f"[{ts}] {msg}"
     SYSTEM_LOGS.insert(0, line)
     if len(SYSTEM_LOGS) > 200:
         del SYSTEM_LOGS[200:]
     print(line, flush=True)
-    save_persistent_data()
+    if persist:
+        save_persistent_data()
 
 def send_telegram_msg(text: str, reply_markup: dict | None = None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -163,7 +163,7 @@ def _http_get_json(url: str, headers: dict | None = None) -> dict:
         return {"code": "-1", "msg": str(e), "data": []}
 
 def okx_public_request(path_and_query: str) -> dict:
-    url = f"{OKX_BASE_URL}{path_and_query}"
+    url = f"{OKX_PUBLIC_URL}{path_and_query}"
     return _http_get_json(url)
 
 def okx_request(method: str, request_path: str, body: str = "") -> dict:
@@ -197,18 +197,20 @@ def okx_request(method: str, request_path: str, body: str = "") -> dict:
         return {"code": "-1", "msg": str(e), "data": []}
 
 def fetch_account_capital(ccy: str = "USDC") -> float:
-    currencies = [ccy, "USDT"] if ccy != "USDT" else ["USDT"]
-    for currency in currencies:
-        res = okx_request("GET", f"/api/v5/account/balance?ccy={currency}")
-        if res.get("code") == "0" and res.get("data"):
-            details = res["data"][0].get("details", [])
-            for item in details:
-                if item.get("ccy") == currency:
-                    avail = safe_float(item.get("availEq"), 0.0)
-                    if avail <= 0:
-                        avail = safe_float(item.get("cashBal"), 0.0)
-                    if avail > 0:
-                        return avail
+    try:
+        res = okx_request("GET", "/api/v5/account/balance")
+        if res.get("code") == "0":
+            for acc in res.get("data", []):
+                for item in acc.get("details", []):
+                    if item.get("ccy") == ccy:
+                        avail = safe_float(item.get("availBal"), 0.0)
+                        cash = safe_float(item.get("cashBal"), 0.0)
+                        eq = safe_float(item.get("eq"), 0.0)
+                        best_val = max(avail, cash, eq)
+                        if best_val > 0:
+                            return best_val
+    except Exception as err:
+        log_event(f"⚠️ Chyba pri načítaní zostatku: {err}")
     return 0.0
 
 def get_instrument_rules(inst_id: str) -> tuple[float, float]:
@@ -1020,7 +1022,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None):
 
         tp_info = f" | Fixný TP: +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp else ""
         ai_info = f" | AI: {ai_prob*100:.1f}%" if ai_prob is not None else ""
-        log_event(f"🛒 NÁKUP (Pine + AI BUY) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Investícia: {actual_spent_usdc:.2f} USDC | Fixný SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}{ai_info}")
+        log_event(f"🛒 NÁKUP (Pine + AI BUY) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Investícia: {actual_spent_usdc:.2f} USDC | Fixný SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}{ai_info}", persist=True)
 
         inline_keyboard = {
             "inline_keyboard": [
@@ -1071,7 +1073,7 @@ async def close_trade_position(coin: str, reason: str):
             LAST_TRADE_TIME[coin] = datetime.now().timestamp()
 
             emoji = "🎯" if pnl_usdc >= 0 else "🚨"
-            log_event(f"{emoji} Uzavretá pozícia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+            log_event(f"{emoji} Uzavretá pozícia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)", persist=True)
             send_telegram_msg(f"{emoji} <b>UZAVRETÁ POZÍCIA ({reason})</b>\n<b>Pár:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
         except Exception as e:
             log_event(f"⚠️ Chyba pri zatváraní {symbol}: {e}")
@@ -1148,7 +1150,7 @@ async def lifespan(app: FastAPI):
     if SETTINGS.get("use_ai_filter", True) and AI_STATE.get("samples_count", 0) < 10:
         seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
         train_ai_model_from_candles(seed_sym, bar_tf=CURRENT_TIMEFRAME.lower(), force=True)
-    log_event(f"🚀 Autonómny APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) spustený.")
+    log_event(f"🚀 Autonómny APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) spustený.", persist=True)
     monitor_task = asyncio.create_task(fixed_stoploss_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
@@ -1210,7 +1212,7 @@ async def toggle_bot():
     IS_BOT_ACTIVE = not IS_BOT_ACTIVE
     status_str = "aktívny" if IS_BOT_ACTIVE else "pozastavený"
     CURRENT_STAGE = f"STAV: Bot je {status_str}."
-    log_event(f"⚙️ Prepínač bota: {status_str.upper()}")
+    log_event(f"⚙️ Prepínač bota: {status_str.upper()}", persist=True)
     send_telegram_msg(f"⚙️ Zmena stavu: Bot je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "is_bot_active": IS_BOT_ACTIVE})
 
@@ -1218,7 +1220,7 @@ async def toggle_bot():
 async def toggle_btc_filter():
     SETTINGS["use_btc_filter"] = not SETTINGS.get("use_btc_filter", True)
     status_str = "zapnutý (aktívny)" if SETTINGS["use_btc_filter"] else "vypnutý (deaktivovaný)"
-    log_event(f"⚙️ BTC Trend Guard filter: {status_str.upper()}")
+    log_event(f"⚙️ BTC Trend Guard filter: {status_str.upper()}", persist=True)
     send_telegram_msg(f"⚙️ Zmena stavu: BTC Trend Guard filter je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "use_btc_filter": SETTINGS["use_btc_filter"]})
 
@@ -1226,7 +1228,7 @@ async def toggle_btc_filter():
 async def toggle_compounding():
     SETTINGS["compounding_enabled"] = not SETTINGS.get("compounding_enabled", False)
     status_str = "ZAPNUTÉ (Zložené úročenie)" if SETTINGS["compounding_enabled"] else "VYPNUTÉ (Pevný rozpočet)"
-    log_event(f"⚙️ Automatické reinvestovanie (COMPOUNDING): {status_str.upper()}")
+    log_event(f"⚙️ Automatické reinvestovanie (COMPOUNDING): {status_str.upper()}", persist=True)
     send_telegram_msg(f"⚙️ Zmena stavu: Auto-Compounding je teraz {status_str}.")
     return JSONResponse({"status": "success", "compounding_enabled": SETTINGS["compounding_enabled"]})
 
@@ -1234,7 +1236,7 @@ async def toggle_compounding():
 async def set_budget(amount: int):
     if amount in [500, 1000, 3000, 5000, 10000]:
         SETTINGS["max_budget_cap"] = float(amount)
-        log_event(f"💰 Maximálny rozpočet (strop) zmenený na: {amount} USDC")
+        log_event(f"💰 Maximálny rozpočet (strop) zmenený na: {amount} USDC", persist=True)
         send_telegram_msg(f"💰 Zmena rozpočtu: Maximálny strop pre obchod je teraz {amount} USDC.")
         return JSONResponse({"status": "success", "max_budget_cap": amount})
     return JSONResponse({"status": "error", "message": "Neplatná hodnota rozpočtu."})
@@ -1243,7 +1245,7 @@ async def set_budget(amount: int):
 async def set_parallel(count: int):
     if count in [1, 2, 3, 4]:
         SETTINGS["max_parallel"] = count
-        log_event(f"⚙️ Maximálny počet paralelných obchodov zmenený na: {count}")
+        log_event(f"⚙️ Maximálny počet paralelných obchodov zmenený na: {count}", persist=True)
         send_telegram_msg(f"⚙️ Zmena nastavenia: Bot môže teraz otvoriť naraz max. {count} obchody.")
         return JSONResponse({"status": "success", "max_parallel": count})
     return JSONResponse({"status": "error", "message": "Neplatná hodnota."})
@@ -1252,7 +1254,7 @@ async def set_parallel(count: int):
 async def set_sl(sl_val: float):
     if 0.1 <= sl_val <= 50.0:
         SETTINGS["fixed_sl_pct"] = float(sl_val)
-        log_event(f"🛡️ Fixný Stop-Loss zmenený na: -{sl_val}%")
+        log_event(f"🛡️ Fixný Stop-Loss zmenený na: -{sl_val}%", persist=True)
         send_telegram_msg(f"🛡️ Zmena Stop-Lossu: Fixný SL pre nové obchody je teraz -{sl_val}%.")
         return JSONResponse({"status": "success", "fixed_sl_pct": sl_val})
     return JSONResponse({"status": "error", "message": "Neplatná hodnota SL (povolene 0.1 - 50.0 %)."})
@@ -1270,7 +1272,7 @@ async def set_tf(tf_val: str):
         if SETTINGS.get("use_ai_filter", True):
             seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
             train_ai_model_from_candles(seed_sym, bar_tf=tf_lower, force=True)
-        log_event(f"⏱️ Časový rámec (TF) zmenený na: {CURRENT_TIMEFRAME}")
+        log_event(f"⏱️ Časový rámec (TF) zmenený na: {CURRENT_TIMEFRAME}", persist=True)
         return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
     return JSONResponse({"status": "error", "message": "Neplatný časový rámec."})
 
@@ -1332,7 +1334,8 @@ async def update_pine_settings(request: Request):
         MARKET_SCANNER_CACHE.clear()
         log_event(
             f"🎛️ Nastavenia aktualizované: Režim={mode_val}, AI={SETTINGS['use_ai_filter']}(min={SETTINGS['ai_min_prob']*100:.0f}%), "
-            f"SidewaysBlok={SETTINGS['block_sideways_buy']}, MinVol={SETTINGS['min_rel_volume']}x, FixSL=-{SETTINGS['fixed_sl_pct']}%"
+            f"SidewaysBlok={SETTINGS['block_sideways_buy']}, MinVol={SETTINGS['min_rel_volume']}x, FixSL=-{SETTINGS['fixed_sl_pct']}%",
+            persist=True,
         )
         return JSONResponse({"status": "success", "pine_settings": get_pine_settings_dict()})
     except Exception as e:
@@ -1419,7 +1422,7 @@ async def manual_buy(coin: str):
                 "tf": CURRENT_TIMEFRAME
             }
             tp_info = f" | Fixný TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
-            log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$ | Fixný SL: -{fixed_sl_pct}%{tp_info}")
+            log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$ | Fixný SL: -{fixed_sl_pct}%{tp_info}", persist=True)
             send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n🛡️ <b>Fixný SL:</b> -{fixed_sl_pct}%" + (f"\n🎯 <b>Fixný TP:</b> +{fixed_tp_pct}%" if use_fixed_tp else ""))
 
             return JSONResponse({"status": "success", "symbol": okx_symbol})
