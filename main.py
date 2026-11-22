@@ -27,7 +27,22 @@ OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1")  # "1" pre OKX Demo Trading
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-STATE_FILE = os.getenv("BOT_STATE_FILE", "apex_ai_bot_state.json")
+STATE_FILE = os.getenv("BOT_STATE_FILE", "/var/data/apex_ai_bot_state.json")
+
+
+def _resolve_ai_memory_path() -> str:
+    custom_path = os.getenv("AI_MEMORY_FILE", "").strip()
+    if custom_path:
+        return custom_path
+    state_dir = os.path.dirname(STATE_FILE)
+    if state_dir and os.path.isdir(state_dir):
+        return os.path.join(state_dir, "ai_memory.json")
+    if os.path.isdir("/var/data"):
+        return "/var/data/ai_memory.json"
+    return "ai_memory.json"
+
+
+AI_MEMORY_FILE = _resolve_ai_memory_path()
 ALLOWED_TIMEFRAMES = ["5m", "8m", "15m", "30m", "45m"]
 
 EXCLUDED_SYMBOLS = {
@@ -58,6 +73,7 @@ TOP_LIQUID_SYMBOLS = [
 ACTIVE_TRADES: dict[str, dict] = {}
 LAST_TRADE_TIME: dict[str, float] = {}
 CLOSED_TRADES_HISTORY: list[dict] = []
+AI_LEARNED_TRADES: list[dict] = []
 MARKET_SCANNER_CACHE: dict[str, dict] = {}
 SYSTEM_LOGS: list[str] = []
 trade_lock = asyncio.Lock()
@@ -311,16 +327,28 @@ def format_amount(raw_amount: float, lot_sz: float, min_sz: float) -> str | None
     return f"{amt:.{decimals}f}"
 
 def record_closed_trade(symbol: str, pnl_pct: float, pnl_usdc: float, reason: str, entry_features: list[float] | None = None):
-    CLOSED_TRADES_HISTORY.insert(0, {
+    trade_rec = {
         "time": get_sk_time_str(),
         "symbol": symbol,
         "pnl_pct": round(pnl_pct, 2),
         "pnl_usdc": round(pnl_usdc, 2),
         "reason": reason,
         "entry_features": entry_features,
-    })
+    }
+    CLOSED_TRADES_HISTORY.insert(0, trade_rec)
     if len(CLOSED_TRADES_HISTORY) > 200:
         del CLOSED_TRADES_HISTORY[200:]
+    if entry_features and len(entry_features) >= 6:
+        AI_LEARNED_TRADES.insert(0, {
+            "time": trade_rec["time"],
+            "symbol": symbol,
+            "pnl_pct": trade_rec["pnl_pct"],
+            "pnl_usdc": trade_rec["pnl_usdc"],
+            "reason": reason,
+            "entry_features": [round(safe_float(x), 5) for x in entry_features[:6]],
+        })
+        if len(AI_LEARNED_TRADES) > 200:
+            del AI_LEARNED_TRADES[200:]
     save_persistent_data()
 
 def calculate_stats() -> dict:
@@ -337,11 +365,65 @@ def calculate_stats() -> dict:
         "win_rate": round(win_rate, 1),
     }
 
+def _ensure_parent_dir(file_path: str):
+    parent = os.path.dirname(file_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+def save_ai_memory():
+    try:
+        _ensure_parent_dir(AI_MEMORY_FILE)
+        ai_clean = {k: v for k, v in AI_STATE.items() if not k.startswith("_")}
+        learned_items = [
+            t for t in AI_LEARNED_TRADES
+            if t.get("entry_features") and len(t.get("entry_features")) >= 6
+        ][:200]
+        payload = {
+            "saved_at": get_sk_time_str(),
+            "ai_state": ai_clean,
+            "learned_trades": learned_items,
+        }
+        tmp_path = f"{AI_MEMORY_FILE}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, AI_MEMORY_FILE)
+    except Exception:
+        pass
+
+def load_ai_memory():
+    global AI_LEARNED_TRADES, CLOSED_TRADES_HISTORY
+    if not os.path.exists(AI_MEMORY_FILE):
+        return
+    try:
+        with open(AI_MEMORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data.get("ai_state"), dict):
+            for k, v in data["ai_state"].items():
+                if not str(k).startswith("_"):
+                    AI_STATE[k] = v
+        if isinstance(data.get("learned_trades"), list):
+            AI_LEARNED_TRADES = [
+                t for t in data["learned_trades"][:200]
+                if isinstance(t, dict) and t.get("entry_features") and len(t.get("entry_features")) >= 6
+            ]
+            if AI_LEARNED_TRADES:
+                AI_STATE["live_learned_count"] = max(int(AI_STATE.get("live_learned_count", 0)), len(AI_LEARNED_TRADES))
+                AI_STATE["live_wins_count"] = max(
+                    int(AI_STATE.get("live_wins_count", 0)),
+                    sum(1 for t in AI_LEARNED_TRADES if safe_float(t.get("pnl_usdc")) > 0),
+                )
+                if not CLOSED_TRADES_HISTORY:
+                    CLOSED_TRADES_HISTORY = list(AI_LEARNED_TRADES[:100])
+    except Exception:
+        pass
+
 def save_ai_model():
+    save_ai_memory()
     save_persistent_data()
 
 def save_persistent_data():
     try:
+        _ensure_parent_dir(STATE_FILE)
         ai_clean = {k: v for k, v in AI_STATE.items() if not k.startswith("_")}
         payload = {
             "settings": SETTINGS,
@@ -349,35 +431,42 @@ def save_persistent_data():
             "history": CLOSED_TRADES_HISTORY[:100],
             "logs": SYSTEM_LOGS[:100],
         }
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        tmp_path = f"{STATE_FILE}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, STATE_FILE)
+        save_ai_memory()
     except Exception:
         pass
 
 def load_persistent_data():
-    global CLOSED_TRADES_HISTORY, SYSTEM_LOGS
-    if not os.path.exists(STATE_FILE):
-        return
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data.get("settings"), dict):
-            SETTINGS.update(data["settings"])
-        if isinstance(data.get("ai_state"), dict):
-            AI_STATE.update(data["ai_state"])
-        if isinstance(data.get("history"), list):
-            CLOSED_TRADES_HISTORY = data["history"][:100]
-            real_with_feats = [t for t in CLOSED_TRADES_HISTORY if t.get("entry_features") and len(t.get("entry_features")) == 6]
-            if real_with_feats:
-                AI_STATE["live_learned_count"] = max(int(AI_STATE.get("live_learned_count", 0)), len(real_with_feats))
-                AI_STATE["live_wins_count"] = max(
-                    int(AI_STATE.get("live_wins_count", 0)),
-                    sum(1 for t in real_with_feats if safe_float(t.get("pnl_usdc")) > 0),
-                )
-        if isinstance(data.get("logs"), list):
-            SYSTEM_LOGS = data["logs"][:100]
-    except Exception:
-        pass
+    global CLOSED_TRADES_HISTORY, SYSTEM_LOGS, AI_LEARNED_TRADES
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data.get("settings"), dict):
+                SETTINGS.update(data["settings"])
+            if isinstance(data.get("ai_state"), dict):
+                for k, v in data["ai_state"].items():
+                    if not str(k).startswith("_"):
+                        AI_STATE[k] = v
+            if isinstance(data.get("history"), list):
+                CLOSED_TRADES_HISTORY = data["history"][:100]
+                real_with_feats = [t for t in CLOSED_TRADES_HISTORY if t.get("entry_features") and len(t.get("entry_features")) >= 6]
+                if real_with_feats and not AI_LEARNED_TRADES:
+                    AI_LEARNED_TRADES = list(real_with_feats[:200])
+                if real_with_feats:
+                    AI_STATE["live_learned_count"] = max(int(AI_STATE.get("live_learned_count", 0)), len(real_with_feats))
+                    AI_STATE["live_wins_count"] = max(
+                        int(AI_STATE.get("live_wins_count", 0)),
+                        sum(1 for t in real_with_feats if safe_float(t.get("pnl_usdc")) > 0),
+                    )
+            if isinstance(data.get("logs"), list):
+                SYSTEM_LOGS = data["logs"][:100]
+        except Exception:
+            pass
+    load_ai_memory()
 
 def get_market_regime_and_sideways(bar_tf: str = "15m") -> tuple[str, bool]:
     try:
@@ -521,6 +610,51 @@ def extract_ai_features(idx: int, ha_closes, ha_opens, ha_highs, ha_lows, volume
 
     return [dist_ema9_pct, rel_vol, osc_ratio, sig_diff, pred_diff, body_ratio]
 
+def get_current_ai_features_for_symbol(symbol: str, bar_tf: str = "15m") -> list[float] | None:
+    try:
+        res = okx_public_request(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=80")
+        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 25:
+            return None
+        candles = list(reversed(res["data"]))
+        closed = candles[:-1]
+        n = len(closed)
+        if n < 20:
+            return None
+
+        ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
+        for i, c in enumerate(closed):
+            o, h, l, cl, v = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4]), safe_float(c[5])
+            ha_cl = (o + h + l + cl) / 4.0
+            ha_op = (o + cl) / 2.0 if i == 0 else (ha_opens[-1] + ha_closes[-1]) / 2.0
+            ha_hi = max(h, ha_op, ha_cl)
+            ha_lo = min(l, ha_op, ha_cl)
+            ha_closes.append(ha_cl)
+            ha_opens.append(ha_op)
+            ha_highs.append(ha_hi)
+            ha_lows.append(ha_lo)
+            volumes.append(v)
+
+        fast_len = max(1, int(SETTINGS.get("fast_len", 5)))
+        slow_len = max(1, int(SETTINGS.get("slow_len", 20)))
+        signal_len = max(1, int(SETTINGS.get("signal_len", 9)))
+        pred_look = max(1, min(10, int(SETTINGS.get("pred_look", 3))))
+
+        vol_dirs = [volumes[i] if ha_closes[i] > ha_opens[i] else -volumes[i] for i in range(n)]
+        fast_ma = calc_ema_series(vol_dirs, fast_len)
+        slow_ma = calc_ema_series(vol_dirs, slow_len)
+        oscillator = [fast_ma[i] - slow_ma[i] for i in range(n)]
+        signal_line = calc_ema_series(oscillator, signal_len)
+        close_ema_9 = calc_ema_series(ha_closes, 9)
+        lr0 = calc_linreg_series(oscillator, pred_look, 0)
+        lr1 = calc_linreg_series(oscillator, pred_look, 1 if pred_look > 1 else 0)
+        raw_slope = [(lr0[i] - lr1[i]) if (lr0[i] is not None and lr1[i] is not None) else None for i in range(n)]
+        smooth_slope = calc_wma_series(raw_slope, 3)
+        predicted_next = [(oscillator[i] + smooth_slope[i]) if smooth_slope[i] is not None else oscillator[i] for i in range(n)]
+
+        return extract_ai_features(n - 1, ha_closes, ha_opens, ha_highs, ha_lows, volumes, oscillator, signal_line, close_ema_9, predicted_next)
+    except Exception:
+        return None
+
 def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = False) -> dict:
     global AI_STATE
     now_ts = time.time()
@@ -639,11 +773,14 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         AI_STATE["last_symbol"] = f"{symbol} ({bar_tf.upper()})"
         AI_STATE["_last_train_ts"] = now_ts
 
+        source_trades = AI_LEARNED_TRADES if AI_LEARNED_TRADES else [
+            t for t in CLOSED_TRADES_HISTORY if t.get("entry_features") and len(t.get("entry_features")) >= 6
+        ]
         replayed_real = 0
         replayed_wins = 0
-        for t in reversed(CLOSED_TRADES_HISTORY[:50]):
+        for t in reversed(source_trades[:50]):
             t_feats = t.get("entry_features")
-            if t_feats and len(t_feats) == 6:
+            if t_feats and len(t_feats) >= 6:
                 replayed_real += 1
                 y_real = 1.0 if safe_float(t.get("pnl_usdc")) > 0 else 0.0
                 if y_real > 0.5:
@@ -1157,6 +1294,11 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             log_event(f"⚠️ Pár {okx_symbol} odmietnutý v Demo režime ({err_msg}).")
             return
 
+        if entry_features is None:
+            entry_features = get_current_ai_features_for_symbol(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
+        if ai_prob is None and entry_features is not None:
+            ai_prob = predict_ai_probability(entry_features)
+
         coin_amount = float(formatted_sz)
         actual_spent_usdc = coin_amount * current_price
         fixed_sl_pct = SETTINGS.get("fixed_sl_pct", 1.5)
@@ -1185,7 +1327,8 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             "live_pnl_usdc": 0.0,
             "tf": CURRENT_TIMEFRAME,
             "ai_prob": ai_prob,
-            "entry_features": entry_features
+            "entry_features": entry_features,
+            "source": "AUTO",
         }
 
         tp_info = f" | Fixný TP: +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp else ""
@@ -1237,8 +1380,12 @@ async def close_trade_position(coin: str, reason: str):
             invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
             pnl_usdc = invested * (pnl_pct / 100.0)
 
-            record_closed_trade(symbol, pnl_pct, pnl_usdc, reason, trade.get("entry_features"))
-            learn_from_closed_trade(trade.get("entry_features"), pnl_usdc)
+            feats = trade.get("entry_features")
+            if not feats:
+                feats = get_current_ai_features_for_symbol(symbol, bar_tf=str(trade.get("tf", CURRENT_TIMEFRAME)).lower())
+
+            record_closed_trade(symbol, pnl_pct, pnl_usdc, reason, feats)
+            learn_from_closed_trade(feats, pnl_usdc)
             LAST_TRADE_TIME[coin] = datetime.now().timestamp()
 
             emoji = "🎯" if pnl_usdc >= 0 else "🚨"
@@ -1319,12 +1466,18 @@ async def lifespan(app: FastAPI):
     if SETTINGS.get("use_ai_filter", True) and AI_STATE.get("samples_count", 0) < 10:
         seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
         train_ai_model_from_candles(seed_sym, bar_tf=CURRENT_TIMEFRAME.lower(), force=True)
-    log_event(f"🚀 Autonómny APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) spustený.", persist=True)
+    else:
+        save_ai_memory()
+    log_event(
+        f"🚀 Autonómny APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) spustený | AI pamäť: {AI_MEMORY_FILE}",
+        persist=True,
+    )
     monitor_task = asyncio.create_task(fixed_stoploss_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
     send_telegram_msg(f"🚀 APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + AI Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) pripravený!")
     yield
+    save_persistent_data()
     monitor_task.cancel()
     scanner_task.cancel()
     updater_task.cancel()
@@ -1568,6 +1721,9 @@ async def manual_buy(coin: str):
                 err_msg = order_res.get("msg", "Neznáma chyba OKX")
                 return JSONResponse({"status": "error", "message": f"OKX odmietlo príkaz ({err_msg})"})
 
+            entry_features = get_current_ai_features_for_symbol(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
+            ai_prob = predict_ai_probability(entry_features) if entry_features is not None else None
+
             coin_amount = float(formatted_sz)
             actual_spent_usdc = coin_amount * current_price
             fixed_sl_pct = SETTINGS.get("fixed_sl_pct", 1.5)
@@ -1594,10 +1750,14 @@ async def manual_buy(coin: str):
                 "invested_usdc": actual_spent_usdc,
                 "live_pnl_pct": 0.0,
                 "live_pnl_usdc": 0.0,
-                "tf": CURRENT_TIMEFRAME
+                "tf": CURRENT_TIMEFRAME,
+                "ai_prob": ai_prob,
+                "entry_features": entry_features,
+                "source": "MANUAL",
             }
             tp_info = f" | Fixný TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
-            log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$ | Fixný SL: -{fixed_sl_pct}%{tp_info}", persist=True)
+            ai_info = f" | AI: {ai_prob*100:.1f}%" if ai_prob is not None else ""
+            log_event(f"🛒 Manuálny nákup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investícia: {actual_spent_usdc:.2f}$ | Fixný SL: -{fixed_sl_pct}%{tp_info}{ai_info}", persist=True)
             send_telegram_msg(f"🟢 <b>MANUÁLNY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n<b>Pár:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investícia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}\n🛡️ <b>Fixný SL:</b> -{fixed_sl_pct}%" + (f"\n🎯 <b>Fixný TP:</b> +{fixed_tp_pct}%" if use_fixed_tp else ""))
 
             return JSONResponse({"status": "success", "symbol": okx_symbol})
