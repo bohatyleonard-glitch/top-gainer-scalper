@@ -1,6 +1,7 @@
 import asyncio
+import base64
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -165,7 +166,7 @@ def okx_public_request(path_and_query: str) -> dict:
 
 def okx_request(method: str, request_path: str, body: str = "") -> dict:
     if not OKX_API_KEY or not OKX_SECRET_KEY or not OKX_PASSPHRASE:
-        return {"code": "0", "msg": "Demo stub (bez API kľúčov)", "data": [{"ordId": "demo-local"}]}
+        return {"code": "-1", "msg": "Chýbajú OKX API kľúče", "data": []}
     try:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
         prehash = f"{ts}{method.upper()}{request_path}{body}"
@@ -174,7 +175,6 @@ def okx_request(method: str, request_path: str, body: str = "") -> dict:
             prehash.encode("utf-8"),
             hashlib.sha256,
         ).digest()
-        import base64
         sign_b64 = base64.b64encode(sig).decode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -195,21 +195,19 @@ def okx_request(method: str, request_path: str, body: str = "") -> dict:
         return {"code": "-1", "msg": str(e), "data": []}
 
 def fetch_account_capital(ccy: str = "USDC") -> float:
-    if not OKX_API_KEY or not OKX_SECRET_KEY or not OKX_PASSPHRASE:
-        return 2500.0
-    try:
-        res = okx_request("GET", f"/api/v5/account/balance?ccy={ccy}")
+    currencies = [ccy, "USDT"] if ccy != "USDT" else ["USDT"]
+    for currency in currencies:
+        res = okx_request("GET", f"/api/v5/account/balance?ccy={currency}")
         if res.get("code") == "0" and res.get("data"):
             details = res["data"][0].get("details", [])
             for item in details:
-                if item.get("ccy") == ccy:
+                if item.get("ccy") == currency:
                     avail = safe_float(item.get("availEq"), 0.0)
                     if avail <= 0:
                         avail = safe_float(item.get("cashBal"), 0.0)
-                    return max(0.0, avail)
-        return 0.0
-    except Exception:
-        return 0.0
+                    if avail > 0:
+                        return avail
+    return 0.0
 
 def get_instrument_rules(inst_id: str) -> tuple[float, float]:
     try:
@@ -959,7 +957,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None):
             safe_budget = min(allocated_capital_base * 0.98, budget_cap)
 
         if safe_budget < 5.0:
-            log_event(f"❌ Nedostatok USDC prostriedkov: {free_capital}")
+            log_event(f"❌ Nedostatok prostriedkov na účte: {free_capital:.2f}")
             return
 
         ticker_res = okx_public_request(f"/api/v5/market/ticker?instId={okx_symbol}")
