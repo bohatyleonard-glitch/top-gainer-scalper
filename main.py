@@ -24,7 +24,7 @@ WEBHOOK_SECRET = "moje_tajne_heslo_123"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784")
 
-# --- NASTAVENIA PODLA PINE SCRIPTU + FIXNY STOP-LOSS & FIXNY TP + SMC FILTER ---
+# --- NASTAVENIA PODLA PINE SCRIPTU + FIXNY STOP-LOSS & FIXNY TP ---
 
 ALLOWED_TIMEFRAMES = ["1m", "5m", "8m", "15m", "30m", "45m", "1h", "2h", "3h", "4h"]
 
@@ -44,7 +44,6 @@ CLOSED_TRADES_HISTORY = []
 SYSTEM_LOGS = []
 CURRENT_STAGE = "STAV: Mimo obchodu. Čakám na BUY signál z Pine Scriptu..."
 LAST_TRADE_TIME = {}
-LAST_SMC_BLOCK_LOG = {}
 MARKET_SCANNER_CACHE = {}
 trade_lock = asyncio.Lock()
 
@@ -65,7 +64,7 @@ TOP_LIQUID_SYMBOLS = [
     "TIA-USDC", "SEI-USDC", "DOT-USDC", "ATOM-USDC", "UNI-USDC"
 ]
 
-# Vstup a výstup riadi BUY / SELL z Pine Scriptu + fixný Stop-Loss + voliteľný fixný TP + voliteľný SMC filter.
+# Vstup a výstup riadi BUY / SELL z Pine Scriptu + fixný Stop-Loss + voliteľný fixný Take Profit.
 SETTINGS = {
     "fixed_sl_pct": 1.5,            # Pevný Stop-Loss (-1.5 % od vstupu)
     "use_fixed_tp": False,          # Voliteľný pevný Take Profit v 2s monitore
@@ -91,15 +90,8 @@ SETTINGS = {
     "reentry_cooldown_sec": 120,
     "max_budget_cap": 1000.0,
     "compounding_enabled": False,
-    "max_parallel": 1,
-    # --- NOVÝ VOLITEĽNÝ SMC FILTER (ochrana proti neskorým / zlým vlnám) ---
-    "use_smc_filter": True,
-    "smc_swing_len": 20,
-    "smc_block_bear_structure": True,
-    "smc_block_premium": True,
-    "smc_require_bull_zone": False
+    "max_parallel": 1
 }
-
 
 def log_event(message: str):
     timestamp = datetime.now(timezone.utc) + timedelta(hours=1)
@@ -109,7 +101,6 @@ def log_event(message: str):
     if len(SYSTEM_LOGS) > 80:
         SYSTEM_LOGS.pop()
     print(entry, flush=True)
-
 
 def send_telegram_msg(message: str, reply_markup=None):
     if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN.startswith("DOPLŇ"):
@@ -123,7 +114,6 @@ def send_telegram_msg(message: str, reply_markup=None):
     except Exception as err:
         print(f"❌ Chyba pri odosielaní Telegram notifikácie: {err}", flush=True)
 
-
 def load_persistent_data():
     global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR
     if os.path.exists(STORAGE_FILE):
@@ -136,7 +126,6 @@ def load_persistent_data():
         except Exception as e:
             log_event(f"⚠️ Chyba pri načítaní úložiska: {e}")
 
-
 def save_persistent_data():
     try:
         cutoff_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
@@ -147,16 +136,13 @@ def save_persistent_data():
     except Exception as e:
         log_event(f"⚠️ Chyba pri ukladaní údajov na disk: {e}")
 
-
 def get_sk_time_str() -> str:
     sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
     return sk_time.strftime("%Y-%m-%d %H:%M:%S")
 
-
 def get_sk_date_str() -> str:
     sk_time = datetime.now(timezone.utc) + timedelta(hours=1)
     return sk_time.strftime("%Y-%m-%d")
-
 
 def safe_float(val, default=0.0) -> float:
     if val is None:
@@ -168,7 +154,6 @@ def safe_float(val, default=0.0) -> float:
     except (ValueError, TypeError):
         return default
 
-
 def calculate_stats():
     total = len(CLOSED_TRADES_HISTORY)
     if total == 0:
@@ -178,7 +163,6 @@ def calculate_stats():
     win_rate = (wins / total) * 100.0
     total_pnl = sum(h.get("pnl_usdc", 0) for h in CLOSED_TRADES_HISTORY)
     return {"win_rate": round(win_rate, 1), "total_trades": total, "wins": wins, "losses": losses, "total_pnl": round(total_pnl, 2)}
-
 
 def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
     global CLOSED_TRADES_HISTORY, DAILY_PNL_CALENDAR
@@ -195,7 +179,6 @@ def record_closed_trade(pair, pnl_pct, pnl_usdc, reason):
     CLOSED_TRADES_HISTORY.insert(0, {"pair": pair, "pnl_pct": round(pnl_pct, 2), "pnl_usdc": round(pnl_usdc, 2), "reason": reason, "time": get_sk_time_str()})
     save_persistent_data()
 
-
 # --- HYBRIDNÝ REQUEST SYSTEM ---
 
 def okx_public_request(path: str):
@@ -205,7 +188,6 @@ def okx_public_request(path: str):
         return response.json()
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
-
 
 def okx_request(method: str, path: str, body: str = ""):
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -230,7 +212,6 @@ def okx_request(method: str, path: str, body: str = ""):
     except Exception as err:
         return {"code": "-1", "msg": str(err)}
 
-
 def get_instrument_rules(symbol: str):
     try:
         res = okx_public_request(f"/api/v5/public/instruments?instType=SPOT&instId={symbol}")
@@ -243,7 +224,6 @@ def get_instrument_rules(symbol: str):
         log_event(f"⚠️ Chyba pri načítaní pravidiel pre {symbol}: {e}")
     return 0.01, 0.01
 
-
 def format_amount(amount: float, lot_sz: float, min_sz: float) -> str:
     if amount < min_sz:
         return ""
@@ -255,7 +235,6 @@ def format_amount(amount: float, lot_sz: float, min_sz: float) -> str:
     if valid_amount < min_sz:
         return ""
     return f"{valid_amount:.{precision}f}"
-
 
 def fetch_account_capital(stable_ccy="USDC") -> float:
     try:
@@ -274,7 +253,6 @@ def fetch_account_capital(stable_ccy="USDC") -> float:
         log_event(f"⚠️ Chyba pri načítaní zostatku: {err}")
     return 13000.0
 
-
 def check_btc_health() -> bool:
     if not SETTINGS["use_btc_filter"]:
         return True
@@ -292,8 +270,13 @@ def check_btc_health() -> bool:
         pass
     return True
 
-
 def get_market_regime_and_sideways(bar_tf: str) -> tuple[str, bool]:
+    """
+    Určí stav trhu podľa BTC-USDC na zvolenom TF:
+    - "SIDEWAYS" (True): úzke rozpätie posledných 12 uzavretých sviečok + časté kríženie EMA9 / EMA20
+    - "BULL" (False): nie je bočný trh a cena / EMA20 ukazujú rastový trend
+    - "BEAR" (False): nie je bočný trh a cena / EMA20 ukazujú klesajúci trend
+    """
     try:
         url = f"/api/v5/market/candles?instId=BTC-USDC&bar={bar_tf}&limit=25"
         res = okx_public_request(url)
@@ -357,7 +340,6 @@ def get_market_regime_and_sideways(bar_tf: str) -> tuple[str, bool]:
     except Exception:
         return ("BULL", False)
 
-
 def update_top_liquid_symbols():
     global TOP_LIQUID_SYMBOLS
     try:
@@ -399,130 +381,10 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"⚠️ Chyba pri aktualizácii top symbolov: {e}")
 
-
-# --- SMC FILTER LOGIKA (ŠTRUKTÚRA BOS/CHoCH, DISCOUNT/PREMIUM, BULLISH OB/FVG) ---
-
-def evaluate_smc_entry_filter(closed_candles: list) -> dict:
-    """
-    Vyhodnocuje SMC kontext na uzavretých sviečkach:
-    - štruktúra (BOS/CHoCH -> BULLISH / BEARISH / NEUTRAL)
-    - zóna (DISCOUNT / EQUILIBRIUM / PREMIUM)
-    - prítomnosť čerstvého býčieho Order Blocku alebo býčieho FVG
-    Vracia: {"allowed": bool, "reason": str, "summary": str}
-    """
-    use_smc = bool(SETTINGS.get("use_smc_filter", True))
-    if not use_smc:
-        return {"allowed": True, "reason": "", "summary": "SMC: OFF"}
-
-    n = len(closed_candles)
-    swing_len = max(5, min(50, int(SETTINGS.get("smc_swing_len", 20))))
-    block_bear = bool(SETTINGS.get("smc_block_bear_structure", True))
-    block_premium = bool(SETTINGS.get("smc_block_premium", True))
-    require_bull_zone = bool(SETTINGS.get("smc_require_bull_zone", False))
-
-    if n < swing_len + 5:
-        return {"allowed": True, "reason": "", "summary": "SMC: INIT"}
-
-    opens = [safe_float(c[1]) for c in closed_candles]
-    highs = [safe_float(c[2]) for c in closed_candles]
-    lows = [safe_float(c[3]) for c in closed_candles]
-    closes = [safe_float(c[4]) for c in closed_candles]
-
-    # Swing highs & lows pre štruktúru a Discount/Premium rozpätie
-    last_swing_high = None
-    last_swing_low = None
-    structure_bias = "NEUTRAL"  # "BULLISH" alebo "BEARISH"
-
-    for i in range(swing_len, n):
-        left_h = highs[i - swing_len: i]
-        right_h = highs[i + 1: min(n, i + swing_len + 1)]
-        if highs[i] > max(left_h) and (not right_h or highs[i] >= max(right_h)):
-            last_swing_high = highs[i]
-
-        left_l = lows[i - swing_len: i]
-        right_l = lows[i + 1: min(n, i + swing_len + 1)]
-        if lows[i] < min(left_l) and (not right_l or lows[i] <= min(right_l)):
-            last_swing_low = lows[i]
-
-        if last_swing_high is not None and closes[i] > last_swing_high:
-            structure_bias = "BULLISH"
-        elif last_swing_low is not None and closes[i] < last_swing_low:
-            structure_bias = "BEARISH"
-
-    curr_close = closes[-1]
-
-    # Discount vs. Premium zóna z posledného swingového rozpätia alebo 40-sviečkového okna
-    window_start = max(0, n - 40)
-    range_top = last_swing_high if last_swing_high is not None else max(highs[window_start:])
-    range_bottom = last_swing_low if last_swing_low is not None else min(lows[window_start:])
-    if range_top < curr_close:
-        range_top = max(highs[window_start:])
-    if range_bottom > curr_close:
-        range_bottom = min(lows[window_start:])
-
-    zone_name = "DISCOUNT"
-    if range_top > range_bottom:
-        eq_level = (range_top + range_bottom) * 0.5
-        if curr_close > eq_level:
-            zone_name = "PREMIUM"
-        elif abs(curr_close - eq_level) <= (range_top - range_bottom) * 0.03:
-            zone_name = "EQUILIBRIUM"
-        else:
-            zone_name = "DISCOUNT"
-
-    # Detekcia nedávneho býčieho Order Blocku a býčieho FVG (posledných 25 sviečok)
-    has_bull_ob = False
-    has_bull_fvg = False
-    lookback_start = max(2, n - 25)
-    for k in range(lookback_start, n - 1):
-        # Býčí FVG: low[k+1] > high[k-1] a ešte nebol úplne vyplnený
-        if lows[k + 1] > highs[k - 1]:
-            fvg_bot = highs[k - 1]
-            fvg_top = lows[k + 1]
-            mitigated = any(lows[m] < fvg_bot for m in range(k + 2, n))
-            if not mitigated and curr_close >= fvg_bot * 0.995:
-                has_bull_fvg = True
-
-        # Býčí Order Block: medvedia sviečka nasledovaná silným býčím impulzom
-        if closes[k] < opens[k] and closes[k + 1] > highs[k]:
-            ob_bot = lows[k]
-            ob_top = highs[k]
-            broken = any(lows[m] < ob_bot for m in range(k + 2, n))
-            if not broken and curr_close >= ob_bot * 0.995:
-                has_bull_ob = True
-
-    if block_bear and structure_bias == "BEARISH":
-        return {
-            "allowed": False,
-            "reason": "SMC blok: medvedia štruktúra (Bearish BOS/CHoCH)",
-            "summary": f"SMC: BEAR|{zone_name}"
-        }
-
-    if block_premium and zone_name == "PREMIUM":
-        return {
-            "allowed": False,
-            "reason": "SMC blok: cena v Premium zóne (riziko neskorého vstupu)",
-            "summary": f"SMC: {structure_bias}|PREMIUM"
-        }
-
-    if require_bull_zone and not (zone_name == "DISCOUNT" or has_bull_ob or has_bull_fvg):
-        return {
-            "allowed": False,
-            "reason": "SMC blok: chýba Discount zóna / Bullish OB / Bullish FVG",
-            "summary": f"SMC: {structure_bias}|{zone_name}"
-        }
-
-    ob_fvg_tag = "+OB/FVG" if (has_bull_ob or has_bull_fvg) else ""
-    return {
-        "allowed": True,
-        "reason": "",
-        "summary": f"SMC: OK ({structure_bias}/{zone_name}{ob_fvg_tag})"
-    }
-
-
 # --- 1:1 PINE SCRIPT MATEMATIKA (BUY A SELL SIGNÁLY) ---
 
 def calc_ema_series(values, length):
+    """Vypočíta EMA sériu rovnako ako ta.ema v Pine Scripte."""
     if not values:
         return []
     alpha = 2.0 / (length + 1.0)
@@ -531,8 +393,8 @@ def calc_ema_series(values, length):
         ema.append(val * alpha + ema[-1] * (1.0 - alpha))
     return ema
 
-
 def calc_linreg_series(values, length, offset=0):
+    """Vypočíta ta.linreg(source, length, offset) pre celú sériu."""
     n = len(values)
     out = [None] * n
     if length <= 1:
@@ -555,8 +417,8 @@ def calc_linreg_series(values, length, offset=0):
         out[i] = intercept + slope * (length - 1 - offset)
     return out
 
-
 def calc_wma_series(values, length):
+    """Vypočíta ta.wma(source, length) pre celú sériu (ignoruje počiatočné None)."""
     n = len(values)
     out = [None] * n
     weights = list(range(1, length + 1))
@@ -568,14 +430,13 @@ def calc_wma_series(values, length):
         out[i] = sum(window[j] * weights[j] for j in range(length)) / w_sum
     return out
 
-
 def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     """
-    Vyhodnocuje signály BUY a SELL z Pine Scriptu na uzavretých sviečkach
-    a pri BUY signáli overuje nový voliteľný SMC filter.
-    Vracia dict: {"buy": bool, "sell": bool, "sell_reason": str, "smc_blocked": bool, "smc_reason": str}
+    Vyhodnocuje presne signály BUY (ultimate_buy_condition) a SELL (ultimate_sell_condition)
+    z priloženého Pine Scriptu na uzavretých sviečkach podľa aktuálne nastavených parametrov v SETTINGS.
+    Vracia dict: {"buy": bool, "sell": bool, "sell_reason": str}
     """
-    global MARKET_SCANNER_CACHE, ACTIVE_TRADES, LAST_SMC_BLOCK_LOG
+    global MARKET_SCANNER_CACHE, ACTIVE_TRADES
     coin_key = symbol.split("-")[0]
 
     try:
@@ -588,11 +449,12 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 "be_status": "VYPNUTÝ", "ttp_status": "VYPNUTÝ", "ts_status": "VYPNUTÝ",
                 "exec_signal": "ČAKAJ", "signal": "⚠️ CHYBA DÁT", "is_green": False
             }
-            return {"buy": False, "sell": False, "sell_reason": "", "smc_blocked": False, "smc_reason": ""}
+            return {"buy": False, "sell": False, "sell_reason": ""}
 
         candles = res["data"]
-        candles.reverse()
+        candles.reverse()  # Od najstaršej po najnovšiu
 
+        # Len UZATVORENÉ sviečky (candles[:-1]), presne ako potvrdené sviečky v TradingView
         closed_candles = candles[:-1]
 
         ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
@@ -774,20 +636,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 last_cond_volume_bullish = cond_volume_bullish
                 last_buy_trigger = buy_trigger
 
-        smc_info = evaluate_smc_entry_filter(closed_candles)
-        smc_blocked = False
-        smc_reason = ""
-        final_buy = last_bar_buy
-
-        if last_bar_buy and not smc_info["allowed"]:
-            final_buy = False
-            smc_blocked = True
-            smc_reason = smc_info["reason"]
-            now_ts = datetime.now().timestamp()
-            if now_ts - LAST_SMC_BLOCK_LOG.get(coin_key, 0.0) >= 60:
-                LAST_SMC_BLOCK_LOG[coin_key] = now_ts
-                log_event(f"🛡️ {symbol} [{bar_tf.upper()}] BUY zamietnutý ({smc_reason})")
-
         curr_close = ha_closes[-1]
         curr_osc = oscillator[-1]
         is_in_trade = coin_key in ACTIVE_TRADES
@@ -801,10 +649,8 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         ttp_status_txt = f"{trailing_tp_stop_level:.4f}" if (is_in_trade and use_trailing_tp and trailing_tp_active and trailing_tp_stop_level) else ("V TRHU" if (is_in_trade and use_trailing_tp) else "VYPNUTÝ")
         ts_status_txt = f"{ACTIVE_TRADES[coin_key]['fixed_sl_price']:.4f}" if is_in_trade else f"-{SETTINGS['fixed_sl_pct']}%"
 
-        if final_buy and not is_in_trade:
+        if last_bar_buy and not is_in_trade:
             exec_signal_str = "NAKÚPIŤ (BUY)"
-        elif smc_blocked and not is_in_trade:
-            exec_signal_str = "SMC BLOK (BUY)"
         elif last_bar_sell and is_in_trade:
             exec_signal_str = "PREDAŤ (SELL)"
         elif is_in_trade:
@@ -823,17 +669,11 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "ttp_status": ttp_status_txt,
             "ts_status": ts_status_txt,
             "exec_signal": exec_signal_str,
-            "signal": "🟢 BUY" if final_buy else ("🛡️ SMC BLOK" if smc_blocked else ("🔴 SELL" if last_bar_sell else ("🟡 BULLISH" if last_cond_volume_bullish else "⚪ ČAKÁ"))),
-            "is_green": final_buy
+            "signal": "🟢 BUY" if last_bar_buy else ("🔴 SELL" if last_bar_sell else ("🟡 BULLISH" if last_cond_volume_bullish else "⚪ ČAKÁ")),
+            "is_green": last_bar_buy
         }
 
-        return {
-            "buy": final_buy,
-            "sell": last_bar_sell,
-            "sell_reason": last_bar_sell_reason,
-            "smc_blocked": smc_blocked,
-            "smc_reason": smc_reason
-        }
+        return {"buy": last_bar_buy, "sell": last_bar_sell, "sell_reason": last_bar_sell_reason}
     except Exception:
         MARKET_SCANNER_CACHE[coin_key] = {
             "symbol": symbol, "price": 0.0, "oscillator": 0.0,
@@ -841,15 +681,14 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "be_status": "VYPNUTÝ", "ttp_status": "VYPNUTÝ", "ts_status": "VYPNUTÝ",
             "exec_signal": "ČAKAJ", "signal": "⚠️ VÝNIMKA", "is_green": False
         }
-        return {"buy": False, "sell": False, "sell_reason": "", "smc_blocked": False, "smc_reason": ""}
+        return {"buy": False, "sell": False, "sell_reason": ""}
 
-
-# --- AUTONOMNA SKENOVACIA SLUCKA (BUY A SELL PODLA PINE SCRIPTU + SMC FILTER) ---
+# --- AUTONOMNA SKENOVACIA SLUCKA (BUY A SELL PODLA PINE SCRIPTU) ---
 
 async def autonomous_scanner_loop():
     global IS_SIDEWAYS_MARKET, MARKET_REGIME, LAST_SIDEWAYS_ALERT_TS
     await asyncio.sleep(3)
-    log_event(f"🤖 Autonómny Pine Script + SMC skener (BUY & SELL Sync) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"🤖 Autonómny Pine Script skener (BUY & SELL Sync) spustený pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             tf_str = CURRENT_TIMEFRAME.lower()
@@ -900,14 +739,13 @@ async def autonomous_scanner_loop():
 
                         sig = evaluate_pine_strategy(symbol, bar_tf=tf_str)
                         if sig["buy"]:
-                            log_event(f"🚀 PINE SCRIPT + SMC 'BUY' SIGNÁL PRE {symbol}!")
+                            log_event(f"🚀 PINE SCRIPT 'BUY' SIGNÁL PRE {symbol}!")
                             await execute_autonomous_buy(symbol)
 
                         await asyncio.sleep(0.3)
         except Exception as e:
             log_event(f"⚠️ Chyba v autonómnom skeneri: {e}")
         await asyncio.sleep(10)
-
 
 async def top_symbols_updater_loop():
     while True:
@@ -916,7 +754,6 @@ async def top_symbols_updater_loop():
         except Exception:
             pass
         await asyncio.sleep(3600)
-
 
 async def execute_autonomous_buy(okx_symbol: str):
     global ACTIVE_TRADES, LAST_TRADE_TIME
@@ -1000,7 +837,7 @@ async def execute_autonomous_buy(okx_symbol: str):
         }
 
         tp_info = f" | Fixný TP: +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp else ""
-        log_event(f"🛒 NÁKUP (Pine + SMC BUY) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Investícia: {actual_spent_usdc:.2f} USDC | Fixný SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}")
+        log_event(f"🛒 NÁKUP (Pine BUY) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} USDC | Investícia: {actual_spent_usdc:.2f} USDC | Fixný SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}")
 
         inline_keyboard = {
             "inline_keyboard": [
@@ -1011,7 +848,7 @@ async def execute_autonomous_buy(okx_symbol: str):
             ]
         }
         send_telegram_msg(
-            f"🟢 <b>PINE + SMC BUY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
+            f"🟢 <b>PINE BUY NÁKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
             f"<b>Pár:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
             f"<b>Investícia:</b> {actual_spent_usdc:.2f} USDC\n"
@@ -1021,8 +858,8 @@ async def execute_autonomous_buy(okx_symbol: str):
             reply_markup=inline_keyboard
         )
 
-
 async def close_trade_position(coin: str, reason: str):
+    """Bezpečne uzavrie pozíciu na OKX, zapíše PnL a aktualizuje LAST_TRADE_TIME."""
     global ACTIVE_TRADES, LAST_TRADE_TIME
     async with trade_lock:
         if coin not in ACTIVE_TRADES:
@@ -1059,7 +896,6 @@ async def close_trade_position(coin: str, reason: str):
             if coin in ACTIVE_TRADES:
                 del ACTIVE_TRADES[coin]
 
-
 # --- MONITOR RIZIK (FIXNY STOP-LOSS A VOLITELNY FIXNY TP) ---
 
 async def fixed_stoploss_monitor_loop():
@@ -1071,8 +907,7 @@ async def fixed_stoploss_monitor_loop():
                 max_p = SETTINGS.get("max_parallel", 1)
                 sl_p = SETTINGS.get("fixed_sl_pct", 1.5)
                 tp_txt = f" | Fixný TP: +{SETTINGS.get('fixed_tp_pct', 1.5)}%" if SETTINGS.get("use_fixed_tp", False) else ""
-                smc_txt = " | SMC: ON" if SETTINGS.get("use_smc_filter", True) else ""
-                CURRENT_STAGE = f"STAV: Bot aktívny (Max {max_p}x | Fixný SL: -{sl_p}%{tp_txt}{smc_txt}). Čakám na BUY/SELL..."
+                CURRENT_STAGE = f"STAV: Bot aktívny (Max {max_p}x | Fixný SL: -{sl_p}%{tp_txt}). Čakám na BUY/SELL..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastavený."
             await asyncio.sleep(2)
@@ -1122,24 +957,21 @@ async def fixed_stoploss_monitor_loop():
             pass
         await asyncio.sleep(2)
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_persistent_data()
     update_top_liquid_symbols()
-    log_event(f"🚀 Autonómny APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + SMC Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) spustený.")
+    log_event(f"🚀 Autonómny APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + Fixný SL -{SETTINGS['fixed_sl_pct']}%) spustený.")
     monitor_task = asyncio.create_task(fixed_stoploss_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg(f"🚀 APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + SMC Filter + Fixný SL -{SETTINGS['fixed_sl_pct']}%) pripravený!")
+    send_telegram_msg(f"🚀 APEX MATRIX_SCALPER_v1_BOT (Pine BUY & SELL + Fixný SL -{SETTINGS['fixed_sl_pct']}%) pripravený!")
     yield
     monitor_task.cancel()
     scanner_task.cancel()
     updater_task.cancel()
 
-
 app = FastAPI(lifespan=lifespan)
-
 
 @app.post("/api/telegram-webhook")
 async def telegram_webhook(request: Request):
@@ -1157,7 +989,6 @@ async def telegram_webhook(request: Request):
         pass
     return {"status": "ok"}
 
-
 @app.post("/api/toggle-bot")
 async def toggle_bot():
     global IS_BOT_ACTIVE, CURRENT_STAGE
@@ -1168,7 +999,6 @@ async def toggle_bot():
     send_telegram_msg(f"⚙️ Zmena stavu: Bot je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "is_bot_active": IS_BOT_ACTIVE})
 
-
 @app.post("/api/toggle-btc-filter")
 async def toggle_btc_filter():
     SETTINGS["use_btc_filter"] = not SETTINGS.get("use_btc_filter", True)
@@ -1177,7 +1007,6 @@ async def toggle_btc_filter():
     send_telegram_msg(f"⚙️ Zmena stavu: BTC Trend Guard filter je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "use_btc_filter": SETTINGS["use_btc_filter"]})
 
-
 @app.post("/api/toggle-compounding")
 async def toggle_compounding():
     SETTINGS["compounding_enabled"] = not SETTINGS.get("compounding_enabled", False)
@@ -1185,7 +1014,6 @@ async def toggle_compounding():
     log_event(f"⚙️ Automatické reinvestovanie (COMPOUNDING): {status_str.upper()}")
     send_telegram_msg(f"⚙️ Zmena stavu: Auto-Compounding je teraz {status_str}.")
     return JSONResponse({"status": "success", "compounding_enabled": SETTINGS["compounding_enabled"]})
-
 
 @app.post("/api/set-budget/{amount}")
 async def set_budget(amount: int):
@@ -1196,7 +1024,6 @@ async def set_budget(amount: int):
         return JSONResponse({"status": "success", "max_budget_cap": amount})
     return JSONResponse({"status": "error", "message": "Neplatná hodnota rozpočtu."})
 
-
 @app.post("/api/set-parallel/{count}")
 async def set_parallel(count: int):
     if count in [1, 2, 3, 4]:
@@ -1206,7 +1033,6 @@ async def set_parallel(count: int):
         return JSONResponse({"status": "success", "max_parallel": count})
     return JSONResponse({"status": "error", "message": "Neplatná hodnota."})
 
-
 @app.post("/api/set-sl/{sl_val}")
 async def set_sl(sl_val: float):
     if 0.1 <= sl_val <= 50.0:
@@ -1215,7 +1041,6 @@ async def set_sl(sl_val: float):
         send_telegram_msg(f"🛡️ Zmena Stop-Lossu: Fixný SL pre nové obchody je teraz -{sl_val}%.")
         return JSONResponse({"status": "success", "fixed_sl_pct": sl_val})
     return JSONResponse({"status": "error", "message": "Neplatná hodnota SL (povolene 0.1 - 50.0 %)."})
-
 
 @app.post("/api/set-tf/{tf_val}")
 async def set_tf(tf_val: str):
@@ -1227,14 +1052,13 @@ async def set_tf(tf_val: str):
         regime_now, sideways_now = get_market_regime_and_sideways(tf_lower)
         MARKET_REGIME = regime_now
         IS_SIDEWAYS_MARKET = sideways_now
-        log_event(f"⏱️ Časový rámec (TF) zmenený na: {CURRENT_TIMEFRAME} (bez zmeny profilov, riadi sa Pine BUY/SELL + SMC)")
+        log_event(f"⏱️ Časový rámec (TF) zmenený na: {CURRENT_TIMEFRAME} (bez zmeny profilov, riadi sa Pine BUY/SELL)")
         return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
     return JSONResponse({"status": "error", "message": "Neplatný časový rámec."})
 
-
 @app.post("/api/update-pine-settings")
 async def update_pine_settings(request: Request):
-    """Uloží a uplatní všetky nastavenia z Pine Scriptu + SMC filtra priamo na stránke Apex."""
+    """Uloží a uplatní všetky nastavenia z Pine Scriptu priamo na stránke Apex."""
     global MARKET_SCANNER_CACHE
     try:
         payload = await request.json()
@@ -1274,21 +1098,16 @@ async def update_pine_settings(request: Request):
         SETTINGS["use_ha_exit"] = bool(payload.get("use_ha_exit", SETTINGS["use_ha_exit"]))
         SETTINGS["ha_exit_consecutive"] = max(1, min(3, int(payload.get("ha_exit_consecutive", SETTINGS["ha_exit_consecutive"]))))
 
-        SETTINGS["use_smc_filter"] = bool(payload.get("use_smc_filter", SETTINGS["use_smc_filter"]))
-        SETTINGS["smc_swing_len"] = max(5, min(50, int(payload.get("smc_swing_len", SETTINGS["smc_swing_len"]))))
-        SETTINGS["smc_block_bear_structure"] = bool(payload.get("smc_block_bear_structure", SETTINGS["smc_block_bear_structure"]))
-        SETTINGS["smc_block_premium"] = bool(payload.get("smc_block_premium", SETTINGS["smc_block_premium"]))
-        SETTINGS["smc_require_bull_zone"] = bool(payload.get("smc_require_bull_zone", SETTINGS["smc_require_bull_zone"]))
-
         MARKET_SCANNER_CACHE.clear()
         log_event(
-            f"🎛️ Nastavenia aktualizované: Režim={mode_val}, SMC={SETTINGS['use_smc_filter']}(sw={SETTINGS['smc_swing_len']}, noBear={SETTINGS['smc_block_bear_structure']}, noPrem={SETTINGS['smc_block_premium']}, bullZone={SETTINGS['smc_require_bull_zone']}), "
-            f"FixSL=-{SETTINGS['fixed_sl_pct']}%, FixTP={SETTINGS['use_fixed_tp']}({SETTINGS['fixed_tp_pct']}%)"
+            f"🎛️ Pine nastavenia aktualizované: Režim={mode_val}, PrísnyBUY={SETTINGS['strict_buy_filter']}, Osc({SETTINGS['fast_len']}/{SETTINGS['slow_len']}/{SETTINGS['signal_len']}, pred={SETTINGS['pred_look']}), "
+            f"Fib={fib_val}(piv={SETTINGS['pivot_len']}), FixSL=-{SETTINGS['fixed_sl_pct']}%, FixTP={SETTINGS['use_fixed_tp']}({SETTINGS['fixed_tp_pct']}%), "
+            f"TS={SETTINGS['use_trailing']}({SETTINGS['trail_pct']}%), BE={SETTINGS['use_breakeven']}({SETTINGS['be_trigger_pct']}%), "
+            f"TTP={SETTINGS['use_trailing_tp']}({SETTINGS['ttp_trigger_pct']}%/{SETTINGS['ttp_callback_pct']}%), HA_Exit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x)"
         )
         return JSONResponse({"status": "success", "pine_settings": get_pine_settings_dict()})
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)})
-
 
 def get_pine_settings_dict():
     return {
@@ -1311,14 +1130,8 @@ def get_pine_settings_dict():
         "ttp_trigger_pct": SETTINGS["ttp_trigger_pct"],
         "ttp_callback_pct": SETTINGS["ttp_callback_pct"],
         "use_ha_exit": SETTINGS["use_ha_exit"],
-        "ha_exit_consecutive": SETTINGS["ha_exit_consecutive"],
-        "use_smc_filter": SETTINGS["use_smc_filter"],
-        "smc_swing_len": SETTINGS["smc_swing_len"],
-        "smc_block_bear_structure": SETTINGS["smc_block_bear_structure"],
-        "smc_block_premium": SETTINGS["smc_block_premium"],
-        "smc_require_bull_zone": SETTINGS["smc_require_bull_zone"]
+        "ha_exit_consecutive": SETTINGS["ha_exit_consecutive"]
     }
-
 
 @app.post("/api/manual-buy/{coin}")
 async def manual_buy(coin: str):
@@ -1408,7 +1221,6 @@ async def manual_buy(coin: str):
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)})
 
-
 @app.post("/api/sell-now")
 async def sell_now():
     if not ACTIVE_TRADES:
@@ -1419,7 +1231,6 @@ async def sell_now():
         await close_trade_position(coin, "Ručný okamžitý predaj (Emergency)")
         sold.append(symbol)
     return JSONResponse({"status": "success", "sold": sold})
-
 
 # --- HTML ŠABLÓNA ---
 
@@ -1485,6 +1296,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.01); }
         .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
 
+        /* Panel nastavení Pine Scriptu */
         .pine-panel { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
         .pine-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
         @media (max-width: 1100px) { .pine-grid { grid-template-columns: repeat(2, 1fr); } .stats-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -1578,8 +1390,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         <div>
             <div class="section-title">
-                <span>Nastavenia Pine Script Indikátora & SMC Filtra (BUY / SELL Sync)</span>
-                <span id="pine-active-badge" class="text-yellow">REŽIM: {{ SETTINGS.mode_choice }} | SMC: {% if SETTINGS.use_smc_filter %}ON{% else %}OFF{% endif %}</span>
+                <span>Nastavenia Pine Script Indikátora (BUY / SELL Sync)</span>
+                <span id="pine-active-badge" class="text-yellow">REŽIM: {{ SETTINGS.mode_choice }}</span>
             </div>
             <div class="pine-panel">
                 <div class="pine-grid">
@@ -1616,7 +1428,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </div>
 
                     <div class="pine-group">
-                        <div class="pine-group-title">2. Fibonacci & SMC Filter Vstupu</div>
+                        <div class="pine-group-title">2. Fibonacci Hladiny</div>
                         <div class="pine-row">
                             <label for="pine-pivot-len">Rýchlosť potvrdenia (Pivot)</label>
                             <input type="number" id="pine-pivot-len" class="pine-input" min="1" max="10" step="1" value="{{ SETTINGS.pivot_len }}">
@@ -1628,26 +1440,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                                 <option value="0.618" {% if SETTINGS.fib_choice == '0.618' %}selected{% endif %}>0.618</option>
                                 <option value="0.786" {% if SETTINGS.fib_choice == '0.786' %}selected{% endif %}>0.786</option>
                             </select>
-                        </div>
-                        <div class="pine-row">
-                            <label for="smc-use-filter">Zapnúť SMC filter BUY</label>
-                            <input type="checkbox" id="smc-use-filter" class="pine-checkbox" {% if SETTINGS.use_smc_filter %}checked{% endif %}>
-                        </div>
-                        <div class="pine-row">
-                            <label for="smc-swing-len">SMC dĺžka swingu</label>
-                            <input type="number" id="smc-swing-len" class="pine-input" min="5" max="50" step="1" value="{{ SETTINGS.smc_swing_len }}">
-                        </div>
-                        <div class="pine-row">
-                            <label for="smc-block-bear">Blokovať medvediu štruktúru</label>
-                            <input type="checkbox" id="smc-block-bear" class="pine-checkbox" {% if SETTINGS.smc_block_bear_structure %}checked{% endif %}>
-                        </div>
-                        <div class="pine-row">
-                            <label for="smc-block-premium">Blokovať nákup v Premium</label>
-                            <input type="checkbox" id="smc-block-premium" class="pine-checkbox" {% if SETTINGS.smc_block_premium %}checked{% endif %}>
-                        </div>
-                        <div class="pine-row">
-                            <label for="smc-require-bull-zone">Vyžadovať Discount / OB / FVG</label>
-                            <input type="checkbox" id="smc-require-bull-zone" class="pine-checkbox" {% if SETTINGS.smc_require_bull_zone %}checked{% endif %}>
                         </div>
                     </div>
 
@@ -1712,10 +1504,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </div>
                 </div>
                 <div class="pine-footer">
-                    <span id="pine-save-status" class="pine-save-status">Pripravené – zmeny sa okamžite premietnu do BUY / SELL + SMC skenera.</span>
+                    <span id="pine-save-status" class="pine-save-status">Pripravené – zmeny sa okamžite premietnu do BUY / SELL skenera.</span>
                     <div style="display: flex; gap: 6px;">
                         <button class="btn" onclick="resetPineDefaults()">OBNOVIŤ ZÁKLAD</button>
-                        <button class="btn btn-on" onclick="savePineSettings()">ULOŽIŤ PINE + SMC NASTAVENIA</button>
+                        <button class="btn btn-on" onclick="savePineSettings()">ULOŽIŤ PINE NASTAVENIA</button>
                     </div>
                 </div>
             </div>
@@ -1737,14 +1529,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script + SMC BUY signály...</td></tr>
+                        <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script BUY signály...</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - Pine BUY/SELL + SMC Sync)</div>
+            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - Pine BUY/SELL Sync)</div>
             <div class="terminal-card scrollable-card" style="max-height: 260px;">
                 <table>
                     <thead>
@@ -1770,7 +1562,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         <div>
             <div class="section-title">System Execution Logs</div>
             <div class="logs-box" id="logs-container">
-                <div class="log-line">[System Initialized] Pine BUY & SELL + SMC Filter + Fixný SL pripravený.</div>
+                <div class="log-line">[System Initialized] Pine BUY & SELL + Fixný SL pripravený.</div>
             </div>
         </div>
     </div>
@@ -1881,14 +1673,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             document.getElementById('pine-ttp-callback').value = ps.ttp_callback_pct;
             document.getElementById('pine-use-ha-exit').checked = !!ps.use_ha_exit;
             document.getElementById('pine-ha-consec').value = String(ps.ha_exit_consecutive);
-
-            document.getElementById('smc-use-filter').checked = !!ps.use_smc_filter;
-            document.getElementById('smc-swing-len').value = ps.smc_swing_len;
-            document.getElementById('smc-block-bear').checked = !!ps.smc_block_bear_structure;
-            document.getElementById('smc-block-premium').checked = !!ps.smc_block_premium;
-            document.getElementById('smc-require-bull-zone').checked = !!ps.smc_require_bull_zone;
-
-            document.getElementById('pine-active-badge').innerText = `REŽIM: ${ps.mode_choice} | SMC: ${ps.use_smc_filter ? 'ON' : 'OFF'}`;
+            document.getElementById('pine-active-badge').innerText = `REŽIM: ${ps.mode_choice}`;
         }
 
         async function savePineSettings() {
@@ -1912,12 +1697,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 ttp_trigger_pct: parseFloat(document.getElementById('pine-ttp-trigger').value),
                 ttp_callback_pct: parseFloat(document.getElementById('pine-ttp-callback').value),
                 use_ha_exit: document.getElementById('pine-use-ha-exit').checked,
-                ha_exit_consecutive: parseInt(document.getElementById('pine-ha-consec').value, 10),
-                use_smc_filter: document.getElementById('smc-use-filter').checked,
-                smc_swing_len: parseInt(document.getElementById('smc-swing-len').value, 10),
-                smc_block_bear_structure: document.getElementById('smc-block-bear').checked,
-                smc_block_premium: document.getElementById('smc-block-premium').checked,
-                smc_require_bull_zone: document.getElementById('smc-require-bull-zone').checked
+                ha_exit_consecutive: parseInt(document.getElementById('pine-ha-consec').value, 10)
             };
 
             let res = await fetch('/api/update-pine-settings', {
@@ -1933,7 +1713,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     syncSlUi(data.pine_settings.fixed_sl_pct);
                 }
                 statusEl.style.color = 'var(--green)';
-                statusEl.innerText = 'Uložené! Skener teraz počíta BUY a SELL podľa nových nastavení + SMC filtra.';
+                statusEl.innerText = 'Uložené! Skener teraz počíta BUY a SELL podľa nových nastavení.';
                 updateState();
             } else {
                 statusEl.style.color = 'var(--red)';
@@ -1962,12 +1742,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 ttp_trigger_pct: 0.8,
                 ttp_callback_pct: 0.2,
                 use_ha_exit: true,
-                ha_exit_consecutive: 2,
-                use_smc_filter: true,
-                smc_swing_len: 20,
-                smc_block_bear_structure: true,
-                smc_block_premium: true,
-                smc_require_bull_zone: false
+                ha_exit_consecutive: 2
             };
             applyPineFormValues(defaults);
             await savePineSettings();
@@ -2005,7 +1780,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 document.getElementById('header-tf').innerText = data.current_tf;
                 document.getElementById('header-sl').innerText = `-${data.fixed_sl_pct}%`;
                 if (data.pine_settings) {
-                    document.getElementById('pine-active-badge').innerText = `REŽIM: ${data.pine_settings.mode_choice} | SMC: ${data.pine_settings.use_smc_filter ? 'ON' : 'OFF'}`;
+                    document.getElementById('pine-active-badge').innerText = `REŽIM: ${data.pine_settings.mode_choice}`;
                 }
 
                 let regimeBadge = document.getElementById('market-regime-badge');
@@ -2054,7 +1829,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     activeTbody.innerHTML = html;
                     sellBtn.disabled = false;
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script + SMC BUY signály...</td></tr>`;
+                    activeTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script BUY signály...</td></tr>`;
                     sellBtn.disabled = true;
                 }
 
@@ -2065,7 +1840,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     for (let [coin, info] of Object.entries(scannerData)) {
                         let momClass = info.momentum === "SILNÉ" ? "text-green" : "text-red";
                         let impClass = info.impulse.includes("AKTÍVNY") ? "text-green" : "text-yellow";
-                        let execClass = info.exec_signal.includes("NAKÚPIŤ") ? "text-green" : ((info.exec_signal.includes("PREDAŤ") || info.exec_signal.includes("SMC BLOK")) ? "text-red" : "text-yellow");
+                        let execClass = info.exec_signal.includes("NAKÚPIŤ") ? "text-green" : (info.exec_signal.includes("PREDAŤ") ? "text-red" : "text-yellow");
 
                         sHtml += `<tr>
                             <td><b>${info.symbol}</b></td>
@@ -2103,7 +1878,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 </html>
 """
 
-
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     balance = fetch_account_capital("USDC")
@@ -2115,7 +1889,6 @@ async def dashboard():
         CURRENT_STAGE=CURRENT_STAGE,
         balance=balance
     )
-
 
 @app.get("/api/state")
 async def get_state():
@@ -2136,7 +1909,6 @@ async def get_state():
         "history": CLOSED_TRADES_HISTORY[:20],
         "logs": SYSTEM_LOGS
     })
-
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
