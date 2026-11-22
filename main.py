@@ -92,13 +92,13 @@ SYSTEM_LOGS: list[str] = []
 trade_lock = asyncio.Lock()
 
 SETTINGS = {
-    "max_parallel": 1,
+    "max_parallel": 4,
     "max_budget_cap": 1000.0,
     "compounding_enabled": False,
     "use_btc_filter": True,
     "reentry_cooldown_sec": 300,
     "mode_choice": "ALL_GREEN",
-    "strict_buy_filter": False,
+    "strict_buy_filter": True,
     "fast_len": 5,
     "slow_len": 20,
     "signal_len": 9,
@@ -106,24 +106,24 @@ SETTINGS = {
     "pivot_len": 2,
     "fib_choice": "0.786",
     "fixed_sl_pct": 1.5,
-    "use_fixed_tp": False,
-    "fixed_tp_pct": 1.5,
+    "use_fixed_tp": True,
+    "fixed_tp_pct": 0.8,
     "use_trailing": True,
-    "trail_pct": 1.5,
+    "trail_pct": 0.6,
     "use_breakeven": True,
-    "be_trigger_pct": 0.35,
+    "be_trigger_pct": 0.3,
     "use_trailing_tp": True,
     "ttp_trigger_pct": 0.8,
     "ttp_callback_pct": 0.2,
     "use_ha_exit": True,
     "ha_exit_consecutive": 2,
-    "block_sideways_buy": False,
-    "min_rel_volume": 0.55,
+    "block_sideways_buy": True,
+    "min_rel_volume": 1.2,
     "use_anti_chase": True,
-    "max_candle_pump_pct": 0.65,
-    "max_ema9_dist_pct": 0.85,
+    "max_candle_pump_pct": 0.9,
+    "max_ema9_dist_pct": 0.8,
     "use_ai_filter": True,
-    "ai_min_prob": 0.52,
+    "ai_min_prob": 0.6,
 }
 
 AI_STATE = {
@@ -133,6 +133,7 @@ AI_STATE = {
     "live_learned_count": 0,
     "live_wins_count": 0,
     "win_rate_train": 0.0,
+    "accuracy_train": 0.0,
     "trained_at": "--",
     "last_symbol": "--",
     "last_prob": None,
@@ -566,14 +567,21 @@ def update_top_liquid_symbols():
             log_event(f"Nepodarilo sa načítať tickery pre 20 symbolov: {res.get('msg')}")
             return
         candidates = []
+        available_usdc = set()
         for t in res["data"]:
             inst = t.get("instId", "")
             if inst.endswith("-USDC") and inst not in EXCLUDED_SYMBOLS:
+                available_usdc.add(inst)
                 vol_ccy = safe_float(t.get("volCcy24h"), 0.0)
                 if vol_ccy >= 500000.0:
                     candidates.append((vol_ccy, inst))
         candidates.sort(key=lambda x: x[0], reverse=True)
         top = [inst for _, inst in candidates[:20]]
+        if "RENDER-USDC" in available_usdc and "RENDER-USDC" not in top:
+            if len(top) >= 20:
+                top[-1] = "RENDER-USDC"
+            else:
+                top.append("RENDER-USDC")
         if len(top) >= 5:
             TOP_LIQUID_SYMBOLS = top
     except Exception as e:
@@ -810,10 +818,12 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
             if pred_cls == y:
                 correct += 1
 
+        acc_pct = round((correct / len(dataset)) * 100.0, 1)
         AI_STATE["weights"] = [round(w, 5) for w in weights]
         AI_STATE["bias"] = round(bias, 5)
         AI_STATE["samples_count"] = len(dataset)
         AI_STATE["win_rate_train"] = round((wins_cnt / len(dataset)) * 100.0, 1)
+        AI_STATE["accuracy_train"] = acc_pct
         AI_STATE["trained_at"] = get_sk_time_str()
         AI_STATE["last_symbol"] = f"{symbol} ({bar_tf.upper()})"
         AI_STATE["_last_train_ts"] = now_ts
@@ -845,7 +855,6 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
 
         save_ai_model()
 
-        acc_pct = round((correct / len(dataset)) * 100.0, 1)
         live_cnt = int(AI_STATE.get("live_learned_count", 0))
         live_wins = int(AI_STATE.get("live_wins_count", 0))
         live_losses = max(0, live_cnt - live_wins)
@@ -871,8 +880,17 @@ def predict_ai_probability(feats: list[float]) -> float | None:
     w = AI_STATE.get("weights", [0.0] * 6)
     b = float(AI_STATE.get("bias", 0.0))
     z = b + sum(w[k] * feats[k] for k in range(min(len(w), len(feats))))
-    z = max(-4.0, min(4.0, z))
-    return round(_sigmoid(z), 3)
+    z = max(-2.2, min(2.2, z))
+    raw_prob = _sigmoid(z)
+
+    live_cnt = int(AI_STATE.get("live_learned_count", 0))
+    acc_train = safe_float(AI_STATE.get("accuracy_train"), 0.0)
+    if live_cnt == 0 and 0.0 < acc_train < 50.0:
+        confidence = max(0.35, acc_train / 100.0)
+        calibrated = 0.5 + (raw_prob - 0.5) * confidence
+        return round(calibrated, 3)
+
+    return round(raw_prob, 3)
 
 def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float):
     global AI_STATE
@@ -1111,6 +1129,22 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         curr_osc = oscillator[-1]
         is_in_trade = coin_key in ACTIVE_TRADES
 
+        # Vyhodnotenie reálneho výstupu pre aktívne otvorenú pozíciu (HA Exit + ochrana stavu)
+        if is_in_trade:
+            active_t = ACTIVE_TRADES[coin_key]
+            ha_is_red_now = ha_closes[-1] < ha_opens[-1]
+            ha_live_exit = False
+            if use_ha_exit:
+                if ha_exit_consecutive == 1:
+                    ha_live_exit = ha_is_red_now
+                elif ha_exit_consecutive == 2:
+                    ha_live_exit = (n >= 2) and ha_is_red_now and (ha_closes[-2] < ha_opens[-2])
+                else:
+                    ha_live_exit = (n >= 3) and ha_is_red_now and (ha_closes[-2] < ha_opens[-2]) and (ha_closes[-3] < ha_opens[-3])
+            if ha_live_exit:
+                last_bar_sell = True
+                last_bar_sell_reason = f"Pine SELL (HA Exit {ha_exit_consecutive}x)"
+
         feats = extract_ai_features(n - 1, ha_closes, ha_opens, ha_highs, ha_lows, volumes, oscillator, signal_line, close_ema_9, predicted_next)
         ai_prob = predict_ai_probability(feats)
         if ai_prob is not None:
@@ -1169,10 +1203,19 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         impuls_active = last_buy_trigger or is_in_trade
         impulse_str = "AKTÍVNY (V TRHU)" if impuls_active else "ČAKÁ"
 
-        trade_status_txt = f"{ACTIVE_TRADES[coin_key]['entry_price']:.4f}" if is_in_trade else "---"
-        be_status_txt = f"{ACTIVE_TRADES[coin_key]['entry_price']:.4f}" if (is_in_trade and use_breakeven and breakeven_active) else ("ČAKÁ" if (is_in_trade and use_breakeven) else "VYPNUTÝ")
-        ttp_status_txt = f"{trailing_tp_stop_level:.4f}" if (is_in_trade and use_trailing_tp and trailing_tp_active and trailing_tp_stop_level) else ("V TRHU" if (is_in_trade and use_trailing_tp) else "VYPNUTÝ")
-        ts_status_txt = f"{ACTIVE_TRADES[coin_key]['fixed_sl_price']:.4f}" if is_in_trade else f"-{SETTINGS['fixed_sl_pct']}%"
+        if is_in_trade:
+            t_ref = ACTIVE_TRADES[coin_key]
+            trade_status_txt = f"{t_ref['entry_price']:.4f}"
+            be_status_txt = f"{t_ref['entry_price']:.4f}" if (use_breakeven and t_ref.get("be_active", False)) else ("ČAKÁ" if use_breakeven else "VYPNUTÝ")
+            ttp_stop_live = t_ref.get("ttp_stop_price")
+            ttp_status_txt = f"{ttp_stop_live:.4f}" if (use_trailing_tp and t_ref.get("ttp_active", False) and ttp_stop_live) else ("V TRHU" if use_trailing_tp else "VYPNUTÝ")
+            ts_status_txt = f"{t_ref['fixed_sl_price']:.4f}"
+        else:
+            trade_status_txt = "---"
+            be_status_txt = "VYPNUTÝ"
+            ttp_status_txt = "VYPNUTÝ"
+            ts_status_txt = f"-{SETTINGS['fixed_sl_pct']}%"
+
         ai_score_txt = f"{ai_prob*100:.1f}%" if ai_prob is not None else ("UČÍ SA" if SETTINGS.get("use_ai_filter", True) else "OFF")
 
         if final_buy and not is_in_trade:
@@ -1362,6 +1405,9 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             "use_fixed_tp": use_fixed_tp,
             "fixed_tp_price": fixed_tp_price,
             "fixed_tp_pct": fixed_tp_pct,
+            "be_active": False,
+            "ttp_active": False,
+            "ttp_stop_price": None,
             "amount": coin_amount,
             "initial_amount": coin_amount,
             "lot_sz": lot_sz,
@@ -1467,6 +1513,14 @@ async def fixed_stoploss_monitor_loop():
             continue
 
         try:
+            use_be = bool(SETTINGS.get("use_breakeven", True))
+            be_trig = float(SETTINGS.get("be_trigger_pct", 0.35))
+            use_ts = bool(SETTINGS.get("use_trailing", True))
+            ts_pct = float(SETTINGS.get("trail_pct", 1.5))
+            use_ttp = bool(SETTINGS.get("use_trailing_tp", True))
+            ttp_trig = float(SETTINGS.get("ttp_trigger_pct", 0.8))
+            ttp_cb = float(SETTINGS.get("ttp_callback_pct", 0.2))
+
             for coin in list(ACTIVE_TRADES.keys()):
                 if coin not in ACTIVE_TRADES:
                     continue
@@ -1484,8 +1538,10 @@ async def fixed_stoploss_monitor_loop():
                     if current_price > trade["highest_price"]:
                         trade["highest_price"] = current_price
 
-                    pnl_pct = ((current_price - trade["entry_price"]) / trade["entry_price"]) * 100.0
-                    invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
+                    entry_p = trade["entry_price"]
+                    highest_p = trade["highest_price"]
+                    pnl_pct = ((current_price - entry_p) / entry_p) * 100.0
+                    invested = trade.get("invested_usdc", trade["amount"] * entry_p)
                     pnl_usdc = invested * (pnl_pct / 100.0)
                     trade["live_pnl_pct"] = pnl_pct
                     trade["live_pnl_usdc"] = pnl_usdc
@@ -1499,13 +1555,46 @@ async def fixed_stoploss_monitor_loop():
                     tp_stage = f" | Fixný TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
                     CURRENT_STAGE = f"STAV: Pozícií: {len(ACTIVE_TRADES)} | {symbol} ({pnl_pct:+.2f}%) | Fixný SL: -{fixed_sl_pct}%{tp_stage}"
 
+                    # 1. Fixný Stop-Loss
                     if current_price <= fixed_sl_price:
                         await close_trade_position(coin, f"Fixný Stop-Loss (-{fixed_sl_pct}%)")
                         continue
 
+                    # 2. Fixný Take-Profit (ak je zapnutý)
                     if use_fixed_tp and fixed_tp_price is not None and current_price >= fixed_tp_price:
                         await close_trade_position(coin, f"Fixný Take-Profit (+{fixed_tp_pct}%)")
                         continue
+
+                    # 3. Break-Even ochrana (posun na vstup po dosiahnutí zisku)
+                    if use_be and not trade.get("be_active", False):
+                        if current_price >= entry_p * (1.0 + (be_trig / 100.0)):
+                            trade["be_active"] = True
+                            log_event(f"Break-Even aktivovaný pre {symbol} pri zisku +{pnl_pct:.2f}% (ochrana vstupu {entry_p:.4f}).")
+
+                    if use_be and trade.get("be_active", False) and current_price <= entry_p:
+                        await close_trade_position(coin, f"Break-Even Exit (0.00% / ochrana vstupu)")
+                        continue
+
+                    # 4. Trailing Take Profit (TTP)
+                    if use_ttp:
+                        if not trade.get("ttp_active", False) and current_price >= entry_p * (1.0 + (ttp_trig / 100.0)):
+                            trade["ttp_active"] = True
+                            log_event(f"Trailing TP aktivovaný pre {symbol} pri +{pnl_pct:.2f}% (odstup {ttp_cb}%).")
+                        if trade.get("ttp_active", False):
+                            ttp_stop = highest_p * (1.0 - (ttp_cb / 100.0))
+                            trade["ttp_stop_price"] = ttp_stop
+                            if current_price <= ttp_stop:
+                                await close_trade_position(coin, f"Trailing Take-Profit (-{ttp_cb}% z maxima)")
+                                continue
+
+                    # 5. Trailing Stop (TS)
+                    if use_ts and highest_p > entry_p:
+                        ts_stop = highest_p * (1.0 - (ts_pct / 100.0))
+                        if trade.get("be_active", False):
+                            ts_stop = max(ts_stop, entry_p)
+                        if current_price <= ts_stop:
+                            await close_trade_position(coin, f"Trailing Stop (-{ts_pct}% z maxima)")
+                            continue
         except Exception as e:
             log_event(f"Chyba v monitore rizík: {e}")
         await asyncio.sleep(2)
@@ -1794,6 +1883,9 @@ async def manual_buy(coin: str):
                 "use_fixed_tp": use_fixed_tp,
                 "fixed_tp_price": fixed_tp_price,
                 "fixed_tp_pct": fixed_tp_pct,
+                "be_active": False,
+                "ttp_active": False,
+                "ttp_stop_price": None,
                 "amount": coin_amount,
                 "initial_amount": coin_amount,
                 "lot_sz": lot_sz,
@@ -2386,27 +2478,27 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         async function resetPineDefaults() {
             const defaults = {
                 mode_choice: "ALL_GREEN",
-                strict_buy_filter: false,
+                strict_buy_filter: true,
                 fast_len: 5,
                 slow_len: 20,
                 signal_len: 9,
                 pred_look: 3,
                 use_ai_filter: true,
-                ai_min_prob: 0.52,
-                min_rel_volume: 0.55,
-                block_sideways_buy: false,
+                ai_min_prob: 0.6,
+                min_rel_volume: 1.2,
+                block_sideways_buy: true,
                 use_anti_chase: true,
-                max_candle_pump_pct: 0.65,
-                max_ema9_dist_pct: 0.85,
+                max_candle_pump_pct: 0.9,
+                max_ema9_dist_pct: 0.8,
                 pivot_len: 2,
                 fib_choice: "0.786",
                 fixed_sl_pct: 1.5,
-                use_fixed_tp: false,
-                fixed_tp_pct: 1.5,
+                use_fixed_tp: true,
+                fixed_tp_pct: 0.8,
                 use_trailing: true,
-                trail_pct: 1.5,
+                trail_pct: 0.6,
                 use_breakeven: true,
-                be_trigger_pct: 0.35,
+                be_trigger_pct: 0.3,
                 use_trailing_tp: true,
                 ttp_trigger_pct: 0.8,
                 ttp_callback_pct: 0.2,
