@@ -731,6 +731,84 @@ def get_current_ai_features_for_symbol(symbol: str, bar_tf: str = "15m") -> list
     except Exception:
         return None
 
+def _extract_training_samples_from_symbol(symbol: str, bar_tf: str, limit: int = 200) -> list[tuple[list[float], int]]:
+    res = okx_public_request(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit={limit}")
+    if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 60:
+        return []
+
+    candles = list(reversed(res["data"]))
+    closed = candles[:-1]
+    n = len(closed)
+    if n < 50:
+        return []
+
+    ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
+    for i, c in enumerate(closed):
+        o, h, l, cl, v = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4]), safe_float(c[5])
+        ha_cl = (o + h + l + cl) / 4.0
+        ha_op = (o + cl) / 2.0 if i == 0 else (ha_opens[-1] + ha_closes[-1]) / 2.0
+        ha_hi = max(h, ha_op, ha_cl)
+        ha_lo = min(l, ha_op, ha_cl)
+        ha_closes.append(ha_cl)
+        ha_opens.append(ha_op)
+        ha_highs.append(ha_hi)
+        ha_lows.append(ha_lo)
+        volumes.append(v)
+
+    fast_len = max(1, int(SETTINGS.get("fast_len", 5)))
+    slow_len = max(1, int(SETTINGS.get("slow_len", 20)))
+    signal_len = max(1, int(SETTINGS.get("signal_len", 9)))
+    pred_look = max(1, min(10, int(SETTINGS.get("pred_look", 3))))
+    mode_choice = str(SETTINGS.get("mode_choice", "ALL_GREEN")).upper()
+
+    vol_dirs = [volumes[i] if ha_closes[i] > ha_opens[i] else -volumes[i] for i in range(n)]
+    fast_ma = calc_ema_series(vol_dirs, fast_len)
+    slow_ma = calc_ema_series(vol_dirs, slow_len)
+    oscillator = [fast_ma[i] - slow_ma[i] for i in range(n)]
+    signal_line = calc_ema_series(oscillator, signal_len)
+    close_ema_9 = calc_ema_series(ha_closes, 9)
+    lr0 = calc_linreg_series(oscillator, pred_look, 0)
+    lr1 = calc_linreg_series(oscillator, pred_look, 1 if pred_look > 1 else 0)
+    raw_slope = [(lr0[i] - lr1[i]) if (lr0[i] is not None and lr1[i] is not None) else None for i in range(n)]
+    smooth_slope = calc_wma_series(raw_slope, 3)
+    predicted_next = [(oscillator[i] + smooth_slope[i]) if smooth_slope[i] is not None else oscillator[i] for i in range(n)]
+
+    target_gain_pct = max(0.35, float(SETTINGS.get("fixed_sl_pct", 1.5)) * 0.45)
+    stop_loss_pct = float(SETTINGS.get("fixed_sl_pct", 1.5))
+    horizon = 12
+
+    samples = []
+    for i in range(25, n - horizon):
+        osc_i = oscillator[i]
+        sig_i = signal_line[i]
+        pred_i = predicted_next[i]
+        cl_i = ha_closes[i]
+        ema9_i = close_ema_9[i]
+
+        cond_vol_bull = (osc_i > 0) and (osc_i > sig_i) and (pred_i > osc_i)
+        cond_vol_cross = (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0)
+        if mode_choice == "BREAKOUT":
+            is_sig = cond_vol_cross or (cond_vol_bull and (cl_i > ema9_i))
+        else:
+            is_sig = cond_vol_bull and (cond_vol_cross or (cl_i > ema9_i))
+
+        if not is_sig or cl_i <= 0:
+            continue
+
+        label = 0
+        for j in range(i + 1, i + 1 + horizon):
+            chg_pct = ((ha_closes[j] - cl_i) / cl_i) * 100.0
+            if chg_pct >= target_gain_pct:
+                label = 1
+                break
+            if chg_pct <= -stop_loss_pct:
+                label = 0
+                break
+
+        feats = extract_ai_features(i, ha_closes, ha_opens, ha_highs, ha_lows, volumes, oscillator, signal_line, close_ema_9, predicted_next)
+        samples.append((feats, label))
+    return samples
+
 def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = False) -> dict:
     global AI_STATE
     now_ts = time.time()
@@ -738,84 +816,23 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         return {"ok": True, "samples": AI_STATE["samples_count"], "win_rate": AI_STATE["win_rate_train"]}
 
     try:
-        res = okx_public_request(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=300")
-        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 60:
-            return {"ok": False, "msg": "Nedostatok historickych sviecok z OKX."}
-
-        candles = list(reversed(res["data"]))
-        closed = candles[:-1]
-        n = len(closed)
-        if n < 50:
-            return {"ok": False, "msg": "Prilis malo uzavretych sviecok."}
-
-        ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
-        for i, c in enumerate(closed):
-            o, h, l, cl, v = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4]), safe_float(c[5])
-            ha_cl = (o + h + l + cl) / 4.0
-            ha_op = (o + cl) / 2.0 if i == 0 else (ha_opens[-1] + ha_closes[-1]) / 2.0
-            ha_hi = max(h, ha_op, ha_cl)
-            ha_lo = min(l, ha_op, ha_cl)
-            ha_closes.append(ha_cl)
-            ha_opens.append(ha_op)
-            ha_highs.append(ha_hi)
-            ha_lows.append(ha_lo)
-            volumes.append(v)
-
-        fast_len = max(1, int(SETTINGS.get("fast_len", 5)))
-        slow_len = max(1, int(SETTINGS.get("slow_len", 20)))
-        signal_len = max(1, int(SETTINGS.get("signal_len", 9)))
-        pred_look = max(1, min(10, int(SETTINGS.get("pred_look", 3))))
-        mode_choice = str(SETTINGS.get("mode_choice", "ALL_GREEN")).upper()
-
-        vol_dirs = [volumes[i] if ha_closes[i] > ha_opens[i] else -volumes[i] for i in range(n)]
-        fast_ma = calc_ema_series(vol_dirs, fast_len)
-        slow_ma = calc_ema_series(vol_dirs, slow_len)
-        oscillator = [fast_ma[i] - slow_ma[i] for i in range(n)]
-        signal_line = calc_ema_series(oscillator, signal_len)
-        close_ema_9 = calc_ema_series(ha_closes, 9)
-        lr0 = calc_linreg_series(oscillator, pred_look, 0)
-        lr1 = calc_linreg_series(oscillator, pred_look, 1 if pred_look > 1 else 0)
-        raw_slope = [(lr0[i] - lr1[i]) if (lr0[i] is not None and lr1[i] is not None) else None for i in range(n)]
-        smooth_slope = calc_wma_series(raw_slope, 3)
-        predicted_next = [(oscillator[i] + smooth_slope[i]) if smooth_slope[i] is not None else oscillator[i] for i in range(n)]
-
-        target_gain_pct = max(0.35, float(SETTINGS.get("fixed_sl_pct", 1.5)) * 0.45)
-        stop_loss_pct = float(SETTINGS.get("fixed_sl_pct", 1.5))
-        horizon = 12
+        train_symbols = []
+        for s in ([symbol] + list(TOP_LIQUID_SYMBOLS)):
+            if s and s not in EXCLUDED_SYMBOLS and s not in train_symbols:
+                train_symbols.append(s)
+            if len(train_symbols) >= 12:
+                break
 
         dataset = []
-        for i in range(25, n - horizon):
-            osc_i = oscillator[i]
-            sig_i = signal_line[i]
-            pred_i = predicted_next[i]
-            cl_i = ha_closes[i]
-            ema9_i = close_ema_9[i]
-
-            cond_vol_bull = (osc_i > 0) and (osc_i > sig_i) and (pred_i > osc_i)
-            cond_vol_cross = (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0)
-            if mode_choice == "BREAKOUT":
-                is_sig = cond_vol_cross or (cond_vol_bull and (cl_i > ema9_i))
-            else:
-                is_sig = cond_vol_bull and (cond_vol_cross or (cl_i > ema9_i))
-
-            if not is_sig or cl_i <= 0:
-                continue
-
-            label = 0
-            for j in range(i + 1, i + 1 + horizon):
-                chg_pct = ((ha_closes[j] - cl_i) / cl_i) * 100.0
-                if chg_pct >= target_gain_pct:
-                    label = 1
-                    break
-                if chg_pct <= -stop_loss_pct:
-                    label = 0
-                    break
-
-            feats = extract_ai_features(i, ha_closes, ha_opens, ha_highs, ha_lows, volumes, oscillator, signal_line, close_ema_9, predicted_next)
-            dataset.append((feats, label))
+        used_symbols = []
+        for sym in train_symbols:
+            sym_samples = _extract_training_samples_from_symbol(sym, bar_tf=bar_tf, limit=180)
+            if sym_samples:
+                dataset.extend(sym_samples)
+                used_symbols.append(sym)
 
         if len(dataset) < 10:
-            return {"ok": False, "msg": f"Najdenych len {len(dataset)} historickych signalov."}
+            return {"ok": False, "msg": f"Najdenych len {len(dataset)} historickych signalov napriec tokenmi."}
 
         weights = [0.0] * 6
         bias = 0.0
@@ -848,7 +865,7 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         AI_STATE["win_rate_train"] = round((wins_cnt / len(dataset)) * 100.0, 1)
         AI_STATE["accuracy_train"] = acc_pct
         AI_STATE["trained_at"] = get_sk_time_str()
-        AI_STATE["last_symbol"] = f"{symbol} ({bar_tf.upper()})"
+        AI_STATE["last_symbol"] = f"{len(used_symbols)} tokenov ({bar_tf.upper()})"
         AI_STATE["_last_train_ts"] = now_ts
 
         source_trades = AI_LEARNED_TRADES if AI_LEARNED_TRADES else [
@@ -880,12 +897,13 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         live_wins = int(AI_STATE.get("live_wins_count", 0))
         live_losses = max(0, live_cnt - live_wins)
         log_event(
-            f"AI model natrenovany na {symbol} [{bar_tf.upper()}]: {len(dataset)} vzoriek | "
+            f"AI model natrenovany na {len(used_symbols)} tokenoch [{bar_tf.upper()}]: {len(dataset)} vzoriek | "
             f"Nastudovane a ulozene obchody: {live_cnt} ({live_wins}W/{live_losses}L) | Presnost: {acc_pct}%."
         )
         return {
             "ok": True,
             "samples": len(dataset),
+            "symbols_count": len(used_symbols),
             "win_rate": AI_STATE["win_rate_train"],
             "accuracy": acc_pct,
             "live_learned_count": live_cnt,
@@ -901,7 +919,7 @@ def predict_ai_probability(feats: list[float]) -> float | None:
     w = AI_STATE.get("weights", [0.0] * 6)
     b = float(AI_STATE.get("bias", 0.0))
     z = b + sum(w[k] * feats[k] for k in range(min(len(w), len(feats))))
-    z = max(-2.2, min(2.2, z))
+    z = max(-4.5, min(4.5, z))
     raw_prob = _sigmoid(z)
 
     live_cnt = int(AI_STATE.get("live_learned_count", 0))
@@ -2493,7 +2511,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 const lw = data.details.live_wins_count || 0;
                 const ll = data.details.live_losses_count || 0;
                 statusEl.style.color = 'var(--green)';
-                statusEl.innerText = `AI natrenovane (${data.details.samples} vzoriek, presnost ${data.details.accuracy}%) | Nastudovane a ulozene obchody: ${lc} (${lw}W / ${ll}L).`;
+                statusEl.innerText = `AI natrenovane (${data.details.samples} vzoriek napriec ${data.details.symbols_count || '?'} tokenmi, presnost ${data.details.accuracy}%) | Nastudovane a ulozene obchody: ${lc} (${lw}W / ${ll}L).`;
                 updateState();
             } else {
                 statusEl.style.color = 'var(--red)';
