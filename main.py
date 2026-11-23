@@ -968,7 +968,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             return {"buy": False, "raw_buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "block_reason": "", "features": None, "last_closed_price": 0.0}
 
         candles = list(reversed(res["data"]))
-        # Vyhodnocujeme IBA uzavrete sviecky (posledna sviecka candles[-1] je este otvorena)
         closed_candles = candles[:-1]
 
         ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
@@ -1067,7 +1066,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             cl_i = ha_closes[i]
             ema9_i = close_ema_9[i]
 
-            # Logika zo 68% strategie: objemovy momentum nad 0 a nad signalnou ciarou + crossover + dotyk Fib low
             cond_volume_bullish = (osc_i > 0.0) and (osc_i > sig_i)
             cond_volume_crossover = (i > 0) and (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
             fib_touch = (fib_target is not None) and (ha_lows[i] <= fib_target)
@@ -2129,18 +2127,25 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .text-yellow { color: var(--yellow); font-weight: 700; }
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: #050608; }
         .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
-        .pine-panel { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
-        .pine-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-        @media (max-width: 1100px) { .pine-grid { grid-template-columns: repeat(2, 1fr); } .stats-grid { grid-template-columns: repeat(2, 1fr); } }
-        @media (max-width: 650px) { .pine-grid { grid-template-columns: 1fr; } .stats-grid { grid-template-columns: 1fr; } }
+
+        /* Jednoduchsia a prehladna struktura nastaveni */
+        .pine-panel { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+        .quick-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        @media (max-width: 1000px) { .quick-grid { grid-template-columns: 1fr; } .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 650px) { .stats-grid { grid-template-columns: 1fr; } }
         .pine-group { background: #040507; border: 1px solid var(--border-color); border-radius: 4px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-        .pine-group-title { font-size: 0.65rem; font-weight: 700; color: var(--yellow); text-transform: uppercase; letter-spacing: 0.6px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
+        .pine-group-title { font-size: 0.66rem; font-weight: 700; color: var(--yellow); text-transform: uppercase; letter-spacing: 0.6px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
         .pine-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 0.68rem; color: var(--text-main); }
         .pine-row label { color: var(--text-muted); flex: 1; }
         .pine-input, .pine-select { background: #000000; border: 1px solid var(--border-hover); color: var(--text-main); border-radius: 3px; padding: 3px 6px; font-size: 0.68rem; outline: none; }
         .pine-input { width: 72px; text-align: right; }
         .pine-select { max-width: 155px; }
         .pine-checkbox { width: 15px; height: 15px; accent-color: var(--green); cursor: pointer; }
+        details.adv-box { background: #040507; border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; }
+        details.adv-box > summary { cursor: pointer; font-size: 0.68rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; list-style: none; }
+        details.adv-box[open] > summary { color: var(--yellow); margin-bottom: 8px; }
+        .adv-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        @media (max-width: 1000px) { .adv-grid { grid-template-columns: 1fr; } }
         .pine-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; border-top: 1px solid var(--border-color); padding-top: 10px; }
         .pine-save-status { font-size: 0.68rem; color: var(--green); font-weight: 600; }
     </style>
@@ -2224,13 +2229,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         <div>
             <div class="section-title">
-                <span>Nastavenia 68% Strategie + Anti-Top + AI Filter Kvality</span>
+                <span>Nastavenia bota (hlavne na prvý pohľad + rozbaliteľné detaily)</span>
                 <span id="pine-active-badge" class="text-yellow">REZIM: {{ SETTINGS.mode_choice }}</span>
             </div>
             <div class="pine-panel">
-                <div class="pine-grid">
+                <div class="quick-grid">
                     <div class="pine-group">
-                        <div class="pine-group-title">0. Rezim & 1. Objemovy Oscilator</div>
+                        <div class="pine-group-title">1. Vstup a AI / Anti-Top</div>
                         <div class="pine-row">
                             <label for="pine-mode">Rezim strategie</label>
                             <select id="pine-mode" class="pine-select">
@@ -2240,130 +2245,144 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             </select>
                         </div>
                         <div class="pine-row">
-                            <label for="pine-strict-buy">Prisnejsi filter BUY signalu</label>
-                            <input type="checkbox" id="pine-strict-buy" class="pine-checkbox" {% if SETTINGS.strict_buy_filter %}checked{% endif %}>
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-fast-len">Rychla dlzka (Vol)</label>
-                            <input type="number" id="pine-fast-len" class="pine-input" min="1" max="200" step="1" value="{{ SETTINGS.fast_len }}">
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-slow-len">Pomala dlzka (Vol)</label>
-                            <input type="number" id="pine-slow-len" class="pine-input" min="1" max="300" step="1" value="{{ SETTINGS.slow_len }}">
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-signal-len">Signalna ciara (MA)</label>
-                            <input type="number" id="pine-signal-len" class="pine-input" min="1" max="200" step="1" value="{{ SETTINGS.signal_len }}">
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-pred-look">Citlivost predikcie</label>
-                            <input type="number" id="pine-pred-look" class="pine-input" min="1" max="10" step="1" value="{{ SETTINGS.pred_look }}">
-                        </div>
-                    </div>
-
-                    <div class="pine-group">
-                        <div class="pine-group-title">2. AI Mozog, Fib & Anti-Top</div>
-                        <div class="pine-row">
-                            <label for="pine-use-ai">Autonomny AI filter (Auto-ucenie)</label>
+                            <label for="pine-use-ai">Autonomny AI filter</label>
                             <input type="checkbox" id="pine-use-ai" class="pine-checkbox" {% if SETTINGS.use_ai_filter %}checked{% endif %}>
                         </div>
                         <div class="pine-row">
-                            <label for="pine-use-anti-top">Anti-Top (nekupovat vrchol)</label>
+                            <label for="pine-use-anti-top">Anti-Top (ochrana vrcholu)</label>
                             <input type="checkbox" id="pine-use-anti-top" class="pine-checkbox" {% if SETTINGS.use_anti_chase %}checked{% endif %}>
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-max-pump">Max rast sviecky (%)</label>
-                            <input type="number" id="pine-max-pump" class="pine-input" min="0.1" max="5.0" step="0.1" value="{{ SETTINGS.max_candle_pump_pct }}">
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-max-ema-dist">Max nad EMA9 (%)</label>
-                            <input type="number" id="pine-max-ema-dist" class="pine-input" min="0.1" max="5.0" step="0.1" value="{{ SETTINGS.max_ema9_dist_pct }}">
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-max-wick">Max horny knot (0.1-0.9)</label>
-                            <input type="number" id="pine-max-wick" class="pine-input" min="0.1" max="0.9" step="0.05" value="{{ SETTINGS.max_upper_wick_ratio }}">
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-pivot-len">Pivot dlzka (Fib)</label>
-                            <input type="number" id="pine-pivot-len" class="pine-input" min="1" max="10" step="1" value="{{ SETTINGS.pivot_len }}">
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-fib-choice">Nakupna Fib hladina</label>
-                            <select id="pine-fib-choice" class="pine-select">
-                                <option value="0.50" {% if SETTINGS.fib_choice == '0.50' %}selected{% endif %}>0.50</option>
-                                <option value="0.618" {% if SETTINGS.fib_choice == '0.618' %}selected{% endif %}>0.618</option>
-                                <option value="0.786" {% if SETTINGS.fib_choice == '0.786' %}selected{% endif %}>0.786</option>
-                            </select>
                         </div>
                     </div>
 
                     <div class="pine-group">
-                        <div class="pine-group-title">3. Trailing Stop, BE & Trailing TP</div>
+                        <div class="pine-group-title">2. Ciel (TP) a Stop-Loss (SL)</div>
                         <div class="pine-row">
                             <label for="pine-fixed-sl-pct">Fixny SL (%)</label>
                             <input type="number" id="pine-fixed-sl-pct" class="pine-input" min="0.1" max="50.0" step="0.1" value="{{ SETTINGS.fixed_sl_pct }}">
                         </div>
                         <div class="pine-row">
-                            <label for="pine-use-fixed-tp">Zapnut Fixny TP</label>
+                            <label for="pine-use-fixed-tp">Fixny TP zapnuty</label>
                             <input type="checkbox" id="pine-use-fixed-tp" class="pine-checkbox" {% if SETTINGS.use_fixed_tp %}checked{% endif %}>
                         </div>
                         <div class="pine-row">
                             <label for="pine-fixed-tp-pct">Fixny TP (%)</label>
                             <input type="number" id="pine-fixed-tp-pct" class="pine-input" min="0.1" max="100.0" step="0.1" value="{{ SETTINGS.fixed_tp_pct }}">
                         </div>
-                        <div class="pine-row">
-                            <label for="pine-use-trailing">Zapnut Trailing Stop</label>
-                            <input type="checkbox" id="pine-use-trailing" class="pine-checkbox" {% if SETTINGS.use_trailing %}checked{% endif %}>
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-trail-pct">Vzdialenost TS (%)</label>
-                            <input type="number" id="pine-trail-pct" class="pine-input" min="0.1" max="50.0" step="0.1" value="{{ SETTINGS.trail_pct }}">
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-use-be">Zapnut Break-Even</label>
-                            <input type="checkbox" id="pine-use-be" class="pine-checkbox" {% if SETTINGS.use_breakeven %}checked{% endif %}>
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-be-trigger">Zisk % pre Break-Even</label>
-                            <input type="number" id="pine-be-trigger" class="pine-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.be_trigger_pct }}">
-                        </div>
                     </div>
 
                     <div class="pine-group">
-                        <div class="pine-group-title">3.1 & 3.2. TTP, Oscilator & HA Exit</div>
+                        <div class="pine-group-title">3. Rychly vystup (HA & Oscilator)</div>
                         <div class="pine-row">
-                            <label for="pine-use-ttp">Zapnut Trailing TP</label>
-                            <input type="checkbox" id="pine-use-ttp" class="pine-checkbox" {% if SETTINGS.use_trailing_tp %}checked{% endif %}>
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-ttp-trigger">Aktivacia TTP (%)</label>
-                            <input type="number" id="pine-ttp-trigger" class="pine-input" min="0.1" max="100.0" step="0.1" value="{{ SETTINGS.ttp_trigger_pct }}">
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-ttp-callback">Odstup z maxima TTP (%)</label>
-                            <input type="number" id="pine-ttp-callback" class="pine-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.ttp_callback_pct }}">
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-use-osc-sell">Okamzity SELL pri obrate oscilatora</label>
-                            <input type="checkbox" id="pine-use-osc-sell" class="pine-checkbox" {% if SETTINGS.sell_on_osc_reversal %}checked{% endif %}>
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-use-ha-exit">Povolit exit pri otoceni HA</label>
+                            <label for="pine-use-ha-exit">Exit pri otoceni HA</label>
                             <input type="checkbox" id="pine-use-ha-exit" class="pine-checkbox" {% if SETTINGS.use_ha_exit %}checked{% endif %}>
                         </div>
                         <div class="pine-row">
-                            <label for="pine-ha-consec">Pocet cervenych HA sviecok</label>
+                            <label for="pine-ha-consec">Cervene HA sviecky</label>
                             <select id="pine-ha-consec" class="pine-select">
                                 <option value="1" {% if SETTINGS.ha_exit_consecutive == 1 %}selected{% endif %}>1</option>
                                 <option value="2" {% if SETTINGS.ha_exit_consecutive == 2 %}selected{% endif %}>2</option>
                                 <option value="3" {% if SETTINGS.ha_exit_consecutive == 3 %}selected{% endif %}>3</option>
                             </select>
                         </div>
+                        <div class="pine-row">
+                            <label for="pine-use-osc-sell">SELL pri obrate oscilatora</label>
+                            <input type="checkbox" id="pine-use-osc-sell" class="pine-checkbox" {% if SETTINGS.sell_on_osc_reversal %}checked{% endif %}>
+                        </div>
                     </div>
                 </div>
+
+                <details class="adv-box">
+                    <summary>+ Rozsirene nastavenia (Oscilator, Fib, Anti-Top limity, TS / BE / TTP)</summary>
+                    <div class="adv-grid">
+                        <div class="pine-group">
+                            <div class="pine-group-title">Oscilator & Fibonacci</div>
+                            <div class="pine-row">
+                                <label for="pine-strict-buy">Prisnejsi filter BUY</label>
+                                <input type="checkbox" id="pine-strict-buy" class="pine-checkbox" {% if SETTINGS.strict_buy_filter %}checked{% endif %}>
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-fast-len">Rychla dlzka (Vol)</label>
+                                <input type="number" id="pine-fast-len" class="pine-input" min="1" max="200" step="1" value="{{ SETTINGS.fast_len }}">
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-slow-len">Pomala dlzka (Vol)</label>
+                                <input type="number" id="pine-slow-len" class="pine-input" min="1" max="300" step="1" value="{{ SETTINGS.slow_len }}">
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-signal-len">Signalna ciara (MA)</label>
+                                <input type="number" id="pine-signal-len" class="pine-input" min="1" max="200" step="1" value="{{ SETTINGS.signal_len }}">
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-pred-look">Citlivost predikcie</label>
+                                <input type="number" id="pine-pred-look" class="pine-input" min="1" max="10" step="1" value="{{ SETTINGS.pred_look }}">
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-pivot-len">Pivot dlzka (Fib)</label>
+                                <input type="number" id="pine-pivot-len" class="pine-input" min="1" max="10" step="1" value="{{ SETTINGS.pivot_len }}">
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-fib-choice">Nakupna Fib hladina</label>
+                                <select id="pine-fib-choice" class="pine-select">
+                                    <option value="0.50" {% if SETTINGS.fib_choice == '0.50' %}selected{% endif %}>0.50</option>
+                                    <option value="0.618" {% if SETTINGS.fib_choice == '0.618' %}selected{% endif %}>0.618</option>
+                                    <option value="0.786" {% if SETTINGS.fib_choice == '0.786' %}selected{% endif %}>0.786</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="pine-group">
+                            <div class="pine-group-title">Limity Anti-Top</div>
+                            <div class="pine-row">
+                                <label for="pine-max-pump">Max rast sviecky (%)</label>
+                                <input type="number" id="pine-max-pump" class="pine-input" min="0.1" max="5.0" step="0.1" value="{{ SETTINGS.max_candle_pump_pct }}">
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-max-ema-dist">Max nad EMA9 (%)</label>
+                                <input type="number" id="pine-max-ema-dist" class="pine-input" min="0.1" max="5.0" step="0.1" value="{{ SETTINGS.max_ema9_dist_pct }}">
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-max-wick">Max horny knot (0.1-0.9)</label>
+                                <input type="number" id="pine-max-wick" class="pine-input" min="0.1" max="0.9" step="0.05" value="{{ SETTINGS.max_upper_wick_ratio }}">
+                            </div>
+                        </div>
+
+                        <div class="pine-group">
+                            <div class="pine-group-title">Trailing Stop, BE & TTP</div>
+                            <div class="pine-row">
+                                <label for="pine-use-trailing">Trailing Stop zapnuty</label>
+                                <input type="checkbox" id="pine-use-trailing" class="pine-checkbox" {% if SETTINGS.use_trailing %}checked{% endif %}>
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-trail-pct">Vzdialenost TS (%)</label>
+                                <input type="number" id="pine-trail-pct" class="pine-input" min="0.1" max="50.0" step="0.1" value="{{ SETTINGS.trail_pct }}">
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-use-be">Break-Even zapnuty</label>
+                                <input type="checkbox" id="pine-use-be" class="pine-checkbox" {% if SETTINGS.use_breakeven %}checked{% endif %}>
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-be-trigger">Zisk % pre Break-Even</label>
+                                <input type="number" id="pine-be-trigger" class="pine-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.be_trigger_pct }}">
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-use-ttp">Trailing TP zapnuty</label>
+                                <input type="checkbox" id="pine-use-ttp" class="pine-checkbox" {% if SETTINGS.use_trailing_tp %}checked{% endif %}>
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-ttp-trigger">Aktivacia TTP (%)</label>
+                                <input type="number" id="pine-ttp-trigger" class="pine-input" min="0.1" max="100.0" step="0.1" value="{{ SETTINGS.ttp_trigger_pct }}">
+                            </div>
+                            <div class="pine-row">
+                                <label for="pine-ttp-callback">Odstup TTP (%)</label>
+                                <input type="number" id="pine-ttp-callback" class="pine-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.ttp_callback_pct }}">
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
                 <div class="pine-footer">
                     <div style="display:flex; flex-direction:column; gap:3px;">
-                        <span id="pine-save-status" class="pine-save-status">Pripravene - skener pouziva 68% strategiu + ochranu proti nakupu na vrchole.</span>
+                        <span id="pine-save-status" class="pine-save-status">Pripravene - vsetky funkcie su aktivne a pripravene.</span>
                         <span id="ai-learned-summary" style="font-size:0.68rem; color:var(--yellow); font-weight:600;">AI nastudovane a ulozene obchody: 0 (0W / 0L)</span>
                     </div>
                     <div style="display: flex; gap: 6px; flex-wrap: wrap;">
@@ -2609,7 +2628,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     syncSlUi(data.pine_settings.fixed_sl_pct);
                 }
                 statusEl.style.color = 'var(--green)';
-                statusEl.innerText = 'Ulozene! Skener teraz pocita 68% strategiu + ochranu proti vrcholu.';
+                statusEl.innerText = 'Ulozene! Nastavenia boli aplikovane.';
                 updateState();
             } else {
                 statusEl.style.color = 'var(--red)';
