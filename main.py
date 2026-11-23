@@ -93,6 +93,7 @@ SYSTEM_LOG_ENTRIES: list[dict] = []
 SYSTEM_LOGS: list[str] = []
 trade_lock = asyncio.Lock()
 
+# Predvolene parametre zosuladene so strategiou (68% win rate) + ochrana proti vrcholu
 SETTINGS = {
     "max_parallel": 4,
     "max_budget_cap": 1000.0,
@@ -109,22 +110,24 @@ SETTINGS = {
     "fib_choice": "0.786",
     "fixed_sl_pct": 1.5,
     "use_fixed_tp": True,
-    "fixed_tp_pct": 0.8,
+    "fixed_tp_pct": 1.2,
     "use_trailing": True,
-    "trail_pct": 0.6,
+    "trail_pct": 1.5,
     "use_breakeven": True,
-    "be_trigger_pct": 0.3,
+    "be_trigger_pct": 1.2,
     "use_trailing_tp": True,
-    "ttp_trigger_pct": 0.8,
-    "ttp_callback_pct": 0.2,
+    "ttp_trigger_pct": 1.2,
+    "ttp_callback_pct": 0.4,
     "use_ha_exit": True,
-    "ha_exit_consecutive": 2,
+    "ha_exit_consecutive": 1,
     "sell_on_osc_reversal": True,
     "block_sideways_buy": False,
     "min_rel_volume": 0.0,
     "use_anti_chase": True,
-    "max_candle_pump_pct": 1.4,
-    "max_ema9_dist_pct": 1.2,
+    "max_candle_pump_pct": 0.9,
+    "max_ema9_dist_pct": 0.7,
+    "max_upper_wick_ratio": 0.45,
+    "max_entry_slip_pct": 0.35,
     "use_ai_filter": True,
     "ai_min_prob": 0.38,
 }
@@ -610,7 +613,7 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"Chyba pri aktualizacii top symbolov: {e}")
 
-# --- 1:1 PINE SCRIPT MATEMATIKA ---
+# --- PINE SCRIPT MATEMATIKA ---
 
 def calc_ema_series(values, length):
     if not values:
@@ -722,7 +725,7 @@ def get_current_ai_features_for_symbol(symbol: str, bar_tf: str = "15m") -> list
         signal_line = calc_ema_series(oscillator, signal_len)
         close_ema_9 = calc_ema_series(ha_closes, 9)
         lr0 = calc_linreg_series(oscillator, pred_look, 0)
-        lr1 = calc_linreg_series(oscillator, pred_look, 1 if pred_look > 1 else 0)
+        lr1 = calc_linreg_series(oscillator, pred_look, 1)
         raw_slope = [(lr0[i] - lr1[i]) if (lr0[i] is not None and lr1[i] is not None) else None for i in range(n)]
         smooth_slope = calc_wma_series(raw_slope, 3)
         predicted_next = [(oscillator[i] + smooth_slope[i]) if smooth_slope[i] is not None else oscillator[i] for i in range(n)]
@@ -774,12 +777,12 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         signal_line = calc_ema_series(oscillator, signal_len)
         close_ema_9 = calc_ema_series(ha_closes, 9)
         lr0 = calc_linreg_series(oscillator, pred_look, 0)
-        lr1 = calc_linreg_series(oscillator, pred_look, 1 if pred_look > 1 else 0)
+        lr1 = calc_linreg_series(oscillator, pred_look, 1)
         raw_slope = [(lr0[i] - lr1[i]) if (lr0[i] is not None and lr1[i] is not None) else None for i in range(n)]
         smooth_slope = calc_wma_series(raw_slope, 3)
         predicted_next = [(oscillator[i] + smooth_slope[i]) if smooth_slope[i] is not None else oscillator[i] for i in range(n)]
 
-        target_gain_pct = max(0.35, float(SETTINGS.get("fixed_sl_pct", 1.5)) * 0.45)
+        target_gain_pct = max(0.35, float(SETTINGS.get("ttp_trigger_pct", 1.2)) * 0.75)
         stop_loss_pct = float(SETTINGS.get("fixed_sl_pct", 1.5))
         horizon = 12
 
@@ -787,16 +790,16 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         for i in range(25, n - horizon):
             osc_i = oscillator[i]
             sig_i = signal_line[i]
-            pred_i = predicted_next[i]
             cl_i = ha_closes[i]
             ema9_i = close_ema_9[i]
 
-            cond_vol_bull = (osc_i > 0) and (osc_i > sig_i) and (pred_i > osc_i)
-            cond_vol_cross = (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0)
+            cond_vol_bull = (osc_i > 0.0) and (osc_i > sig_i)
+            cond_vol_cross = (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
+            ema9_cross = (ha_closes[i - 1] <= close_ema_9[i - 1]) and (cl_i > ema9_i)
             if mode_choice == "BREAKOUT":
-                is_sig = cond_vol_cross or (cond_vol_bull and (cl_i > ema9_i))
+                is_sig = cond_vol_cross or (cond_vol_bull and ema9_cross)
             else:
-                is_sig = cond_vol_bull and (cond_vol_cross or (cl_i > ema9_i))
+                is_sig = cond_vol_bull and (cond_vol_cross or ema9_cross)
 
             if not is_sig or cl_i <= 0:
                 continue
@@ -946,7 +949,7 @@ def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade
         persist=True,
     )
 
-# --- VYHODNOCOVANIE PINE SIGNALOV + KVALITA + AI ---
+# --- VYHODNOCOVANIE STRATEGIE (68% WIN RATE LOGIKA + ANTI-TOP NA UZAVRETEJ SVIEČKE) ---
 
 def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     global MARKET_SCANNER_CACHE, ACTIVE_TRADES, AI_STATE
@@ -965,6 +968,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             return {"buy": False, "raw_buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "block_reason": "", "features": None, "last_closed_price": 0.0}
 
         candles = list(reversed(res["data"]))
+        # Vyhodnocujeme IBA uzavrete sviecky (posledna sviecka candles[-1] je este otvorena)
         closed_candles = candles[:-1]
 
         ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
@@ -991,14 +995,14 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         strict_buy_filter = bool(SETTINGS.get("strict_buy_filter", False))
 
         use_trailing = bool(SETTINGS.get("use_trailing", True))
-        trail_pct = float(SETTINGS.get("trail_pct", 0.6))
+        trail_pct = float(SETTINGS.get("trail_pct", 1.5))
         use_breakeven = bool(SETTINGS.get("use_breakeven", True))
-        be_trigger_pct = float(SETTINGS.get("be_trigger_pct", 0.3))
+        be_trigger_pct = float(SETTINGS.get("be_trigger_pct", 1.2))
         use_trailing_tp = bool(SETTINGS.get("use_trailing_tp", True))
-        ttp_trigger_pct = float(SETTINGS.get("ttp_trigger_pct", 0.8))
-        ttp_callback_pct = float(SETTINGS.get("ttp_callback_pct", 0.2))
+        ttp_trigger_pct = float(SETTINGS.get("ttp_trigger_pct", 1.2))
+        ttp_callback_pct = float(SETTINGS.get("ttp_callback_pct", 0.4))
         use_ha_exit = bool(SETTINGS.get("use_ha_exit", True))
-        ha_exit_consecutive = max(1, min(3, int(SETTINGS.get("ha_exit_consecutive", 2))))
+        ha_exit_consecutive = max(1, min(3, int(SETTINGS.get("ha_exit_consecutive", 1))))
         sell_on_osc_reversal = bool(SETTINGS.get("sell_on_osc_reversal", True))
 
         vol_dirs = [volumes[i] if ha_closes[i] > ha_opens[i] else -volumes[i] for i in range(n)]
@@ -1009,7 +1013,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         close_ema_9 = calc_ema_series(ha_closes, 9)
 
         lr0 = calc_linreg_series(oscillator, pred_look, 0)
-        lr1 = calc_linreg_series(oscillator, pred_look, 1 if pred_look > 1 else 0)
+        lr1 = calc_linreg_series(oscillator, pred_look, 1)
         raw_slope = [(lr0[i] - lr1[i]) if (lr0[i] is not None and lr1[i] is not None) else None for i in range(n)]
         smooth_slope = calc_wma_series(raw_slope, 3)
         predicted_next = [
@@ -1060,17 +1064,18 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
             osc_i = oscillator[i]
             sig_i = signal_line[i]
-            pred_i = predicted_next[i]
             cl_i = ha_closes[i]
             ema9_i = close_ema_9[i]
 
-            cond_volume_bullish = (osc_i > 0) and (osc_i > sig_i) and (pred_i > osc_i)
-            cond_volume_crossover = (i > 0) and (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0)
-            fib_touch = (fib_target is not None) and (cl_i > fib_target)
+            # Logika zo 68% strategie: objemovy momentum nad 0 a nad signalnou ciarou + crossover + dotyk Fib low
+            cond_volume_bullish = (osc_i > 0.0) and (osc_i > sig_i)
+            cond_volume_crossover = (i > 0) and (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
+            fib_touch = (fib_target is not None) and (ha_lows[i] <= fib_target)
+            ema9_cross = (i > 0) and (ha_closes[i - 1] <= close_ema_9[i - 1]) and (cl_i > ema9_i)
 
-            breakout_trigger = cond_volume_crossover or (cond_volume_bullish and (cl_i > ema9_i))
+            breakout_trigger = cond_volume_crossover or (cond_volume_bullish and ema9_cross)
             fib_trigger_cond = cond_volume_bullish and fib_touch
-            all_green_condition = cond_volume_bullish and (cond_volume_crossover or (cl_i > ema9_i))
+            all_green_condition = cond_volume_bullish and (cond_volume_crossover or ema9_cross)
 
             if mode_choice == "BREAKOUT":
                 buy_trigger = breakout_trigger
@@ -1205,18 +1210,31 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             if final_buy and bool(SETTINGS.get("use_anti_chase", True)):
                 last_raw = closed_candles[-1]
                 raw_o = safe_float(last_raw[1])
+                raw_h = safe_float(last_raw[2])
+                raw_l = safe_float(last_raw[3])
                 raw_c = safe_float(last_raw[4])
+
                 candle_pump_pct = ((raw_c - raw_o) / raw_o * 100.0) if raw_o > 0 else 0.0
                 ema9_last = close_ema_9[-1] if close_ema_9[-1] and close_ema_9[-1] > 0 else raw_c
                 dist_ema9_pct = ((raw_c - ema9_last) / ema9_last * 100.0) if ema9_last > 0 else 0.0
-                max_pump = float(SETTINGS.get("max_candle_pump_pct", 1.4))
-                max_ema_dist = float(SETTINGS.get("max_ema9_dist_pct", 1.2))
+
+                c_range = max(1e-9, raw_h - raw_l)
+                upper_wick = max(0.0, raw_h - max(raw_o, raw_c))
+                wick_ratio = upper_wick / c_range
+
+                max_pump = float(SETTINGS.get("max_candle_pump_pct", 0.9))
+                max_ema_dist = float(SETTINGS.get("max_ema9_dist_pct", 0.7))
+                max_wick = float(SETTINGS.get("max_upper_wick_ratio", 0.45))
+
                 if candle_pump_pct > max_pump:
                     final_buy = False
-                    block_reason = f"Anti-Chase: sviecka +{candle_pump_pct:.2f}% > {max_pump:.2f}%"
+                    block_reason = f"Anti-Top: sviecka +{candle_pump_pct:.2f}% > {max_pump:.2f}%"
                 elif dist_ema9_pct > max_ema_dist:
                     final_buy = False
-                    block_reason = f"Anti-Chase: nad EMA9 +{dist_ema9_pct:.2f}% > {max_ema_dist:.2f}%"
+                    block_reason = f"Anti-Top: nad EMA9 +{dist_ema9_pct:.2f}% > {max_ema_dist:.2f}%"
+                elif wick_ratio > max_wick:
+                    final_buy = False
+                    block_reason = f"Anti-Top: horny knot {wick_ratio*100:.0f}% > {max_wick*100:.0f}%"
 
             min_rel_vol = float(SETTINGS.get("min_rel_volume", 0.0))
             if final_buy and min_rel_vol > 0:
@@ -1265,7 +1283,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         if final_buy and not is_in_trade:
             exec_signal_str = "NAKUPIT (AI BUY)"
         elif last_bar_buy and not final_buy and not is_in_trade:
-            exec_signal_str = f"AI BLOK ({block_reason})"
+            exec_signal_str = f"ANTI-TOP / AI BLOK ({block_reason})"
         elif last_bar_sell and is_in_trade:
             exec_signal_str = "PREDAT (SELL)"
         elif is_in_trade:
@@ -1306,7 +1324,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 async def autonomous_scanner_loop():
     global IS_SIDEWAYS_MARKET, MARKET_REGIME, LAST_SIDEWAYS_ALERT_TS
     await asyncio.sleep(3)
-    log_event(f"Autonomny Pine Script + AI skener spusteny pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"Autonomny skener (68% strategia + Anti-Top + AI) spusteny pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             _prune_old_logs()
@@ -1333,7 +1351,7 @@ async def autonomous_scanner_loop():
                 symbol = trade["market_pair"]
                 sig = evaluate_pine_strategy(symbol, bar_tf=tf_str)
                 if sig["sell"]:
-                    log_event(f"PINE SCRIPT 'SELL' SIGNAL PRE {symbol} ({sig['sell_reason']}) -> OKAMZITY PREDAJ!")
+                    log_event(f"STRATEGIA 'SELL' SIGNAL PRE {symbol} ({sig['sell_reason']}) -> OKAMZITY PREDAJ!")
                     await close_trade_position(coin_name, sig["sell_reason"])
                 await asyncio.sleep(0.25)
 
@@ -1365,7 +1383,7 @@ async def autonomous_scanner_loop():
 
                         if sig["buy"]:
                             prob_txt = f" (AI: {sig['ai_prob']*100:.1f}%)" if sig.get("ai_prob") is not None else ""
-                            log_event(f"PINE SCRIPT + AI 'BUY' SIGNAL PRE {symbol}{prob_txt}!")
+                            log_event(f"STRATEGIA + AI 'BUY' SIGNAL PRE {symbol}{prob_txt}!")
                             await execute_autonomous_buy(
                                 symbol,
                                 ai_prob=sig.get("ai_prob"),
@@ -1420,9 +1438,10 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             return
 
         current_price = safe_float(ticker_res["data"][0]["last"])
+        max_slip_pct = float(SETTINGS.get("max_entry_slip_pct", 0.35))
         if signal_close_price > 0 and current_price > 0:
             slip_above_close_pct = ((current_price - signal_close_price) / signal_close_price) * 100.0
-            if slip_above_close_pct > 0.45:
+            if slip_above_close_pct > max_slip_pct:
                 WAIT_FOR_SIGNAL_RESET[coin_name] = True
                 log_event(f"Nakup {okx_symbol} preskoceny: aktualna cena uz utiekla +{slip_above_close_pct:.2f}% nad uzavretie sviecky (nekupujem vrchol).")
                 return
@@ -1455,8 +1474,8 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
         actual_spent_usdc = coin_amount * current_price
         fixed_sl_pct = SETTINGS.get("fixed_sl_pct", 1.5)
         fixed_sl_price = current_price * (1.0 - (fixed_sl_pct / 100.0))
-        use_fixed_tp = bool(SETTINGS.get("use_fixed_tp", False))
-        fixed_tp_pct = float(SETTINGS.get("fixed_tp_pct", 1.5))
+        use_fixed_tp = bool(SETTINGS.get("use_fixed_tp", True))
+        fixed_tp_pct = float(SETTINGS.get("fixed_tp_pct", 1.2))
         fixed_tp_price = current_price * (1.0 + (fixed_tp_pct / 100.0))
 
         ACTIVE_TRADES[coin_name] = {
@@ -1489,7 +1508,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
 
         tp_info = f" | Fixny TP: +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp else ""
         ai_info = f" | AI: {ai_prob*100:.1f}%" if ai_prob is not None else ""
-        log_event(f"NAKUP (Pine + AI BUY) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} {ACTIVE_BALANCE_CCY} | Investicia: {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY} | Fixny SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}{ai_info}", persist=True)
+        log_event(f"NAKUP (Strategia + AI BUY) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} {ACTIVE_BALANCE_CCY} | Investicia: {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY} | Fixny SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}{ai_info}", persist=True)
 
         inline_keyboard = {
             "inline_keyboard": [
@@ -1500,14 +1519,14 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             ]
         }
         send_telegram_msg(
-            f"<b>PINE + AI BUY NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
+            f"<b>STRATEGIA + AI BUY NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
             f"<b>Par:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
             f"<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}\n"
             + (f"<b>AI skore:</b> {ai_prob*100:.1f}%\n" if ai_prob is not None else "")
             + f"<b>Fixny Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})\n"
             + (f"<b>Fixny Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})\n" if use_fixed_tp else "")
-            + "<b>Vystup:</b> Okamzity Pine SELL signal alebo Fixny SL" + (" / Fixny TP" if use_fixed_tp else ""),
+            + "<b>Vystup:</b> Okamzity SELL signal alebo Fixny SL" + (" / TTP" if use_fixed_tp else ""),
             reply_markup=inline_keyboard
         )
 
@@ -1610,7 +1629,7 @@ async def fixed_stoploss_monitor_loop():
             if IS_BOT_ACTIVE:
                 max_p = SETTINGS.get("max_parallel", 1)
                 sl_p = SETTINGS.get("fixed_sl_pct", 1.5)
-                tp_txt = f" | Fixny TP: +{SETTINGS.get('fixed_tp_pct', 1.5)}%" if SETTINGS.get("use_fixed_tp", False) else ""
+                tp_txt = f" | Fixny TP: +{SETTINGS.get('fixed_tp_pct', 1.2)}%" if SETTINGS.get("use_fixed_tp", True) else ""
                 ai_txt = f" | AI >= {SETTINGS.get('ai_min_prob', 0.38)*100:.0f}%" if SETTINGS.get("use_ai_filter", True) else ""
                 CURRENT_STAGE = f"STAV: Bot aktivny (Max {max_p}x | Fixny SL: -{sl_p}%{tp_txt}{ai_txt}). Cakam na BUY/SELL..."
             else:
@@ -1620,12 +1639,12 @@ async def fixed_stoploss_monitor_loop():
 
         try:
             use_be = bool(SETTINGS.get("use_breakeven", True))
-            be_trig = float(SETTINGS.get("be_trigger_pct", 0.3))
+            be_trig = float(SETTINGS.get("be_trigger_pct", 1.2))
             use_ts = bool(SETTINGS.get("use_trailing", True))
-            ts_pct = float(SETTINGS.get("trail_pct", 0.6))
+            ts_pct = float(SETTINGS.get("trail_pct", 1.5))
             use_ttp = bool(SETTINGS.get("use_trailing_tp", True))
-            ttp_trig = float(SETTINGS.get("ttp_trigger_pct", 0.8))
-            ttp_cb = float(SETTINGS.get("ttp_callback_pct", 0.2))
+            ttp_trig = float(SETTINGS.get("ttp_trigger_pct", 1.2))
+            ttp_cb = float(SETTINGS.get("ttp_callback_pct", 0.4))
 
             for coin in list(ACTIVE_TRADES.keys()):
                 if coin not in ACTIVE_TRADES:
@@ -1654,9 +1673,9 @@ async def fixed_stoploss_monitor_loop():
 
                     fixed_sl_price = trade["fixed_sl_price"]
                     fixed_sl_pct = trade["fixed_sl_pct"]
-                    use_fixed_tp = bool(trade.get("use_fixed_tp", False))
+                    use_fixed_tp = bool(trade.get("use_fixed_tp", True))
                     fixed_tp_price = trade.get("fixed_tp_price")
-                    fixed_tp_pct = trade.get("fixed_tp_pct", SETTINGS.get("fixed_tp_pct", 1.5))
+                    fixed_tp_pct = trade.get("fixed_tp_pct", SETTINGS.get("fixed_tp_pct", 1.2))
 
                     tp_stage = f" | Fixny TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
                     CURRENT_STAGE = f"STAV: Pozicii: {len(ACTIVE_TRADES)} | {symbol} ({pnl_pct:+.2f}%) | Fixny SL: -{fixed_sl_pct}%{tp_stage}"
@@ -1719,13 +1738,13 @@ async def lifespan(app: FastAPI):
     else:
         save_ai_memory()
     log_event(
-        f"Autonomny APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Live grafy + OKX Demo obchod + AI Filter + Fixny SL -{SETTINGS['fixed_sl_pct']}%) spusteny | AI pamat: {AI_MEMORY_FILE}",
+        f"Autonomny APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · 68% strategia + Anti-Top + AI Filter + Fixny SL -{SETTINGS['fixed_sl_pct']}%) spusteny | AI pamat: {AI_MEMORY_FILE}",
         persist=True,
     )
     monitor_task = asyncio.create_task(fixed_stoploss_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg(f"APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Live grafy + OKX Demo obchod + AI Filter + Fixny SL -{SETTINGS['fixed_sl_pct']}%) pripraveny!")
+    send_telegram_msg(f"APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · 68% strategia + Anti-Top + AI Filter + Fixny SL -{SETTINGS['fixed_sl_pct']}%) pripraveny!")
     yield
     save_persistent_data()
     monitor_task.cancel()
@@ -1762,6 +1781,8 @@ def get_pine_settings_dict():
         "use_anti_chase": SETTINGS["use_anti_chase"],
         "max_candle_pump_pct": SETTINGS["max_candle_pump_pct"],
         "max_ema9_dist_pct": SETTINGS["max_ema9_dist_pct"],
+        "max_upper_wick_ratio": SETTINGS["max_upper_wick_ratio"],
+        "max_entry_slip_pct": SETTINGS["max_entry_slip_pct"],
         "use_ai_filter": SETTINGS["use_ai_filter"],
         "ai_min_prob": SETTINGS["ai_min_prob"],
     }
@@ -1911,6 +1932,8 @@ async def update_pine_settings(request: Request):
         SETTINGS["use_anti_chase"] = bool(payload.get("use_anti_chase", SETTINGS["use_anti_chase"]))
         SETTINGS["max_candle_pump_pct"] = max(0.10, min(5.0, float(payload.get("max_candle_pump_pct", SETTINGS["max_candle_pump_pct"]))))
         SETTINGS["max_ema9_dist_pct"] = max(0.10, min(5.0, float(payload.get("max_ema9_dist_pct", SETTINGS["max_ema9_dist_pct"]))))
+        SETTINGS["max_upper_wick_ratio"] = max(0.10, min(0.95, float(payload.get("max_upper_wick_ratio", SETTINGS["max_upper_wick_ratio"]))))
+        SETTINGS["max_entry_slip_pct"] = max(0.05, min(5.0, float(payload.get("max_entry_slip_pct", SETTINGS["max_entry_slip_pct"]))))
         SETTINGS["use_ai_filter"] = bool(payload.get("use_ai_filter", SETTINGS["use_ai_filter"]))
         SETTINGS["ai_min_prob"] = max(0.25, min(0.90, float(payload.get("ai_min_prob", SETTINGS["ai_min_prob"]))))
 
@@ -1918,7 +1941,8 @@ async def update_pine_settings(request: Request):
         save_persistent_data()
         log_event(
             f"Nastavenia aktualizovane: Rezim={mode_val}, AI={SETTINGS['use_ai_filter']}(min={SETTINGS['ai_min_prob']*100:.0f}%), "
-            f"OscSell={SETTINGS['sell_on_osc_reversal']}, HAExit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x), FixSL=-{SETTINGS['fixed_sl_pct']}%",
+            f"AntiTop={SETTINGS['use_anti_chase']}(pump<={SETTINGS['max_candle_pump_pct']}%, wick<={SETTINGS['max_upper_wick_ratio']*100:.0f}%), "
+            f"HAExit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x), FixSL=-{SETTINGS['fixed_sl_pct']}%",
             persist=True,
         )
         return JSONResponse({"status": "success", "pine_settings": get_pine_settings_dict()})
@@ -1984,8 +2008,8 @@ async def manual_buy(coin: str):
             actual_spent_usdc = coin_amount * current_price
             fixed_sl_pct = SETTINGS.get("fixed_sl_pct", 1.5)
             fixed_sl_price = current_price * (1.0 - (fixed_sl_pct / 100.0))
-            use_fixed_tp = bool(SETTINGS.get("use_fixed_tp", False))
-            fixed_tp_pct = float(SETTINGS.get("fixed_tp_pct", 1.5))
+            use_fixed_tp = bool(SETTINGS.get("use_fixed_tp", True))
+            fixed_tp_pct = float(SETTINGS.get("fixed_tp_pct", 1.2))
             fixed_tp_price = current_price * (1.0 + (fixed_tp_pct / 100.0))
 
             ACTIVE_TRADES[coin_upper] = {
@@ -2200,7 +2224,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         <div>
             <div class="section-title">
-                <span>Nastavenia Pine Script Indikatora + AI Filter Kvality</span>
+                <span>Nastavenia 68% Strategie + Anti-Top + AI Filter Kvality</span>
                 <span id="pine-active-badge" class="text-yellow">REZIM: {{ SETTINGS.mode_choice }}</span>
             </div>
             <div class="pine-panel">
@@ -2238,18 +2262,26 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     </div>
 
                     <div class="pine-group">
-                        <div class="pine-group-title">2. AI Automaticky Mozog & Fib</div>
+                        <div class="pine-group-title">2. AI Mozog, Fib & Anti-Top</div>
                         <div class="pine-row">
                             <label for="pine-use-ai">Autonomny AI filter (Auto-ucenie)</label>
                             <input type="checkbox" id="pine-use-ai" class="pine-checkbox" {% if SETTINGS.use_ai_filter %}checked{% endif %}>
                         </div>
                         <div class="pine-row">
-                            <label>Rezim ucenia AI</label>
-                            <span class="text-green" style="font-size:0.65rem;">SCALPING + SWING + MANUAL</span>
+                            <label for="pine-use-anti-top">Anti-Top (nekupovat vrchol)</label>
+                            <input type="checkbox" id="pine-use-anti-top" class="pine-checkbox" {% if SETTINGS.use_anti_chase %}checked{% endif %}>
                         </div>
                         <div class="pine-row">
-                            <label>Ochrana proti vrcholu</label>
-                            <span class="text-yellow" style="font-size:0.65rem;">AKTIVNA (AUTO)</span>
+                            <label for="pine-max-pump">Max rast sviecky (%)</label>
+                            <input type="number" id="pine-max-pump" class="pine-input" min="0.1" max="5.0" step="0.1" value="{{ SETTINGS.max_candle_pump_pct }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-max-ema-dist">Max nad EMA9 (%)</label>
+                            <input type="number" id="pine-max-ema-dist" class="pine-input" min="0.1" max="5.0" step="0.1" value="{{ SETTINGS.max_ema9_dist_pct }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-max-wick">Max horny knot (0.1-0.9)</label>
+                            <input type="number" id="pine-max-wick" class="pine-input" min="0.1" max="0.9" step="0.05" value="{{ SETTINGS.max_upper_wick_ratio }}">
                         </div>
                         <div class="pine-row">
                             <label for="pine-pivot-len">Pivot dlzka (Fib)</label>
@@ -2331,7 +2363,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </div>
                 <div class="pine-footer">
                     <div style="display:flex; flex-direction:column; gap:3px;">
-                        <span id="pine-save-status" class="pine-save-status">Pripravene - zmeny sa okamzite premietnu do BUY / SELL skenera.</span>
+                        <span id="pine-save-status" class="pine-save-status">Pripravene - skener pouziva 68% strategiu + ochranu proti nakupu na vrchole.</span>
                         <span id="ai-learned-summary" style="font-size:0.68rem; color:var(--yellow); font-weight:600;">AI nastudovane a ulozene obchody: 0 (0W / 0L)</span>
                     </div>
                     <div style="display: flex; gap: 6px; flex-wrap: wrap;">
@@ -2360,14 +2392,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script + AI BUY signaly...</td></tr>
+                        <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre 68% strategiu + Anti-Top + AI BUY signaly...</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - Pine + AI Sync)</div>
+            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - 68% Strategia + AI Sync)</div>
             <div class="terminal-card scrollable-card" style="max-height: 260px;">
                 <table>
                     <thead>
@@ -2395,7 +2427,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <span style="font-size:0.64rem; color:var(--text-muted);">Starsie ako 2h sa mazu automaticky</span>
             </div>
             <div class="logs-box" id="logs-container">
-                <div class="log-line">[System Initialized] Pine BUY & SELL + AI Filter + Fixny SL pripraveny.</div>
+                <div class="log-line">[System Initialized] 68% Strategia + Anti-Top + AI Filter + Fixny SL pripraveny.</div>
             </div>
         </div>
     </div>
@@ -2510,6 +2542,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             document.getElementById('pine-signal-len').value = ps.signal_len;
             document.getElementById('pine-pred-look').value = ps.pred_look;
             document.getElementById('pine-use-ai').checked = !!ps.use_ai_filter;
+            document.getElementById('pine-use-anti-top').checked = ps.use_anti_chase !== undefined ? !!ps.use_anti_chase : true;
+            if (ps.max_candle_pump_pct !== undefined) document.getElementById('pine-max-pump').value = ps.max_candle_pump_pct;
+            if (ps.max_ema9_dist_pct !== undefined) document.getElementById('pine-max-ema-dist').value = ps.max_ema9_dist_pct;
+            if (ps.max_upper_wick_ratio !== undefined) document.getElementById('pine-max-wick').value = ps.max_upper_wick_ratio;
             document.getElementById('pine-pivot-len').value = ps.pivot_len;
             document.getElementById('pine-fib-choice').value = ps.fib_choice;
             if (ps.fixed_sl_pct !== undefined) {
@@ -2539,6 +2575,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 signal_len: parseInt(document.getElementById('pine-signal-len').value, 10),
                 pred_look: parseInt(document.getElementById('pine-pred-look').value, 10),
                 use_ai_filter: document.getElementById('pine-use-ai').checked,
+                use_anti_chase: document.getElementById('pine-use-anti-top').checked,
+                max_candle_pump_pct: parseFloat(document.getElementById('pine-max-pump').value),
+                max_ema9_dist_pct: parseFloat(document.getElementById('pine-max-ema-dist').value),
+                max_upper_wick_ratio: parseFloat(document.getElementById('pine-max-wick').value),
                 pivot_len: parseInt(document.getElementById('pine-pivot-len').value, 10),
                 fib_choice: document.getElementById('pine-fib-choice').value,
                 fixed_sl_pct: parseFloat(document.getElementById('pine-fixed-sl-pct').value),
@@ -2569,7 +2609,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     syncSlUi(data.pine_settings.fixed_sl_pct);
                 }
                 statusEl.style.color = 'var(--green)';
-                statusEl.innerText = 'Ulozene! Skener teraz pocita BUY a okamzity SELL podla novych nastaveni.';
+                statusEl.innerText = 'Ulozene! Skener teraz pocita 68% strategiu + ochranu proti vrcholu.';
                 updateState();
             } else {
                 statusEl.style.color = 'var(--red)';
@@ -2590,23 +2630,25 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 min_rel_volume: 0.0,
                 block_sideways_buy: false,
                 use_anti_chase: true,
-                max_candle_pump_pct: 1.4,
-                max_ema9_dist_pct: 1.2,
+                max_candle_pump_pct: 0.9,
+                max_ema9_dist_pct: 0.7,
+                max_upper_wick_ratio: 0.45,
+                max_entry_slip_pct: 0.35,
                 pivot_len: 2,
                 fib_choice: "0.786",
                 fixed_sl_pct: 1.5,
                 use_fixed_tp: true,
-                fixed_tp_pct: 0.8,
+                fixed_tp_pct: 1.2,
                 use_trailing: true,
-                trail_pct: 0.6,
+                trail_pct: 1.5,
                 use_breakeven: true,
-                be_trigger_pct: 0.3,
+                be_trigger_pct: 1.2,
                 use_trailing_tp: true,
-                ttp_trigger_pct: 0.8,
-                ttp_callback_pct: 0.2,
+                ttp_trigger_pct: 1.2,
+                ttp_callback_pct: 0.4,
                 sell_on_osc_reversal: true,
                 use_ha_exit: true,
-                ha_exit_consecutive: 2
+                ha_exit_consecutive: 1
             };
             applyPineFormValues(defaults);
             await savePineSettings();
@@ -2720,7 +2762,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     activeTbody.innerHTML = html;
                     sellBtn.disabled = false;
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine Script + AI BUY signaly...</td></tr>`;
+                    activeTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre 68% strategiu + Anti-Top + AI BUY signaly...</td></tr>`;
                     sellBtn.disabled = true;
                 }
 
@@ -2731,7 +2773,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     for (let [coin, info] of Object.entries(scannerData)) {
                         let momClass = info.momentum === "SILNE" ? "text-green" : "text-red";
                         let impClass = info.impulse.includes("AKTIVNY") ? "text-green" : "text-yellow";
-                        let execClass = info.exec_signal.includes("NAKUPIT") ? "text-green" : (info.exec_signal.includes("PREDAT") || info.exec_signal.includes("AI BLOK") ? "text-red" : "text-yellow");
+                        let execClass = info.exec_signal.includes("NAKUPIT") ? "text-green" : (info.exec_signal.includes("PREDAT") || info.exec_signal.includes("BLOK") ? "text-red" : "text-yellow");
 
                         sHtml += `<tr>
                             <td><b>${info.symbol}</b></td>
