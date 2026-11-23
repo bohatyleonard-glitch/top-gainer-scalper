@@ -60,6 +60,7 @@ EXCLUDED_SYMBOLS = {
     "USDT-USDC", "DAI-USDC", "FDUSD-USDC",
     "ZEC-USDC", "ENA-USDC", "LIT-USDC", "CT-USDC",
     "XMSTR-USDC", "XSOXL-USDC", "XANT-USDC",
+    "HYPE-USDC", "TAO-USDC", "XRP-USDC",
 }
 
 # --- GLOBÁLNY STAV BOTA ---
@@ -98,7 +99,7 @@ SETTINGS = {
     "use_btc_filter": True,
     "reentry_cooldown_sec": 300,
     "mode_choice": "ALL_GREEN",
-    "strict_buy_filter": True,
+    "strict_buy_filter": False,
     "fast_len": 5,
     "slow_len": 20,
     "signal_len": 9,
@@ -117,13 +118,13 @@ SETTINGS = {
     "ttp_callback_pct": 0.2,
     "use_ha_exit": True,
     "ha_exit_consecutive": 2,
-    "block_sideways_buy": True,
-    "min_rel_volume": 1.2,
-    "use_anti_chase": True,
-    "max_candle_pump_pct": 0.9,
-    "max_ema9_dist_pct": 0.8,
+    "block_sideways_buy": False,
+    "min_rel_volume": 0.0,
+    "use_anti_chase": False,
+    "max_candle_pump_pct": 1.5,
+    "max_ema9_dist_pct": 1.2,
     "use_ai_filter": True,
-    "ai_min_prob": 0.6,
+    "ai_min_prob": 0.35,
 }
 
 AI_STATE = {
@@ -1445,21 +1446,51 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             reply_markup=inline_keyboard
         )
 
+def fetch_coin_available_balance(coin_ccy: str) -> float | None:
+    try:
+        res = okx_request("GET", f"/api/v5/account/balance?ccy={coin_ccy.upper()}")
+        if res.get("code") == "0":
+            for acc in res.get("data", []):
+                for item in acc.get("details", []):
+                    if str(item.get("ccy", "")).upper() == coin_ccy.upper():
+                        return safe_float(item.get("availBal"), 0.0)
+            return 0.0
+    except Exception:
+        pass
+    return None
+
 async def close_trade_position(coin: str, reason: str):
     global ACTIVE_TRADES, LAST_TRADE_TIME
     async with trade_lock:
         if coin not in ACTIVE_TRADES:
             return
         trade = ACTIVE_TRADES[coin]
+        now_ts = time.time()
+        if now_ts < safe_float(trade.get("sell_retry_after"), 0.0):
+            return
+
         symbol = trade["market_pair"]
         sell_ok = False
         try:
             ticker_res = okx_public_request(f"/api/v5/market/ticker?instId={symbol}")
             curr_p = safe_float(ticker_res["data"][0]["last"]) if ticker_res.get("code") == "0" and ticker_res.get("data") else trade.get("current_price", trade["entry_price"])
 
-            fmt_sz = format_amount(trade["amount"], trade.get("lot_sz", 0.01), trade.get("min_sz", 0.01))
+            lot_sz = trade.get("lot_sz", 0.01)
+            min_sz = trade.get("min_sz", 0.01)
+            sell_amount = safe_float(trade["amount"], 0.0)
+
+            real_avail = fetch_coin_available_balance(coin)
+            if real_avail is not None:
+                if real_avail < min_sz:
+                    log_event(f"Pozícia {symbol} už nemá predajný zostatok na OKX ({real_avail} < {min_sz}) – uvoľňujem zo zoznamu.", persist=True)
+                    del ACTIVE_TRADES[coin]
+                    LAST_TRADE_TIME[coin] = datetime.now().timestamp()
+                    return
+                sell_amount = min(sell_amount, real_avail)
+
+            fmt_sz = format_amount(sell_amount, lot_sz, min_sz)
             if not fmt_sz:
-                fmt_sz = f"{trade['amount']:.4f}"
+                fmt_sz = f"{sell_amount:.4f}"
 
             order_body = json.dumps({
                 "instId": symbol, "tdMode": "cash", "side": "sell",
@@ -1467,7 +1498,15 @@ async def close_trade_position(coin: str, reason: str):
             })
             sell_res = okx_request("POST", "/api/v5/trade/order", order_body)
             if sell_res.get("code") != "0":
-                log_event(f"Predaj {symbol} vrátil chybu z OKX Demo ({sell_res.get('msg')}) – pozícia ostáva otvorená na ďalší pokus.", persist=True)
+                fail_cnt = int(trade.get("sell_fail_count", 0)) + 1
+                trade["sell_fail_count"] = fail_cnt
+                trade["sell_retry_after"] = now_ts + 30.0
+                if fail_cnt >= 10:
+                    log_event(f"Predaj {symbol} zlyhal {fail_cnt}x ({sell_res.get('msg')}) – uvoľňujem pozíciu, aby neblokovala sloty.", persist=True)
+                    del ACTIVE_TRADES[coin]
+                    LAST_TRADE_TIME[coin] = datetime.now().timestamp()
+                else:
+                    log_event(f"Predaj {symbol} vrátil chybu z OKX Demo ({sell_res.get('msg')}) – pokus #{fail_cnt}/10 (ďalší o 30s).", persist=True)
                 return
 
             sell_ok = True
@@ -2470,18 +2509,18 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         async function resetPineDefaults() {
             const defaults = {
                 mode_choice: "ALL_GREEN",
-                strict_buy_filter: true,
+                strict_buy_filter: false,
                 fast_len: 5,
                 slow_len: 20,
                 signal_len: 9,
                 pred_look: 3,
                 use_ai_filter: true,
-                ai_min_prob: 0.6,
-                min_rel_volume: 1.2,
-                block_sideways_buy: true,
-                use_anti_chase: true,
-                max_candle_pump_pct: 0.9,
-                max_ema9_dist_pct: 0.8,
+                ai_min_prob: 0.35,
+                min_rel_volume: 0.0,
+                block_sideways_buy: false,
+                use_anti_chase: false,
+                max_candle_pump_pct: 1.5,
+                max_ema9_dist_pct: 1.2,
                 pivot_len: 2,
                 fib_choice: "0.786",
                 fixed_sl_pct: 1.5,
@@ -2684,4 +2723,3 @@ async def get_state():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
-
