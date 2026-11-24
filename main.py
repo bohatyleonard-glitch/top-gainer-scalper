@@ -65,6 +65,8 @@ EXCLUDED_SYMBOLS = {
 DEMO_REJECTED_COOLDOWN: dict[str, float] = {}
 DEMO_REJECTED_COOLDOWN_SEC = 1800.0
 
+AI_FEATURE_COUNT = 9
+
 # --- GLOBALNY STAV BOTA ---
 IS_BOT_ACTIVE = True
 CURRENT_TIMEFRAME = "15M"
@@ -135,7 +137,7 @@ SETTINGS = {
 }
 
 AI_STATE = {
-    "weights": [0.0] * 6,
+    "weights": [0.0] * AI_FEATURE_COUNT,
     "bias": 0.0,
     "samples_count": 0,
     "live_learned_count": 0,
@@ -145,6 +147,7 @@ AI_STATE = {
     "trained_at": "--",
     "last_symbol": "--",
     "last_prob": None,
+    "last_factors": "--",
     "blocked_count": 0,
     "passed_count": 0,
     "_last_train_ts": 0.0,
@@ -392,7 +395,7 @@ def record_closed_trade(symbol: str, pnl_pct: float, pnl_usdc: float, reason: st
             "pnl_usdc": trade_rec["pnl_usdc"],
             "reason": reason,
             "style": trade_style,
-            "entry_features": [round(safe_float(x), 5) for x in entry_features[:6]],
+            "entry_features": [round(safe_float(x), 5) for x in entry_features],
         })
         if len(AI_LEARNED_TRADES) > 200:
             del AI_LEARNED_TRADES[200:]
@@ -416,6 +419,14 @@ def _ensure_parent_dir(file_path: str):
     parent = os.path.dirname(file_path)
     if parent:
         os.makedirs(parent, exist_ok=True)
+
+def _pad_or_trim_features(feats: list[float] | None, target_len: int = AI_FEATURE_COUNT) -> list[float] | None:
+    if not feats or len(feats) < 6:
+        return None
+    cleaned = [safe_float(x, 0.0) for x in feats[:target_len]]
+    while len(cleaned) < target_len:
+        cleaned.append(0.0)
+    return cleaned
 
 def save_ai_memory():
     try:
@@ -448,6 +459,10 @@ def load_ai_memory():
             for k, v in data["ai_state"].items():
                 if not str(k).startswith("_"):
                     AI_STATE[k] = v
+        w_list = list(AI_STATE.get("weights", []))
+        while len(w_list) < AI_FEATURE_COUNT:
+            w_list.append(0.0)
+        AI_STATE["weights"] = [round(safe_float(x), 5) for x in w_list[:AI_FEATURE_COUNT]]
         if isinstance(data.get("learned_trades"), list):
             AI_LEARNED_TRADES = [
                 t for t in data["learned_trades"][:200]
@@ -661,7 +676,7 @@ def calc_wma_series(values, length):
         out[i] = sum(window[j] * weights[j] for j in range(length)) / w_sum
     return out
 
-# --- AI MODEL PRE HODNOTENIE KVALITY BUY SIGNALOV ---
+# --- AI MODEL PRE HODNOTENIE KVALITY BUY SIGNALOV (9 ZNAKOV + MULTI-COIN + VAZENE UCENIE) ---
 
 def _sigmoid(x: float) -> float:
     if x >= 0:
@@ -670,9 +685,16 @@ def _sigmoid(x: float) -> float:
     z = math.exp(min(-x, 60.0))
     return z / (1.0 + z)
 
-def extract_ai_features(idx: int, ha_closes, ha_opens, ha_highs, ha_lows, volumes, oscillator, signal_line, close_ema_9, predicted_next):
+def _regime_numeric_value() -> float:
+    if IS_SIDEWAYS_MARKET or str(MARKET_REGIME).upper() == "SIDEWAYS":
+        return 0.0
+    if str(MARKET_REGIME).upper() == "BEAR":
+        return -0.75
+    return 0.75
+
+def extract_ai_features(idx: int, ha_closes, ha_opens, ha_highs, ha_lows, volumes, oscillator, signal_line, close_ema_9, predicted_next, close_ema_50=None):
     cl = ha_closes[idx]
-    ema9 = close_ema_9[idx] if close_ema_9[idx] and close_ema_9[idx] > 0 else cl
+    ema9 = close_ema_9[idx] if (close_ema_9 and close_ema_9[idx] and close_ema_9[idx] > 0) else cl
     dist_ema9_pct = max(-5.0, min(5.0, ((cl - ema9) / ema9) * 100.0)) / 2.5
 
     vol_win = volumes[max(0, idx - 14): idx + 1]
@@ -689,52 +711,206 @@ def extract_ai_features(idx: int, ha_closes, ha_opens, ha_highs, ha_lows, volume
     rng = max(1e-9, ha_highs[idx] - ha_lows[idx])
     body_ratio = max(-1.0, min(1.0, (ha_closes[idx] - ha_opens[idx]) / rng))
 
-    return [dist_ema9_pct, rel_vol, osc_ratio, sig_diff, pred_diff, body_ratio]
+    # 7. Trend / vzdialenost od EMA50
+    if close_ema_50 and idx < len(close_ema_50) and close_ema_50[idx] and close_ema_50[idx] > 0:
+        ema50 = close_ema_50[idx]
+        dist_ema50_norm = max(-1.0, min(1.0, (((cl - ema50) / ema50) * 100.0) / 4.0))
+    else:
+        dist_ema50_norm = 0.0
+
+    # 8. ATR volatilita (% priemerneho rozpätia sviecky voci cene)
+    atr_win_start = max(0, idx - 13)
+    atr_vals = [
+        max(0.0, ha_highs[k] - ha_lows[k]) / ha_closes[k] * 100.0
+        for k in range(atr_win_start, idx + 1)
+        if ha_closes[k] > 0
+    ]
+    atr_pct = (sum(atr_vals) / len(atr_vals)) if atr_vals else 0.8
+    atr_norm = max(-1.0, min(1.0, (atr_pct - 0.8) / 1.2))
+
+    # 9. Rezimu trhu (-0.75 BEAR, 0.0 SIDEWAYS, +0.75 BULL)
+    regime_norm = _regime_numeric_value()
+
+    return [
+        dist_ema9_pct,
+        rel_vol,
+        osc_ratio,
+        sig_diff,
+        pred_diff,
+        body_ratio,
+        dist_ema50_norm,
+        atr_norm,
+        regime_norm,
+    ]
+
+def describe_ai_factors(feats: list[float] | None) -> str:
+    if not feats or len(feats) < 6:
+        return "--"
+    labels = [
+        ("EMA9", feats[0]),
+        ("Objem", feats[1]),
+        ("Osc", feats[2]),
+        ("Sig", feats[3]),
+        ("Pred", feats[4]),
+        ("Sviecka", feats[5]),
+    ]
+    if len(feats) >= 9:
+        labels.extend([
+            ("EMA50", feats[6]),
+            ("ATR", feats[7]),
+            ("Trh", feats[8]),
+        ])
+    ranked = sorted(labels, key=lambda item: abs(item[1]), reverse=True)[:3]
+    parts = [f"{name}{'+' if val >= 0 else '-'}" for name, val in ranked]
+    return ", ".join(parts)
+
+def _build_series_and_signals(candles_raw, mode_choice: str):
+    candles = list(reversed(candles_raw))
+    closed = candles[:-1]
+    n = len(closed)
+    if n < 30:
+        return None
+
+    ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
+    for i, c in enumerate(closed):
+        o, h, l, cl, v = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4]), safe_float(c[5])
+        ha_cl = (o + h + l + cl) / 4.0
+        ha_op = (o + cl) / 2.0 if i == 0 else (ha_opens[-1] + ha_closes[-1]) / 2.0
+        ha_hi = max(h, ha_op, ha_cl)
+        ha_lo = min(l, ha_op, ha_cl)
+        ha_closes.append(ha_cl)
+        ha_opens.append(ha_op)
+        ha_highs.append(ha_hi)
+        ha_lows.append(ha_lo)
+        volumes.append(v)
+
+    fast_len = max(1, int(SETTINGS.get("fast_len", 5)))
+    slow_len = max(1, int(SETTINGS.get("slow_len", 20)))
+    signal_len = max(1, int(SETTINGS.get("signal_len", 9)))
+    pred_look = max(1, min(10, int(SETTINGS.get("pred_look", 3))))
+
+    vol_dirs = [volumes[i] if ha_closes[i] > ha_opens[i] else -volumes[i] for i in range(n)]
+    fast_ma = calc_ema_series(vol_dirs, fast_len)
+    slow_ma = calc_ema_series(vol_dirs, slow_len)
+    oscillator = [fast_ma[i] - slow_ma[i] for i in range(n)]
+    signal_line = calc_ema_series(oscillator, signal_len)
+    close_ema_9 = calc_ema_series(ha_closes, 9)
+    close_ema_50 = calc_ema_series(ha_closes, 50)
+    lr0 = calc_linreg_series(oscillator, pred_look, 0)
+    lr1 = calc_linreg_series(oscillator, pred_look, 1)
+    raw_slope = [(lr0[i] - lr1[i]) if (lr0[i] is not None and lr1[i] is not None) else None for i in range(n)]
+    smooth_slope = calc_wma_series(raw_slope, 3)
+    predicted_next = [(oscillator[i] + smooth_slope[i]) if smooth_slope[i] is not None else oscillator[i] for i in range(n)]
+
+    return {
+        "n": n,
+        "ha_closes": ha_closes,
+        "ha_opens": ha_opens,
+        "ha_highs": ha_highs,
+        "ha_lows": ha_lows,
+        "volumes": volumes,
+        "oscillator": oscillator,
+        "signal_line": signal_line,
+        "close_ema_9": close_ema_9,
+        "close_ema_50": close_ema_50,
+        "predicted_next": predicted_next,
+        "mode_choice": mode_choice,
+    }
 
 def get_current_ai_features_for_symbol(symbol: str, bar_tf: str = "15m") -> list[float] | None:
     try:
-        res = okx_public_request(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=80")
-        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 25:
+        res = okx_public_request(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=90")
+        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 30:
             return None
-        candles = list(reversed(res["data"]))
-        closed = candles[:-1]
-        n = len(closed)
-        if n < 20:
+        mode_choice = str(SETTINGS.get("mode_choice", "ALL_GREEN")).upper()
+        pack = _build_series_and_signals(res["data"], mode_choice)
+        if not pack:
             return None
-
-        ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
-        for i, c in enumerate(closed):
-            o, h, l, cl, v = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4]), safe_float(c[5])
-            ha_cl = (o + h + l + cl) / 4.0
-            ha_op = (o + cl) / 2.0 if i == 0 else (ha_opens[-1] + ha_closes[-1]) / 2.0
-            ha_hi = max(h, ha_op, ha_cl)
-            ha_lo = min(l, ha_op, ha_cl)
-            ha_closes.append(ha_cl)
-            ha_opens.append(ha_op)
-            ha_highs.append(ha_hi)
-            ha_lows.append(ha_lo)
-            volumes.append(v)
-
-        fast_len = max(1, int(SETTINGS.get("fast_len", 5)))
-        slow_len = max(1, int(SETTINGS.get("slow_len", 20)))
-        signal_len = max(1, int(SETTINGS.get("signal_len", 9)))
-        pred_look = max(1, min(10, int(SETTINGS.get("pred_look", 3))))
-
-        vol_dirs = [volumes[i] if ha_closes[i] > ha_opens[i] else -volumes[i] for i in range(n)]
-        fast_ma = calc_ema_series(vol_dirs, fast_len)
-        slow_ma = calc_ema_series(vol_dirs, slow_len)
-        oscillator = [fast_ma[i] - slow_ma[i] for i in range(n)]
-        signal_line = calc_ema_series(oscillator, signal_len)
-        close_ema_9 = calc_ema_series(ha_closes, 9)
-        lr0 = calc_linreg_series(oscillator, pred_look, 0)
-        lr1 = calc_linreg_series(oscillator, pred_look, 1)
-        raw_slope = [(lr0[i] - lr1[i]) if (lr0[i] is not None and lr1[i] is not None) else None for i in range(n)]
-        smooth_slope = calc_wma_series(raw_slope, 3)
-        predicted_next = [(oscillator[i] + smooth_slope[i]) if smooth_slope[i] is not None else oscillator[i] for i in range(n)]
-
-        return extract_ai_features(n - 1, ha_closes, ha_opens, ha_highs, ha_lows, volumes, oscillator, signal_line, close_ema_9, predicted_next)
+        idx = pack["n"] - 1
+        return extract_ai_features(
+            idx,
+            pack["ha_closes"],
+            pack["ha_opens"],
+            pack["ha_highs"],
+            pack["ha_lows"],
+            pack["volumes"],
+            pack["oscillator"],
+            pack["signal_line"],
+            pack["close_ema_9"],
+            pack["predicted_next"],
+            pack["close_ema_50"],
+        )
     except Exception:
         return None
+
+def _collect_symbol_training_samples(symbol: str, bar_tf: str, target_gain_pct: float, stop_loss_pct: float, mode_choice: str) -> list[tuple[list[float], int, float]]:
+    res = okx_public_request(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=250")
+    if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 60:
+        return []
+    pack = _build_series_and_signals(res["data"], mode_choice)
+    if not pack:
+        return []
+
+    n = pack["n"]
+    ha_closes = pack["ha_closes"]
+    ha_opens = pack["ha_opens"]
+    ha_highs = pack["ha_highs"]
+    ha_lows = pack["ha_lows"]
+    volumes = pack["volumes"]
+    oscillator = pack["oscillator"]
+    signal_line = pack["signal_line"]
+    close_ema_9 = pack["close_ema_9"]
+    close_ema_50 = pack["close_ema_50"]
+    predicted_next = pack["predicted_next"]
+
+    horizon = 12
+    samples = []
+    for i in range(25, n - horizon):
+        osc_i = oscillator[i]
+        sig_i = signal_line[i]
+        cl_i = ha_closes[i]
+        ema9_i = close_ema_9[i]
+
+        cond_vol_bull = (osc_i > 0.0) and (osc_i > sig_i)
+        cond_vol_cross = (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
+        ema9_cross = (ha_closes[i - 1] <= close_ema_9[i - 1]) and (cl_i > ema9_i)
+        if mode_choice == "BREAKOUT":
+            is_sig = cond_vol_cross or (cond_vol_bull and ema9_cross)
+        else:
+            is_sig = cond_vol_bull and (cond_vol_cross or ema9_cross)
+
+        if not is_sig or cl_i <= 0:
+            continue
+
+        label = 0
+        move_magnitude_pct = 0.4
+        for j in range(i + 1, i + 1 + horizon):
+            chg_pct = ((ha_closes[j] - cl_i) / cl_i) * 100.0
+            if chg_pct >= target_gain_pct:
+                label = 1
+                move_magnitude_pct = max(0.3, abs(chg_pct))
+                break
+            if chg_pct <= -stop_loss_pct:
+                label = 0
+                move_magnitude_pct = max(0.4, abs(chg_pct))
+                break
+
+        weight = max(0.5, min(1.8, move_magnitude_pct / max(0.4, target_gain_pct)))
+        feats = extract_ai_features(
+            i,
+            ha_closes,
+            ha_opens,
+            ha_highs,
+            ha_lows,
+            volumes,
+            oscillator,
+            signal_line,
+            close_ema_9,
+            predicted_next,
+            close_ema_50,
+        )
+        samples.append((feats, label, weight))
+    return samples
 
 def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = False) -> dict:
     global AI_STATE
@@ -743,134 +919,84 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         return {"ok": True, "samples": AI_STATE["samples_count"], "win_rate": AI_STATE["win_rate_train"]}
 
     try:
-        res = okx_public_request(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=300")
-        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 60:
-            return {"ok": False, "msg": "Nedostatok historickych sviecok z OKX."}
-
-        candles = list(reversed(res["data"]))
-        closed = candles[:-1]
-        n = len(closed)
-        if n < 50:
-            return {"ok": False, "msg": "Prilis malo uzavretych sviecok."}
-
-        ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
-        for i, c in enumerate(closed):
-            o, h, l, cl, v = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4]), safe_float(c[5])
-            ha_cl = (o + h + l + cl) / 4.0
-            ha_op = (o + cl) / 2.0 if i == 0 else (ha_opens[-1] + ha_closes[-1]) / 2.0
-            ha_hi = max(h, ha_op, ha_cl)
-            ha_lo = min(l, ha_op, ha_cl)
-            ha_closes.append(ha_cl)
-            ha_opens.append(ha_op)
-            ha_highs.append(ha_hi)
-            ha_lows.append(ha_lo)
-            volumes.append(v)
-
-        fast_len = max(1, int(SETTINGS.get("fast_len", 5)))
-        slow_len = max(1, int(SETTINGS.get("slow_len", 20)))
-        signal_len = max(1, int(SETTINGS.get("signal_len", 9)))
-        pred_look = max(1, min(10, int(SETTINGS.get("pred_look", 3))))
         mode_choice = str(SETTINGS.get("mode_choice", "ALL_GREEN")).upper()
+        if SETTINGS.get("use_fixed_tp", True):
+            target_gain_pct = max(0.35, float(SETTINGS.get("fixed_tp_pct", 1.2)))
+        else:
+            target_gain_pct = max(0.35, float(SETTINGS.get("ttp_trigger_pct", 1.2)) * 0.8)
+        stop_loss_pct = max(0.25, float(SETTINGS.get("fixed_sl_pct", 1.5)))
 
-        vol_dirs = [volumes[i] if ha_closes[i] > ha_opens[i] else -volumes[i] for i in range(n)]
-        fast_ma = calc_ema_series(vol_dirs, fast_len)
-        slow_ma = calc_ema_series(vol_dirs, slow_len)
-        oscillator = [fast_ma[i] - slow_ma[i] for i in range(n)]
-        signal_line = calc_ema_series(oscillator, signal_len)
-        close_ema_9 = calc_ema_series(ha_closes, 9)
-        lr0 = calc_linreg_series(oscillator, pred_look, 0)
-        lr1 = calc_linreg_series(oscillator, pred_look, 1)
-        raw_slope = [(lr0[i] - lr1[i]) if (lr0[i] is not None and lr1[i] is not None) else None for i in range(n)]
-        smooth_slope = calc_wma_series(raw_slope, 3)
-        predicted_next = [(oscillator[i] + smooth_slope[i]) if smooth_slope[i] is not None else oscillator[i] for i in range(n)]
+        train_symbols = []
+        for cand in [symbol] + list(TOP_LIQUID_SYMBOLS[:5]):
+            if cand and cand not in EXCLUDED_SYMBOLS and cand not in train_symbols:
+                train_symbols.append(cand)
+            if len(train_symbols) >= 5:
+                break
 
-        target_gain_pct = max(0.35, float(SETTINGS.get("ttp_trigger_pct", 1.2)) * 0.75)
-        stop_loss_pct = float(SETTINGS.get("fixed_sl_pct", 1.5))
-        horizon = 12
-
-        dataset = []
-        for i in range(25, n - horizon):
-            osc_i = oscillator[i]
-            sig_i = signal_line[i]
-            cl_i = ha_closes[i]
-            ema9_i = close_ema_9[i]
-
-            cond_vol_bull = (osc_i > 0.0) and (osc_i > sig_i)
-            cond_vol_cross = (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
-            ema9_cross = (ha_closes[i - 1] <= close_ema_9[i - 1]) and (cl_i > ema9_i)
-            if mode_choice == "BREAKOUT":
-                is_sig = cond_vol_cross or (cond_vol_bull and ema9_cross)
-            else:
-                is_sig = cond_vol_bull and (cond_vol_cross or ema9_cross)
-
-            if not is_sig or cl_i <= 0:
-                continue
-
-            label = 0
-            for j in range(i + 1, i + 1 + horizon):
-                chg_pct = ((ha_closes[j] - cl_i) / cl_i) * 100.0
-                if chg_pct >= target_gain_pct:
-                    label = 1
-                    break
-                if chg_pct <= -stop_loss_pct:
-                    label = 0
-                    break
-
-            feats = extract_ai_features(i, ha_closes, ha_opens, ha_highs, ha_lows, volumes, oscillator, signal_line, close_ema_9, predicted_next)
-            dataset.append((feats, label))
+        dataset: list[tuple[list[float], int, float]] = []
+        used_symbols: list[str] = []
+        for sym in train_symbols:
+            sym_samples = _collect_symbol_training_samples(sym, bar_tf, target_gain_pct, stop_loss_pct, mode_choice)
+            if sym_samples:
+                dataset.extend(sym_samples)
+                used_symbols.append(sym.split("-")[0])
 
         if len(dataset) < 10:
             return {"ok": False, "msg": f"Najdenych len {len(dataset)} historickych signalov."}
 
-        weights = [0.0] * 6
+        weights = [0.0] * AI_FEATURE_COUNT
         bias = 0.0
-        lr = 0.12
-        reg = 0.05
+        lr = 0.045
+        reg = 0.08
 
-        for _ in range(80):
-            for feats, y in dataset:
-                z = bias + sum(weights[k] * feats[k] for k in range(6))
-                pred_p = _sigmoid(z)
-                err = pred_p - y
-                for k in range(6):
+        for _ in range(45):
+            for feats, y, w_sample in dataset:
+                z = bias + sum(weights[k] * feats[k] for k in range(AI_FEATURE_COUNT))
+                pred_p = _sigmoid(z * 0.65)
+                err = (pred_p - y) * w_sample
+                for k in range(AI_FEATURE_COUNT):
                     weights[k] -= lr * (err * feats[k] + reg * weights[k])
                 bias -= lr * err
 
         correct = 0
         wins_cnt = 0
-        for feats, y in dataset:
+        for feats, y, _ in dataset:
             if y == 1:
                 wins_cnt += 1
-            z = bias + sum(weights[k] * feats[k] for k in range(6))
-            pred_cls = 1 if _sigmoid(z) >= 0.5 else 0
+            z = bias + sum(weights[k] * feats[k] for k in range(AI_FEATURE_COUNT))
+            pred_cls = 1 if _sigmoid(z * 0.65) >= 0.5 else 0
             if pred_cls == y:
                 correct += 1
 
         acc_pct = round((correct / len(dataset)) * 100.0, 1)
-        AI_STATE["weights"] = [round(w, 5) for w in weights]
-        AI_STATE["bias"] = round(bias, 5)
+        AI_STATE["weights"] = [round(max(-2.5, min(2.5, w)), 5) for w in weights]
+        AI_STATE["bias"] = round(max(-1.5, min(1.5, bias)), 5)
         AI_STATE["samples_count"] = len(dataset)
         AI_STATE["win_rate_train"] = round((wins_cnt / len(dataset)) * 100.0, 1)
         AI_STATE["accuracy_train"] = acc_pct
         AI_STATE["trained_at"] = get_sk_time_str()
-        AI_STATE["last_symbol"] = f"{symbol} ({bar_tf.upper()})"
+        sym_label = ",".join(used_symbols[:3]) if used_symbols else symbol
+        AI_STATE["last_symbol"] = f"{sym_label} ({bar_tf.upper()})"
         AI_STATE["_last_train_ts"] = now_ts
 
         source_trades = AI_LEARNED_TRADES if AI_LEARNED_TRADES else [
             t for t in CLOSED_TRADES_HISTORY if t.get("entry_features") and len(t.get("entry_features")) >= 6
         ]
         for t in reversed(source_trades[:50]):
-            t_feats = t.get("entry_features")
-            if t_feats and len(t_feats) >= 6:
-                y_real = 1.0 if safe_float(t.get("pnl_usdc")) > 0 else 0.0
-                for _ in range(8):
-                    z = AI_STATE["bias"] + sum(AI_STATE["weights"][k] * t_feats[k] for k in range(6))
-                    err = _sigmoid(z) - y_real
-                    for k in range(6):
-                        AI_STATE["weights"][k] -= 0.12 * (err * t_feats[k] + 0.03 * AI_STATE["weights"][k])
-                    AI_STATE["bias"] -= 0.12 * err
-                AI_STATE["weights"] = [round(w, 5) for w in AI_STATE["weights"]]
-                AI_STATE["bias"] = round(AI_STATE["bias"], 5)
+            t_feats = _pad_or_trim_features(t.get("entry_features"), AI_FEATURE_COUNT)
+            if t_feats:
+                pnl_val = safe_float(t.get("pnl_usdc"))
+                pnl_pct_val = abs(safe_float(t.get("pnl_pct"), 0.5))
+                y_real = 1.0 if pnl_val > 0 else 0.0
+                trade_w = max(0.35, min(1.8, pnl_pct_val / 0.6))
+                for _ in range(2):
+                    z = AI_STATE["bias"] + sum(AI_STATE["weights"][k] * t_feats[k] for k in range(AI_FEATURE_COUNT))
+                    err = (_sigmoid(z * 0.65) - y_real) * trade_w
+                    for k in range(AI_FEATURE_COUNT):
+                        AI_STATE["weights"][k] -= 0.04 * (err * t_feats[k] + 0.08 * AI_STATE["weights"][k])
+                    AI_STATE["bias"] -= 0.04 * err
+                AI_STATE["weights"] = [round(max(-2.5, min(2.5, w)), 5) for w in AI_STATE["weights"]]
+                AI_STATE["bias"] = round(max(-1.5, min(1.5, AI_STATE["bias"])), 5)
 
         if source_trades:
             AI_STATE["live_learned_count"] = max(int(AI_STATE.get("live_learned_count", 0)), len(source_trades))
@@ -885,8 +1011,8 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         live_wins = int(AI_STATE.get("live_wins_count", 0))
         live_losses = max(0, live_cnt - live_wins)
         log_event(
-            f"AI model natrenovany na {symbol} [{bar_tf.upper()}]: {len(dataset)} vzoriek | "
-            f"Nastudovane a ulozene obchody: {live_cnt} ({live_wins}W/{live_losses}L) | Presnost: {acc_pct}%."
+            f"AI model natrenovany na [{', '.join(used_symbols)}] [{bar_tf.upper()}]: {len(dataset)} vzoriek (TP {target_gain_pct:.1f}% / SL {stop_loss_pct:.1f}%) | "
+            f"Ulozene obchody: {live_cnt} ({live_wins}W/{live_losses}L) | Presnost: {acc_pct}%."
         )
         return {
             "ok": True,
@@ -900,54 +1026,55 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
     except Exception as e:
         return {"ok": False, "msg": str(e)}
 
-def predict_ai_probability(feats: list[float]) -> float | None:
+def predict_ai_probability(feats: list[float] | None) -> float | None:
     if AI_STATE.get("samples_count", 0) < 10:
         return None
-    w = AI_STATE.get("weights", [0.0] * 6)
+    aligned_feats = _pad_or_trim_features(feats, AI_FEATURE_COUNT)
+    if not aligned_feats:
+        return None
+    w = list(AI_STATE.get("weights", [0.0] * AI_FEATURE_COUNT))
+    while len(w) < AI_FEATURE_COUNT:
+        w.append(0.0)
     b = float(AI_STATE.get("bias", 0.0))
-    z = b + sum(w[k] * feats[k] for k in range(min(len(w), len(feats))))
-    z = max(-2.2, min(2.2, z))
-    raw_prob = _sigmoid(z)
+    z = b + sum(safe_float(w[k]) * aligned_feats[k] for k in range(AI_FEATURE_COUNT))
+    raw_prob = _sigmoid(z * 0.65)
+    clamped = max(0.08, min(0.88, raw_prob))
+    return round(clamped, 3)
 
-    live_cnt = int(AI_STATE.get("live_learned_count", 0))
-    acc_train = safe_float(AI_STATE.get("accuracy_train"), 0.0)
-    if live_cnt == 0 and 0.0 < acc_train < 50.0:
-        confidence = max(0.35, acc_train / 100.0)
-        calibrated = 0.5 + (raw_prob - 0.5) * confidence
-        return round(calibrated, 3)
-
-    return round(raw_prob, 3)
-
-def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade_style: str = "SCALPING"):
+def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade_style: str = "SCALPING", pnl_pct: float | None = None):
     global AI_STATE
-    if not features or len(features) < 6:
+    aligned_feats = _pad_or_trim_features(features, AI_FEATURE_COUNT)
+    if not aligned_feats:
         return
     y = 1.0 if pnl_usdc > 0 else 0.0
-    weights = list(AI_STATE.get("weights", [0.0] * 6))
-    while len(weights) < 6:
+    mag_pct = abs(safe_float(pnl_pct, 0.5)) if pnl_pct is not None else 0.5
+    sample_weight = max(0.35, min(1.8, mag_pct / 0.6))
+
+    weights = list(AI_STATE.get("weights", [0.0] * AI_FEATURE_COUNT))
+    while len(weights) < AI_FEATURE_COUNT:
         weights.append(0.0)
     bias = float(AI_STATE.get("bias", 0.0))
-    lr = 0.15
-    reg = 0.03
+    lr = 0.045
+    reg = 0.08
 
-    for _ in range(12):
-        z = bias + sum(weights[k] * features[k] for k in range(6))
-        pred_p = _sigmoid(z)
-        err = pred_p - y
-        for k in range(6):
-            weights[k] -= lr * (err * features[k] + reg * weights[k])
-        bias -= lr * err
+    for _ in range(2):
+        z = bias + sum(safe_float(weights[k]) * aligned_feats[k] for k in range(AI_FEATURE_COUNT))
+        pred_p = _sigmoid(z * 0.65)
+        err = (pred_p - y) * sample_weight
+        for k in range(AI_FEATURE_COUNT):
+            weights[k] = max(-2.5, min(2.5, safe_float(weights[k]) - lr * (err * aligned_feats[k] + reg * safe_float(weights[k]))))
+        bias = max(-1.5, min(1.5, bias - lr * err))
 
     live_cnt = int(AI_STATE.get("live_learned_count", 0)) + 1
     live_wins = int(AI_STATE.get("live_wins_count", 0)) + (1 if pnl_usdc > 0 else 0)
-    AI_STATE["weights"] = [round(w, 5) for w in weights]
+    AI_STATE["weights"] = [round(x, 5) for x in weights]
     AI_STATE["bias"] = round(bias, 5)
     AI_STATE["live_learned_count"] = live_cnt
     AI_STATE["live_wins_count"] = live_wins
     AI_STATE["trained_at"] = get_sk_time_str()
     save_ai_model()
     log_event(
-        f"AI sa doucilo [{trade_style}] ({'ZISK' if pnl_usdc > 0 else 'STRATA'} {pnl_usdc:+.2f} $) | Ulozenych obchodov: {live_cnt} ({live_wins}W)",
+        f"AI sa doucilo [{trade_style}] ({'ZISK' if pnl_usdc > 0 else 'STRATA'} {pnl_usdc:+.2f} $, vaha {sample_weight:.2f}x) | Ulozenych obchodov: {live_cnt} ({live_wins}W)",
         persist=True,
     )
 
@@ -965,9 +1092,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 "symbol": symbol, "price": 0.0, "oscillator": 0.0,
                 "momentum": "SLABE", "impulse": "CAKA", "trade_status": "---",
                 "be_status": "VYPNUTY", "ttp_status": "VYPNUTY", "ts_status": "VYPNUTY",
-                "ai_score": "--", "exec_signal": "CAKAJ", "signal": "CHYBA DAT", "is_green": False
+                "ai_score": "--", "ai_factors": "--", "exec_signal": "CAKAJ", "signal": "CHYBA DAT", "is_green": False
             }
-            return {"buy": False, "raw_buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "block_reason": "", "features": None, "last_closed_price": 0.0}
+            return {"buy": False, "raw_buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "ai_factors": "--", "block_reason": "", "features": None, "last_closed_price": 0.0}
 
         candles = list(reversed(res["data"]))
         closed_candles = candles[:-1]
@@ -1012,6 +1139,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         oscillator = [fast_ma[i] - slow_ma[i] for i in range(n)]
         signal_line = calc_ema_series(oscillator, signal_len)
         close_ema_9 = calc_ema_series(ha_closes, 9)
+        close_ema_50 = calc_ema_series(ha_closes, 50)
 
         lr0 = calc_linreg_series(oscillator, pred_look, 0)
         lr1 = calc_linreg_series(oscillator, pred_look, 1)
@@ -1194,10 +1322,24 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 last_bar_sell = True
                 last_bar_sell_reason = "Pine SELL (Obrat oscilatora)"
 
-        feats = extract_ai_features(n - 1, ha_closes, ha_opens, ha_highs, ha_lows, volumes, oscillator, signal_line, close_ema_9, predicted_next)
+        feats = extract_ai_features(
+            n - 1,
+            ha_closes,
+            ha_opens,
+            ha_highs,
+            ha_lows,
+            volumes,
+            oscillator,
+            signal_line,
+            close_ema_9,
+            predicted_next,
+            close_ema_50,
+        )
+        ai_factors_txt = describe_ai_factors(feats)
         ai_prob = predict_ai_probability(feats)
         if ai_prob is not None:
             AI_STATE["last_prob"] = ai_prob
+            AI_STATE["last_factors"] = ai_factors_txt
 
         final_buy = last_bar_buy
         block_reason = ""
@@ -1248,15 +1390,29 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             if final_buy and bool(SETTINGS.get("use_ai_filter", True)):
                 if AI_STATE.get("samples_count", 0) < 10:
                     train_ai_model_from_candles(symbol, bar_tf=bar_tf, force=False)
-                    feats = extract_ai_features(n - 1, ha_closes, ha_opens, ha_highs, ha_lows, volumes, oscillator, signal_line, close_ema_9, predicted_next)
+                    feats = extract_ai_features(
+                        n - 1,
+                        ha_closes,
+                        ha_opens,
+                        ha_highs,
+                        ha_lows,
+                        volumes,
+                        oscillator,
+                        signal_line,
+                        close_ema_9,
+                        predicted_next,
+                        close_ema_50,
+                    )
+                    ai_factors_txt = describe_ai_factors(feats)
                     ai_prob = predict_ai_probability(feats)
                     if ai_prob is not None:
                         AI_STATE["last_prob"] = ai_prob
+                        AI_STATE["last_factors"] = ai_factors_txt
 
                 min_prob = float(SETTINGS.get("ai_min_prob", 0.38))
                 if ai_prob is not None and ai_prob < min_prob:
                     final_buy = False
-                    block_reason = f"AI skore {ai_prob*100:.1f}% < {min_prob*100:.1f}%"
+                    block_reason = f"AI skore {ai_prob*100:.1f}% < {min_prob*100:.1f}% [{ai_factors_txt}]"
                     AI_STATE["blocked_count"] = AI_STATE.get("blocked_count", 0) + 1
                 else:
                     AI_STATE["passed_count"] = AI_STATE.get("passed_count", 0) + 1
@@ -1302,22 +1458,33 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "ttp_status": ttp_status_txt,
             "ts_status": ts_status_txt,
             "ai_score": ai_score_txt,
+            "ai_factors": ai_factors_txt,
             "exec_signal": exec_signal_str,
             "signal": "BUY" if final_buy else ("AI BLOK" if last_bar_buy else ("SELL" if last_bar_sell else ("BULLISH" if last_cond_volume_bullish else "CAKA"))),
             "is_green": final_buy
         }
 
         last_closed_raw_price = safe_float(closed_candles[-1][4], curr_close)
-        return {"buy": final_buy, "raw_buy": last_bar_buy, "sell": last_bar_sell, "sell_reason": last_bar_sell_reason, "ai_prob": ai_prob, "block_reason": block_reason, "features": feats, "last_closed_price": last_closed_raw_price}
+        return {
+            "buy": final_buy,
+            "raw_buy": last_bar_buy,
+            "sell": last_bar_sell,
+            "sell_reason": last_bar_sell_reason,
+            "ai_prob": ai_prob,
+            "ai_factors": ai_factors_txt,
+            "block_reason": block_reason,
+            "features": feats,
+            "last_closed_price": last_closed_raw_price,
+        }
     except Exception as e:
         log_event(f"Vynimka pri vyhodnocovani {symbol}: {e}")
         MARKET_SCANNER_CACHE[coin_key] = {
             "symbol": symbol, "price": 0.0, "oscillator": 0.0,
             "momentum": "SLABE", "impulse": "CAKA", "trade_status": "---",
             "be_status": "VYPNUTY", "ttp_status": "VYPNUTY", "ts_status": "VYPNUTY",
-            "ai_score": "--", "exec_signal": "CAKAJ", "signal": "VYNIMKA", "is_green": False
+            "ai_score": "--", "ai_factors": "--", "exec_signal": "CAKAJ", "signal": "VYNIMKA", "is_green": False
         }
-        return {"buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "block_reason": "", "features": None}
+        return {"buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "ai_factors": "--", "block_reason": "", "features": None}
 
 # --- AUTONOMNA SKENOVACIA SLUCKA ---
 
@@ -1384,11 +1551,12 @@ async def autonomous_scanner_loop():
                             continue
 
                         if sig["buy"]:
-                            prob_txt = f" (AI: {sig['ai_prob']*100:.1f}%)" if sig.get("ai_prob") is not None else ""
+                            prob_txt = f" (AI: {sig['ai_prob']*100:.1f}% [{sig.get('ai_factors', '--')}])" if sig.get("ai_prob") is not None else ""
                             log_event(f"STRATEGIA + AI 'BUY' SIGNAL PRE {symbol}{prob_txt}!")
                             await execute_autonomous_buy(
                                 symbol,
                                 ai_prob=sig.get("ai_prob"),
+                                ai_factors=sig.get("ai_factors", "--"),
                                 entry_features=sig.get("features"),
                                 signal_close_price=sig.get("last_closed_price", 0.0),
                             )
@@ -1408,7 +1576,7 @@ async def top_symbols_updater_loop():
             log_event(f"Chyba v slucke top symbolov: {e}")
         await asyncio.sleep(3600)
 
-async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, entry_features: list[float] | None = None, signal_close_price: float = 0.0):
+async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, ai_factors: str = "--", entry_features: list[float] | None = None, signal_close_price: float = 0.0):
     global ACTIVE_TRADES, LAST_TRADE_TIME
     async with trade_lock:
         coin_name = okx_symbol.split("-")[0]
@@ -1470,6 +1638,8 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
 
         if entry_features is None:
             entry_features = get_current_ai_features_for_symbol(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
+        if entry_features is not None and (not ai_factors or ai_factors == "--"):
+            ai_factors = describe_ai_factors(entry_features)
         if ai_prob is None and entry_features is not None:
             ai_prob = predict_ai_probability(entry_features)
 
@@ -1504,13 +1674,14 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             "live_pnl_usdc": 0.0,
             "tf": CURRENT_TIMEFRAME,
             "ai_prob": ai_prob,
+            "ai_factors": ai_factors,
             "entry_features": entry_features,
             "source": "AUTO",
         }
         save_persistent_data()
 
         tp_info = f" | Fixny TP: +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp else ""
-        ai_info = f" | AI: {ai_prob*100:.1f}%" if ai_prob is not None else ""
+        ai_info = f" | AI: {ai_prob*100:.1f}% [{ai_factors}]" if ai_prob is not None else ""
         log_event(f"NAKUP (Strategia + AI BUY) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} {ACTIVE_BALANCE_CCY} | Investicia: {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY} | Fixny SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}{ai_info}", persist=True)
 
         inline_keyboard = {
@@ -1526,7 +1697,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             f"<b>Par:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
             f"<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}\n"
-            + (f"<b>AI skore:</b> {ai_prob*100:.1f}%\n" if ai_prob is not None else "")
+            + (f"<b>AI skore:</b> {ai_prob*100:.1f}% [{ai_factors}]\n" if ai_prob is not None else "")
             + f"<b>Fixny Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})\n"
             + (f"<b>Fixny Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})\n" if use_fixed_tp else "")
             + "<b>Vystup:</b> Okamzity SELL signal alebo Fixny SL" + (" / TTP" if use_fixed_tp else ""),
@@ -1609,7 +1780,7 @@ async def close_trade_position(coin: str, reason: str):
 
             t_style = classify_trade_style(trade.get("tf", CURRENT_TIMEFRAME), trade.get("source", "AUTO"))
             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason, feats, trade_style=t_style)
-            learn_from_closed_trade(feats, pnl_usdc, trade_style=t_style)
+            learn_from_closed_trade(feats, pnl_usdc, trade_style=t_style, pnl_pct=pnl_pct)
             LAST_TRADE_TIME[coin] = datetime.now().timestamp()
             WAIT_FOR_SIGNAL_RESET[coin] = True
 
@@ -2007,6 +2178,7 @@ async def manual_buy(coin: str):
                 return JSONResponse({"status": "error", "message": f"OKX odmietlo prikaz ({err_msg})"})
 
             entry_features = get_current_ai_features_for_symbol(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
+            ai_factors = describe_ai_factors(entry_features) if entry_features is not None else "--"
             ai_prob = predict_ai_probability(entry_features) if entry_features is not None else None
 
             coin_amount = float(formatted_sz)
@@ -2040,12 +2212,13 @@ async def manual_buy(coin: str):
                 "live_pnl_usdc": 0.0,
                 "tf": CURRENT_TIMEFRAME,
                 "ai_prob": ai_prob,
+                "ai_factors": ai_factors,
                 "entry_features": entry_features,
                 "source": "MANUAL",
             }
             save_persistent_data()
             tp_info = f" | Fixny TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
-            ai_info = f" | AI: {ai_prob*100:.1f}%" if ai_prob is not None else ""
+            ai_info = f" | AI: {ai_prob*100:.1f}% [{ai_factors}]" if ai_prob is not None else ""
             log_event(f"Manualny nakup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investicia: {actual_spent_usdc:.2f}$ | Fixny SL: -{fixed_sl_pct}%{tp_info}{ai_info}", persist=True)
             send_telegram_msg(f"<b>MANUALNY NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\n<b>Par:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}\n<b>Fixny SL:</b> -{fixed_sl_pct}%" + (f"\n<b>Fixny TP:</b> +{fixed_tp_pct}%" if use_fixed_tp else ""))
 
@@ -2801,6 +2974,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         let momClass = info.momentum === "SILNE" ? "text-green" : "text-red";
                         let impClass = info.impulse.includes("AKTIVNY") ? "text-green" : "text-yellow";
                         let execClass = info.exec_signal.includes("NAKUPIT") ? "text-green" : (info.exec_signal.includes("PREDAT") || info.exec_signal.includes("BLOK") ? "text-red" : "text-yellow");
+                        let factorTitle = info.ai_factors && info.ai_factors !== "--" ? ` title="Faktory: ${info.ai_factors}"` : "";
 
                         sHtml += `<tr>
                             <td><b>${info.symbol}</b></td>
@@ -2808,7 +2982,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <td class="${momClass}">${info.momentum}</td>
                             <td class="${impClass}">${info.impulse}</td>
                             <td class="text-yellow">${info.trade_status}</td>
-                            <td>${info.ai_score || '--'}</td>
+                            <td${factorTitle}>${info.ai_score || '--'}${info.ai_factors && info.ai_factors !== "--" ? `<br><span style="font-size:0.58rem; color:var(--text-muted);">${info.ai_factors}</span>` : ""}</td>
                             <td>${info.ts_status}</td>
                             <td class="${execClass}">${info.exec_signal}</td>
                         </tr>`;
