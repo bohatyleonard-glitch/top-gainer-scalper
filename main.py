@@ -62,6 +62,8 @@ EXCLUDED_SYMBOLS = {
     "XMSTR-USDC", "XSOXL-USDC", "XANT-USDC",
     "HYPE-USDC", "TAO-USDC", "XRP-USDC",
 }
+DEMO_REJECTED_COOLDOWN: dict[str, float] = {}
+DEMO_REJECTED_COOLDOWN_SEC = 1800.0
 
 # --- GLOBALNY STAV BOTA ---
 IS_BOT_ACTIVE = True
@@ -1364,6 +1366,8 @@ async def autonomous_scanner_loop():
 
                         coin_name = symbol.split("-")[0]
                         now_ts = datetime.now().timestamp()
+                        if time.time() < DEMO_REJECTED_COOLDOWN.get(symbol, 0.0):
+                            continue
 
                         if coin_name in ACTIVE_TRADES:
                             continue
@@ -1460,7 +1464,8 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
         order_res = okx_request("POST", "/api/v5/trade/order", order_body)
         if order_res.get("code") != "0":
             err_msg = order_res.get("msg", "Neznama chyba OKX")
-            log_event(f"Par {okx_symbol} odmietnuty v Demo rezime ({err_msg}).")
+            DEMO_REJECTED_COOLDOWN[okx_symbol] = time.time() + DEMO_REJECTED_COOLDOWN_SEC
+            log_event(f"Par {okx_symbol} odmietnuty v Demo rezime ({err_msg}) - pauza {int(DEMO_REJECTED_COOLDOWN_SEC // 60)} min.")
             return
 
         if entry_features is None:
@@ -1688,6 +1693,7 @@ async def fixed_stoploss_monitor_loop():
                             trade["be_active"] = True
                             if use_ttp and not trade.get("ttp_active", False):
                                 trade["ttp_active"] = True
+                                trade["ttp_stop_price"] = highest_p * (1.0 - (ttp_cb / 100.0))
                                 log_event(f"Ciel TP (+{fixed_tp_pct}%) dosiahnuty pre {symbol} -> aktivovany TTP (odstup {ttp_cb}%) a BE na ochranu zisku!")
                             elif not use_ttp:
                                 await close_trade_position(coin, f"Fixny Take-Profit (+{fixed_tp_pct}%)")
@@ -1705,6 +1711,7 @@ async def fixed_stoploss_monitor_loop():
                     if use_ttp:
                         if not trade.get("ttp_active", False) and current_price >= entry_p * (1.0 + (ttp_trig / 100.0)):
                             trade["ttp_active"] = True
+                            trade["ttp_stop_price"] = highest_p * (1.0 - (ttp_cb / 100.0))
                             log_event(f"Trailing TP aktivovany pre {symbol} pri +{pnl_pct:.2f}% (odstup {ttp_cb}%).")
                         if trade.get("ttp_active", False):
                             ttp_stop = highest_p * (1.0 - (ttp_cb / 100.0))
@@ -2130,9 +2137,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         /* Jednoduchsia a prehladna struktura nastaveni */
         .pine-panel { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
-        .quick-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-        @media (max-width: 1000px) { .quick-grid { grid-template-columns: 1fr; } .stats-grid { grid-template-columns: repeat(2, 1fr); } }
-        @media (max-width: 650px) { .stats-grid { grid-template-columns: 1fr; } }
+        .quick-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+        @media (max-width: 1180px) { .quick-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 1000px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 650px) { .quick-grid { grid-template-columns: 1fr; } .stats-grid { grid-template-columns: 1fr; } }
         .pine-group { background: #040507; border: 1px solid var(--border-color); border-radius: 4px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
         .pine-group-title { font-size: 0.66rem; font-weight: 700; color: var(--yellow); text-transform: uppercase; letter-spacing: 0.6px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
         .pine-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 0.68rem; color: var(--text-main); }
@@ -2144,7 +2152,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         details.adv-box { background: #040507; border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; }
         details.adv-box > summary { cursor: pointer; font-size: 0.68rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; list-style: none; }
         details.adv-box[open] > summary { color: var(--yellow); margin-bottom: 8px; }
-        .adv-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .adv-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
         @media (max-width: 1000px) { .adv-grid { grid-template-columns: 1fr; } }
         .pine-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; border-top: 1px solid var(--border-color); padding-top: 10px; }
         .pine-save-status { font-size: 0.68rem; color: var(--green); font-weight: 600; }
@@ -2289,10 +2297,42 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <input type="checkbox" id="pine-use-osc-sell" class="pine-checkbox" {% if SETTINGS.sell_on_osc_reversal %}checked{% endif %}>
                         </div>
                     </div>
+
+                    <div class="pine-group">
+                        <div class="pine-group-title">4. Ochrana TS / BE / TTP</div>
+                        <div class="pine-row">
+                            <label for="pine-use-trailing">Trailing Stop zapnuty</label>
+                            <input type="checkbox" id="pine-use-trailing" class="pine-checkbox" {% if SETTINGS.use_trailing %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-trail-pct">Vzdialenost TS (%)</label>
+                            <input type="number" id="pine-trail-pct" class="pine-input" min="0.1" max="50.0" step="0.1" value="{{ SETTINGS.trail_pct }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-use-be">Break-Even zapnuty</label>
+                            <input type="checkbox" id="pine-use-be" class="pine-checkbox" {% if SETTINGS.use_breakeven %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-be-trigger">Zisk % pre Break-Even</label>
+                            <input type="number" id="pine-be-trigger" class="pine-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.be_trigger_pct }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-use-ttp">Trailing TP zapnuty</label>
+                            <input type="checkbox" id="pine-use-ttp" class="pine-checkbox" {% if SETTINGS.use_trailing_tp %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-ttp-trigger">Aktivacia TTP (%)</label>
+                            <input type="number" id="pine-ttp-trigger" class="pine-input" min="0.1" max="100.0" step="0.1" value="{{ SETTINGS.ttp_trigger_pct }}">
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-ttp-callback">Odstup TTP (%)</label>
+                            <input type="number" id="pine-ttp-callback" class="pine-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.ttp_callback_pct }}">
+                        </div>
+                    </div>
                 </div>
 
                 <details class="adv-box">
-                    <summary>+ Rozsirene nastavenia (Oscilator, Fib, Anti-Top limity, TS / BE / TTP)</summary>
+                    <summary>+ Rozsirene nastavenia (Oscilator, Fib, Anti-Top limity)</summary>
                     <div class="adv-grid">
                         <div class="pine-group">
                             <div class="pine-group-title">Oscilator & Fibonacci</div>
@@ -2343,38 +2383,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <div class="pine-row">
                                 <label for="pine-max-wick">Max horny knot (0.1-0.9)</label>
                                 <input type="number" id="pine-max-wick" class="pine-input" min="0.1" max="0.9" step="0.05" value="{{ SETTINGS.max_upper_wick_ratio }}">
-                            </div>
-                        </div>
-
-                        <div class="pine-group">
-                            <div class="pine-group-title">Trailing Stop, BE & TTP</div>
-                            <div class="pine-row">
-                                <label for="pine-use-trailing">Trailing Stop zapnuty</label>
-                                <input type="checkbox" id="pine-use-trailing" class="pine-checkbox" {% if SETTINGS.use_trailing %}checked{% endif %}>
-                            </div>
-                            <div class="pine-row">
-                                <label for="pine-trail-pct">Vzdialenost TS (%)</label>
-                                <input type="number" id="pine-trail-pct" class="pine-input" min="0.1" max="50.0" step="0.1" value="{{ SETTINGS.trail_pct }}">
-                            </div>
-                            <div class="pine-row">
-                                <label for="pine-use-be">Break-Even zapnuty</label>
-                                <input type="checkbox" id="pine-use-be" class="pine-checkbox" {% if SETTINGS.use_breakeven %}checked{% endif %}>
-                            </div>
-                            <div class="pine-row">
-                                <label for="pine-be-trigger">Zisk % pre Break-Even</label>
-                                <input type="number" id="pine-be-trigger" class="pine-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.be_trigger_pct }}">
-                            </div>
-                            <div class="pine-row">
-                                <label for="pine-use-ttp">Trailing TP zapnuty</label>
-                                <input type="checkbox" id="pine-use-ttp" class="pine-checkbox" {% if SETTINGS.use_trailing_tp %}checked{% endif %}>
-                            </div>
-                            <div class="pine-row">
-                                <label for="pine-ttp-trigger">Aktivacia TTP (%)</label>
-                                <input type="number" id="pine-ttp-trigger" class="pine-input" min="0.1" max="100.0" step="0.1" value="{{ SETTINGS.ttp_trigger_pct }}">
-                            </div>
-                            <div class="pine-row">
-                                <label for="pine-ttp-callback">Odstup TTP (%)</label>
-                                <input type="number" id="pine-ttp-callback" class="pine-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.ttp_callback_pct }}">
                             </div>
                         </div>
                     </div>
