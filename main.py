@@ -135,11 +135,6 @@ SETTINGS = {
     "max_entry_slip_pct": 0.35,
     "use_ai_filter": True,
     "ai_min_prob": 0.38,
-    "use_bjorgum_filter": True,
-    "t3_fast_len": 8,
-    "t3_slow_len": 21,
-    "t3_alpha": 0.7,
-    "bjorgum_lookback": 1,
 }
 
 AI_STATE = {
@@ -647,128 +642,6 @@ def calc_ema_series(values, length):
         ema.append(val * alpha + ema[-1] * (1.0 - alpha))
     return ema
 
-def calc_t3_series(values: list[float], length: int, volume_factor: float = 0.7) -> list[float]:
-    """Vypocet Tilson T3 klzaveho priemeru."""
-    n = len(values)
-    if n == 0:
-        return []
-    length = max(1, int(length))
-    vf = float(volume_factor)
-    c1 = -(vf ** 3)
-    c2 = 3.0 * (vf ** 2) + 3.0 * (vf ** 3)
-    c3 = -6.0 * (vf ** 2) - 3.0 * vf - 3.0 * (vf ** 3)
-    c4 = 1.0 + 3.0 * vf + (vf ** 3) + 3.0 * (vf ** 2)
-
-    e1 = calc_ema_series(values, length)
-    e2 = calc_ema_series(e1, length)
-    e3 = calc_ema_series(e2, length)
-    e4 = calc_ema_series(e3, length)
-    e5 = calc_ema_series(e4, length)
-    e6 = calc_ema_series(e5, length)
-
-    return [
-        c1 * e6[i] + c2 * e5[i] + c3 * e4[i] + c4 * e3[i]
-        for i in range(n)
-    ]
-
-def check_bjorgum_buy_signal(
-    idx: int,
-    raw_closes: list[float],
-    ha_closes: list[float],
-    ha_opens: list[float],
-    t3_fast: list[float],
-    lookback: int = 1,
-) -> tuple[bool, str]:
-    """
-    1) Nikdy nenakupuje na cervenej HA sviecke (ha_close < ha_open -> blokuje sa).
-    2) Doplnujuce potvrdenie pri nakupe: T3 Fast sa meni z cervenej (klesajucej) na modru (rastucu)
-       a zaroven sa sviecka meni na zlty reverzny signal nahor.
-    """
-    if idx < 1 or idx >= len(ha_closes) or idx >= len(t3_fast):
-        return False, "Bjorgum/HA: nedostatok dat"
-
-    if ha_closes[idx] < ha_opens[idx]:
-        return False, "Bjorgum/HA: cervena HA sviecka (nakup zakazany)"
-
-    lb = max(0, min(3, int(lookback)))
-    start_k = max(1, idx - lb)
-
-    t3_fast_turned_blue = False
-    yellow_reversal_candle = False
-
-    for k in range(start_k, idx + 1):
-        prev_slope = t3_fast[k - 1] - t3_fast[k - 2] if k >= 2 else 0.0
-        curr_slope = t3_fast[k] - t3_fast[k - 1]
-        if (prev_slope <= 0.0) and (curr_slope > 0.0):
-            t3_fast_turned_blue = True
-
-        ur_raw = (
-            (k >= 2)
-            and (raw_closes[k - 2] > raw_closes[k - 1])
-            and (raw_closes[k] > raw_closes[k - 1])
-        )
-        haur_ha = (
-            (k >= 2)
-            and (ha_closes[k - 2] > ha_closes[k - 1])
-            and (ha_closes[k] > ha_closes[k - 1])
-        )
-        if ur_raw or haur_ha:
-            yellow_reversal_candle = True
-
-    if not t3_fast_turned_blue:
-        return False, "Bjorgum: T3 Fast sa nezmenila z cervenej na modru"
-
-    if not yellow_reversal_candle:
-        return False, "Bjorgum: chyba zlty reverzny signal sviecky"
-
-    return True, ""
-
-def check_bjorgum_sell_signal(
-    idx: int,
-    raw_closes: list[float],
-    ha_closes: list[float],
-    ha_opens: list[float],
-    t3_fast: list[float],
-    lookback: int = 1,
-) -> bool:
-    """
-    Doplnujuce udaje pre predaj (Bjorgum indikator):
-    T3 Fast sa meni z modrej (rastucej) na cervenu (klesajucu) a zaroven
-    sa sviecka meni na cerveny okraj / reverzny signal nadol.
-    """
-    if idx < 1 or idx >= len(ha_closes) or idx >= len(t3_fast):
-        return False
-
-    lb = max(0, min(3, int(lookback)))
-    start_k = max(1, idx - lb)
-
-    t3_fast_turned_red = False
-    red_border_reversal = False
-
-    for k in range(start_k, idx + 1):
-        prev_slope = t3_fast[k - 1] - t3_fast[k - 2] if k >= 2 else 0.0
-        curr_slope = t3_fast[k] - t3_fast[k - 1]
-        if (prev_slope >= 0.0) and (curr_slope < 0.0):
-            t3_fast_turned_red = True
-
-        dr_raw = (
-            (k >= 2)
-            and (raw_closes[k - 2] < raw_closes[k - 1])
-            and (raw_closes[k] < raw_closes[k - 1])
-        )
-        hadr_ha = (
-            (k >= 2)
-            and (ha_closes[k - 2] < ha_closes[k - 1])
-            and (ha_closes[k] < ha_closes[k - 1])
-        )
-        ha_red_turn = (ha_closes[k] < ha_opens[k]) and (
-            k == 0 or (ha_closes[k - 1] >= ha_opens[k - 1])
-        )
-        if dr_raw or hadr_ha or ha_red_turn:
-            red_border_reversal = True
-
-    return t3_fast_turned_red and red_border_reversal
-
 def calc_linreg_series(values, length, offset=0):
     n = len(values)
     out = [None] * n
@@ -1227,10 +1100,9 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         candles = list(reversed(res["data"]))
         closed_candles = candles[:-1]
 
-        raw_closes, ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], [], []
+        ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
         for i, c in enumerate(closed_candles):
             o, h, l, cl, v = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4]), safe_float(c[5])
-            raw_closes.append(cl)
             ha_cl = (o + h + l + cl) / 4.0
             ha_op = (o + cl) / 2.0 if i == 0 else (ha_opens[-1] + ha_closes[-1]) / 2.0
             ha_hi = max(h, ha_op, ha_cl)
@@ -1261,10 +1133,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         use_ha_exit = bool(SETTINGS.get("use_ha_exit", True))
         ha_exit_consecutive = max(1, min(3, int(SETTINGS.get("ha_exit_consecutive", 1))))
         sell_on_osc_reversal = bool(SETTINGS.get("sell_on_osc_reversal", True))
-
-        t3_fast_len = max(1, int(SETTINGS.get("t3_fast_len", 8)))
-        t3_alpha = float(SETTINGS.get("t3_alpha", 0.7))
-        t3_fast_series = calc_t3_series(raw_closes, t3_fast_len, t3_alpha)
 
         vol_dirs = [volumes[i] if ha_closes[i] > ha_opens[i] else -volumes[i] for i in range(n)]
         fast_ma = calc_ema_series(vol_dirs, fast_len)
@@ -1395,19 +1263,10 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 )
             )
 
-            bjorgum_sell_hist = bool(SETTINGS.get("use_bjorgum_filter", True)) and check_bjorgum_sell_signal(
-                idx=i,
-                raw_closes=raw_closes,
-                ha_closes=ha_closes,
-                ha_opens=ha_opens,
-                t3_fast=t3_fast_series,
-                lookback=int(SETTINGS.get("bjorgum_lookback", 1)),
-            )
-
             cond_trail_triggered = use_trailing and obchod_otvoreny and (cl_i < effective_stop)
             cond_ttp_triggered = use_trailing_tp and trailing_tp_active and (trailing_tp_stop_level is not None) and (cl_i <= trailing_tp_stop_level)
 
-            raw_sell = obchod_otvoreny and (cond_trail_triggered or cond_ttp_triggered or ha_exit_triggered or osc_cross_down or bjorgum_sell_hist)
+            raw_sell = obchod_otvoreny and (cond_trail_triggered or cond_ttp_triggered or ha_exit_triggered or osc_cross_down)
             sell_reason = ""
             if raw_sell:
                 if cond_ttp_triggered:
@@ -1416,8 +1275,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                     sell_reason = f"Pine SELL (HA Exit {ha_exit_consecutive}x)"
                 elif osc_cross_down:
                     sell_reason = "Pine SELL (Obrat oscilatora)"
-                elif bjorgum_sell_hist:
-                    sell_reason = "Pine SELL (Bjorgum T3 Fast -> cervena + cerveny okraj)"
                 else:
                     sell_reason = "Pine SELL (Trailing Stop)"
 
@@ -1459,24 +1316,12 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 )
             )
 
-            bjorgum_live_sell = bool(SETTINGS.get("use_bjorgum_filter", True)) and check_bjorgum_sell_signal(
-                idx=n - 1,
-                raw_closes=raw_closes,
-                ha_closes=ha_closes,
-                ha_opens=ha_opens,
-                t3_fast=t3_fast_series,
-                lookback=int(SETTINGS.get("bjorgum_lookback", 1)),
-            )
-
             if ha_live_exit:
                 last_bar_sell = True
                 last_bar_sell_reason = f"Pine SELL (HA Exit {ha_exit_consecutive}x)"
             elif osc_live_exit:
                 last_bar_sell = True
                 last_bar_sell_reason = "Pine SELL (Obrat oscilatora)"
-            elif bjorgum_live_sell:
-                last_bar_sell = True
-                last_bar_sell_reason = "Pine SELL (Bjorgum T3 Fast -> cervena + cerveny okraj)"
 
         feats = extract_ai_features(
             n - 1,
@@ -1504,19 +1349,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             if bool(SETTINGS.get("block_sideways_buy", False)) and IS_SIDEWAYS_MARKET:
                 final_buy = False
                 block_reason = "Bocny trh (SIDEWAYS)"
-
-            if final_buy and bool(SETTINGS.get("use_bjorgum_filter", True)):
-                bj_ok, bj_reason = check_bjorgum_buy_signal(
-                    idx=n - 1,
-                    raw_closes=raw_closes,
-                    ha_closes=ha_closes,
-                    ha_opens=ha_opens,
-                    t3_fast=t3_fast_series,
-                    lookback=int(SETTINGS.get("bjorgum_lookback", 1)),
-                )
-                if not bj_ok:
-                    final_buy = False
-                    block_reason = bj_reason
 
             if final_buy and bool(SETTINGS.get("use_anti_chase", True)):
                 last_raw = closed_candles[-1]
@@ -2130,7 +1962,6 @@ def get_pine_settings_dict():
         "max_entry_slip_pct": SETTINGS["max_entry_slip_pct"],
         "use_ai_filter": SETTINGS["use_ai_filter"],
         "ai_min_prob": SETTINGS["ai_min_prob"],
-        "use_bjorgum_filter": SETTINGS.get("use_bjorgum_filter", True),
     }
 
 @app.post("/api/telegram-webhook")
@@ -2282,13 +2113,11 @@ async def update_pine_settings(request: Request):
         SETTINGS["max_entry_slip_pct"] = max(0.05, min(5.0, float(payload.get("max_entry_slip_pct", SETTINGS["max_entry_slip_pct"]))))
         SETTINGS["use_ai_filter"] = bool(payload.get("use_ai_filter", SETTINGS["use_ai_filter"]))
         SETTINGS["ai_min_prob"] = max(0.25, min(0.90, float(payload.get("ai_min_prob", SETTINGS["ai_min_prob"]))))
-        SETTINGS["use_bjorgum_filter"] = bool(payload.get("use_bjorgum_filter", SETTINGS.get("use_bjorgum_filter", True)))
 
         MARKET_SCANNER_CACHE.clear()
         save_persistent_data()
         log_event(
             f"Nastavenia aktualizovane: Rezim={mode_val}, AI={SETTINGS['use_ai_filter']}(min={SETTINGS['ai_min_prob']*100:.0f}%), "
-            f"Bjorgum={SETTINGS['use_bjorgum_filter']}, "
             f"AntiTop={SETTINGS['use_anti_chase']}(pump<={SETTINGS['max_candle_pump_pct']}%, wick<={SETTINGS['max_upper_wick_ratio']*100:.0f}%), "
             f"HAExit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x), FixSL=-{SETTINGS['fixed_sl_pct']}%",
             persist=True,
@@ -2605,10 +2434,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <label for="pine-use-anti-top">Anti-Top (ochrana vrcholu)</label>
                             <input type="checkbox" id="pine-use-anti-top" class="pine-checkbox" {% if SETTINGS.use_anti_chase %}checked{% endif %}>
                         </div>
-                        <div class="pine-row">
-                            <label for="pine-use-bjorgum">Bjorgum T3 & HA filter</label>
-                            <input type="checkbox" id="pine-use-bjorgum" class="pine-checkbox" {% if SETTINGS.use_bjorgum_filter %}checked{% endif %}>
-                        </div>
                     </div>
 
                     <div class="pine-group">
@@ -2919,8 +2744,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             document.getElementById('pine-pred-look').value = ps.pred_look;
             document.getElementById('pine-use-ai').checked = !!ps.use_ai_filter;
             document.getElementById('pine-use-anti-top').checked = ps.use_anti_chase !== undefined ? !!ps.use_anti_chase : true;
-            const bjEl = document.getElementById('pine-use-bjorgum');
-            if (bjEl) bjEl.checked = ps.use_bjorgum_filter !== undefined ? !!ps.use_bjorgum_filter : true;
             if (ps.max_candle_pump_pct !== undefined) document.getElementById('pine-max-pump').value = ps.max_candle_pump_pct;
             if (ps.max_ema9_dist_pct !== undefined) document.getElementById('pine-max-ema-dist').value = ps.max_ema9_dist_pct;
             if (ps.max_upper_wick_ratio !== undefined) document.getElementById('pine-max-wick').value = ps.max_upper_wick_ratio;
@@ -2954,7 +2777,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 pred_look: parseInt(document.getElementById('pine-pred-look').value, 10),
                 use_ai_filter: document.getElementById('pine-use-ai').checked,
                 use_anti_chase: document.getElementById('pine-use-anti-top').checked,
-                use_bjorgum_filter: document.getElementById('pine-use-bjorgum').checked,
                 max_candle_pump_pct: parseFloat(document.getElementById('pine-max-pump').value),
                 max_ema9_dist_pct: parseFloat(document.getElementById('pine-max-ema-dist').value),
                 max_upper_wick_ratio: parseFloat(document.getElementById('pine-max-wick').value),
@@ -3006,7 +2828,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 pred_look: 3,
                 use_ai_filter: true,
                 ai_min_prob: 0.38,
-                use_bjorgum_filter: true,
                 min_rel_volume: 0.0,
                 block_sideways_buy: false,
                 use_anti_chase: true,
@@ -3230,4 +3051,3 @@ async def get_state():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
-
