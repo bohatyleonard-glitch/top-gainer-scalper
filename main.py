@@ -135,6 +135,12 @@ SETTINGS = {
     "max_entry_slip_pct": 0.35,
     "use_ai_filter": True,
     "ai_min_prob": 0.38,
+    # Doplnene parametre pre Bjorgum T3 / reverzny signal a zakaz cervenej HA sviecky
+    "use_bjorgum_filter": True,
+    "t3_fast_len": 8,
+    "t3_slow_len": 21,
+    "t3_alpha": 0.7,
+    "bjorgum_lookback": 1,
 }
 
 AI_STATE = {
@@ -642,6 +648,91 @@ def calc_ema_series(values, length):
         ema.append(val * alpha + ema[-1] * (1.0 - alpha))
     return ema
 
+def calc_t3_series(values: list[float], length: int, volume_factor: float = 0.7) -> list[float]:
+    """Vypocet Tilson T3 klzaveho priemeru."""
+    n = len(values)
+    if n == 0:
+        return []
+    length = max(1, int(length))
+    vf = float(volume_factor)
+    c1 = -(vf ** 3)
+    c2 = 3.0 * (vf ** 2) + 3.0 * (vf ** 3)
+    c3 = -6.0 * (vf ** 2) - 3.0 * vf - 3.0 * (vf ** 3)
+    c4 = 1.0 + 3.0 * vf + (vf ** 3) + 3.0 * (vf ** 2)
+
+    e1 = calc_ema_series(values, length)
+    e2 = calc_ema_series(e1, length)
+    e3 = calc_ema_series(e2, length)
+    e4 = calc_ema_series(e3, length)
+    e5 = calc_ema_series(e4, length)
+    e6 = calc_ema_series(e5, length)
+
+    return [
+        c1 * e6[i] + c2 * e5[i] + c3 * e4[i] + c4 * e3[i]
+        for i in range(n)
+    ]
+
+def check_bjorgum_entry_conditions(
+    idx: int,
+    raw_closes: list[float],
+    ha_closes: list[float],
+    ha_opens: list[float],
+    t3_fast: list[float],
+    t3_slow: list[float],
+    lookback: int = 1,
+) -> tuple[bool, str]:
+    """
+    Doplnene podmienky nakupu:
+    1) Zakaz nakupu na cervenej HA sviecke (ha_close >= ha_open).
+    2) Prekrizenie T3 Fast a T3 Slow nahor + zmena z cervenej (klesajucej) na modru (rastucu).
+    3) Zlty reverzny signal nahor pri T3 reverze.
+    """
+    if idx < 1 or idx >= len(ha_closes) or idx >= len(t3_fast) or idx >= len(t3_slow):
+        return False, "Bjorgum: nedostatok dat"
+
+    if ha_closes[idx] < ha_opens[idx]:
+        return False, "Bjorgum/HA: cervena HA sviecka"
+
+    lb = max(0, min(3, int(lookback)))
+    start_k = max(1, idx - lb)
+
+    t3_cross_and_blue = False
+    for k in range(start_k, idx + 1):
+        crossed_up = (t3_fast[k - 1] <= t3_slow[k - 1]) and (t3_fast[k] > t3_slow[k])
+        fast_turned_blue = (t3_fast[k] > t3_fast[k - 1]) and (t3_fast[k - 1] <= t3_fast[max(0, k - 2)])
+        slow_turned_blue = (t3_slow[k] > t3_slow[k - 1]) and (t3_slow[k - 1] <= t3_slow[max(0, k - 2)])
+        both_blue_now = (t3_fast[k] > t3_fast[k - 1]) and (t3_slow[k] > t3_slow[k - 1])
+        if crossed_up and both_blue_now and (fast_turned_blue or slow_turned_blue):
+            t3_cross_and_blue = True
+            break
+
+    if not t3_cross_and_blue:
+        return False, "Bjorgum: chyba prekrizenie T3 Fast/Slow z cervenej na modru"
+
+    yellow_candle = False
+    for k in range(start_k, idx + 1):
+        t3_rev_cond = (t3_fast[k] > t3_slow[k]) or (t3_fast[k] < t3_slow[k])
+        ur_raw = (
+            t3_rev_cond
+            and (k >= 2)
+            and (raw_closes[k - 2] > raw_closes[k - 1])
+            and (raw_closes[k] > raw_closes[k - 1])
+        )
+        haur_ha = (
+            t3_rev_cond
+            and (k >= 2)
+            and (ha_closes[k - 2] > ha_closes[k - 1])
+            and (ha_closes[k] > ha_closes[k - 1])
+        )
+        if ur_raw or haur_ha:
+            yellow_candle = True
+            break
+
+    if not yellow_candle:
+        return False, "Bjorgum: chyba zlty reverzny signal"
+
+    return True, ""
+
 def calc_linreg_series(values, length, offset=0):
     n = len(values)
     out = [None] * n
@@ -712,14 +803,12 @@ def extract_ai_features(idx: int, ha_closes, ha_opens, ha_highs, ha_lows, volume
     rng = max(1e-9, ha_highs[idx] - ha_lows[idx])
     body_ratio = max(-1.0, min(1.0, (ha_closes[idx] - ha_opens[idx]) / rng))
 
-    # 7. Trend / vzdialenost od EMA50
     if close_ema_50 and idx < len(close_ema_50) and close_ema_50[idx] and close_ema_50[idx] > 0:
         ema50 = close_ema_50[idx]
         dist_ema50_norm = max(-1.0, min(1.0, (((cl - ema50) / ema50) * 100.0) / 4.0))
     else:
         dist_ema50_norm = 0.0
 
-    # 8. ATR volatilita (% priemerneho rozpätia sviecky voci cene)
     atr_win_start = max(0, idx - 13)
     atr_vals = [
         max(0.0, ha_highs[k] - ha_lows[k]) / ha_closes[k] * 100.0
@@ -729,7 +818,6 @@ def extract_ai_features(idx: int, ha_closes, ha_opens, ha_highs, ha_lows, volume
     atr_pct = (sum(atr_vals) / len(atr_vals)) if atr_vals else 0.8
     atr_norm = max(-1.0, min(1.0, (atr_pct - 0.8) / 1.2))
 
-    # 9. Rezimu trhu (-0.75 BEAR, 0.0 SIDEWAYS, +0.75 BULL)
     regime_norm = _regime_numeric_value()
 
     return [
@@ -1100,9 +1188,10 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         candles = list(reversed(res["data"]))
         closed_candles = candles[:-1]
 
-        ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], []
+        raw_closes, ha_closes, ha_opens, ha_highs, ha_lows, volumes = [], [], [], [], [], []
         for i, c in enumerate(closed_candles):
             o, h, l, cl, v = safe_float(c[1]), safe_float(c[2]), safe_float(c[3]), safe_float(c[4]), safe_float(c[5])
+            raw_closes.append(cl)
             ha_cl = (o + h + l + cl) / 4.0
             ha_op = (o + cl) / 2.0 if i == 0 else (ha_opens[-1] + ha_closes[-1]) / 2.0
             ha_hi = max(h, ha_op, ha_cl)
@@ -1141,6 +1230,12 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         signal_line = calc_ema_series(oscillator, signal_len)
         close_ema_9 = calc_ema_series(ha_closes, 9)
         close_ema_50 = calc_ema_series(ha_closes, 50)
+
+        t3_fast_len = max(1, int(SETTINGS.get("t3_fast_len", 8)))
+        t3_slow_len = max(1, int(SETTINGS.get("t3_slow_len", 21)))
+        t3_alpha = float(SETTINGS.get("t3_alpha", 0.7))
+        t3_fast_series = calc_t3_series(raw_closes, t3_fast_len, t3_alpha)
+        t3_slow_series = calc_t3_series(raw_closes, t3_slow_len, t3_alpha)
 
         lr0 = calc_linreg_series(oscillator, pred_look, 0)
         lr1 = calc_linreg_series(oscillator, pred_look, 1)
@@ -1349,6 +1444,20 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             if bool(SETTINGS.get("block_sideways_buy", False)) and IS_SIDEWAYS_MARKET:
                 final_buy = False
                 block_reason = "Bocny trh (SIDEWAYS)"
+
+            if final_buy and bool(SETTINGS.get("use_bjorgum_filter", True)):
+                bj_ok, bj_reason = check_bjorgum_entry_conditions(
+                    idx=n - 1,
+                    raw_closes=raw_closes,
+                    ha_closes=ha_closes,
+                    ha_opens=ha_opens,
+                    t3_fast=t3_fast_series,
+                    t3_slow=t3_slow_series,
+                    lookback=int(SETTINGS.get("bjorgum_lookback", 1)),
+                )
+                if not bj_ok:
+                    final_buy = False
+                    block_reason = bj_reason
 
             if final_buy and bool(SETTINGS.get("use_anti_chase", True)):
                 last_raw = closed_candles[-1]
@@ -1962,6 +2071,11 @@ def get_pine_settings_dict():
         "max_entry_slip_pct": SETTINGS["max_entry_slip_pct"],
         "use_ai_filter": SETTINGS["use_ai_filter"],
         "ai_min_prob": SETTINGS["ai_min_prob"],
+        "use_bjorgum_filter": SETTINGS.get("use_bjorgum_filter", True),
+        "t3_fast_len": SETTINGS.get("t3_fast_len", 8),
+        "t3_slow_len": SETTINGS.get("t3_slow_len", 21),
+        "t3_alpha": SETTINGS.get("t3_alpha", 0.7),
+        "bjorgum_lookback": SETTINGS.get("bjorgum_lookback", 1),
     }
 
 @app.post("/api/telegram-webhook")
@@ -2114,10 +2228,17 @@ async def update_pine_settings(request: Request):
         SETTINGS["use_ai_filter"] = bool(payload.get("use_ai_filter", SETTINGS["use_ai_filter"]))
         SETTINGS["ai_min_prob"] = max(0.25, min(0.90, float(payload.get("ai_min_prob", SETTINGS["ai_min_prob"]))))
 
+        SETTINGS["use_bjorgum_filter"] = bool(payload.get("use_bjorgum_filter", SETTINGS.get("use_bjorgum_filter", True)))
+        SETTINGS["t3_fast_len"] = max(1, min(200, int(payload.get("t3_fast_len", SETTINGS.get("t3_fast_len", 8)))))
+        SETTINGS["t3_slow_len"] = max(1, min(300, int(payload.get("t3_slow_len", SETTINGS.get("t3_slow_len", 21)))))
+        SETTINGS["t3_alpha"] = max(0.1, min(0.99, float(payload.get("t3_alpha", SETTINGS.get("t3_alpha", 0.7)))))
+        SETTINGS["bjorgum_lookback"] = max(0, min(3, int(payload.get("bjorgum_lookback", SETTINGS.get("bjorgum_lookback", 1)))))
+
         MARKET_SCANNER_CACHE.clear()
         save_persistent_data()
         log_event(
             f"Nastavenia aktualizovane: Rezim={mode_val}, AI={SETTINGS['use_ai_filter']}(min={SETTINGS['ai_min_prob']*100:.0f}%), "
+            f"Bjorgum={SETTINGS['use_bjorgum_filter']}, "
             f"AntiTop={SETTINGS['use_anti_chase']}(pump<={SETTINGS['max_candle_pump_pct']}%, wick<={SETTINGS['max_upper_wick_ratio']*100:.0f}%), "
             f"HAExit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x), FixSL=-{SETTINGS['fixed_sl_pct']}%",
             persist=True,
@@ -2309,7 +2430,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: #050608; }
         .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
 
-        /* Jednoduchsia a prehladna struktura nastaveni */
         .pine-panel { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
         .quick-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
         @media (max-width: 1180px) { .quick-grid { grid-template-columns: repeat(2, 1fr); } }
