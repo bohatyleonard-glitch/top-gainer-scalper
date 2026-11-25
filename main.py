@@ -54,6 +54,7 @@ def _resolve_ai_memory_path() -> str:
 
 AI_MEMORY_FILE = _resolve_ai_memory_path()
 ALLOWED_TIMEFRAMES = ["5m", "8m", "15m", "30m", "45m"]
+ALLOWED_BUDGET_CAPS = [500, 1000, 2000, 3000, 5000, 10000]
 
 EXCLUDED_SYMBOLS = {
     "BTC-USDC", "ETH-USDC",
@@ -71,7 +72,7 @@ AI_FEATURE_COUNT = 9
 # --- GLOBALNY STAV BOTA ---
 IS_BOT_ACTIVE = True
 CURRENT_TIMEFRAME = "15M"
-CURRENT_STAGE = "STAV: Inicializujem bota (FIB + zakaz cervenej HA sviecky)..."
+CURRENT_STAGE = "STAV: Inicializujem bota (FIB + zakaz cervenej HA sviecky + len BYCI trh na TF)..."
 MARKET_REGIME = "BULL"
 IS_SIDEWAYS_MARKET = False
 LAST_SIDEWAYS_ALERT_TS = 0.0
@@ -107,6 +108,7 @@ SETTINGS = {
     "reentry_cooldown_sec": 120,
     "mode_choice": "FIB",
     "require_green_ha_buy": True,
+    "require_bull_tf_buy": True,
     "strict_buy_filter": False,
     "fast_len": 5,
     "slow_len": 20,
@@ -127,7 +129,7 @@ SETTINGS = {
     "use_ha_exit": True,
     "ha_exit_consecutive": 2,
     "sell_on_osc_reversal": False,
-    "block_sideways_buy": False,
+    "block_sideways_buy": True,
     "min_rel_volume": 0.0,
     "use_anti_chase": False,
     "max_candle_pump_pct": 0.9,
@@ -588,6 +590,15 @@ def get_market_regime_and_sideways(bar_tf: str = "15m") -> tuple[str, bool]:
         return regime, False
     except Exception:
         return "BULL", False
+
+def is_bull_market_on_tf(bar_tf: str | None = None) -> tuple[bool, str]:
+    tf_clean = (bar_tf or CURRENT_TIMEFRAME).lower().strip()
+    regime, sideways = get_market_regime_and_sideways(tf_clean)
+    if sideways or str(regime).upper() == "SIDEWAYS":
+        return False, f"Bocny trh (SIDEWAYS) na TF {tf_clean.upper()}"
+    if str(regime).upper() != "BULL":
+        return False, f"Medvedi trh ({regime}) na TF {tf_clean.upper()}"
+    return True, "BULL"
 
 def check_btc_health() -> bool:
     if not SETTINGS.get("use_btc_filter", False):
@@ -1079,9 +1090,9 @@ def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade
         persist=True,
     )
 
-# --- VYHODNOCOVANIE STRATEGIE PODLA INDIKATORA (REZIM FIB + ZAKAZ CERVENEJ HA SVIECKY) ---
+# --- VYHODNOCOVANIE STRATEGIE PODLA INDIKATORA (REZIM FIB + ZAKAZ CERVENEJ HA SVIECKY + LEN BYCI TRH) ---
 
-def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
+def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: tuple[bool, str] | None = None):
     global MARKET_SCANNER_CACHE, ACTIVE_TRADES, AI_STATE
     coin_key = symbol.split("-")[0]
 
@@ -1095,7 +1106,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 "be_status": "VYPNUTY", "ttp_status": "VYPNUTY", "ts_status": "VYPNUTY",
                 "ai_score": "--", "ai_factors": "--", "exec_signal": "CAKAJ", "signal": "CHYBA DAT", "is_green": False
             }
-            return {"buy": False, "raw_buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "ai_factors": "--", "block_reason": "", "features": None, "last_closed_price": 0.0}
+            return {"buy": False, "raw_buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "ai_factors": "--", "block_reason": "", "features": None, "last_closed_price": 0.0, "ha_is_green": False}
 
         candles = list(reversed(res["data"]))
         closed_candles = candles[:-1]
@@ -1122,6 +1133,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         fib_choice = str(SETTINGS.get("fib_choice", "0.786"))
         mode_choice = str(SETTINGS.get("mode_choice", "FIB")).upper()
         require_green_ha_buy = bool(SETTINGS.get("require_green_ha_buy", True))
+        require_bull_tf_buy = bool(SETTINGS.get("require_bull_tf_buy", True))
         strict_buy_filter = bool(SETTINGS.get("strict_buy_filter", False))
 
         use_trailing = bool(SETTINGS.get("use_trailing", True))
@@ -1201,7 +1213,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             ema9_i = close_ema_9[i]
             ha_is_green = ha_closes[i] > ha_opens[i]
 
-            # Podmienky podla indikatoru 22,11 script buy sell super_2.txt
             cond_volume_bullish = (osc_i > 0.0) and (osc_i > sig_i) and (predicted_next[i] > osc_i)
             cond_volume_crossover = (i > 0) and (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
             fib_touch = (fib_target is not None) and (cl_i > fib_target)
@@ -1217,7 +1228,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             else:
                 base_trigger = all_green_condition
 
-            # Striktný zákaz nákupu na červenej (alebo neutrálnej) HA sviečke
             red_ha_blocked_now = False
             if require_green_ha_buy and base_trigger and (not ha_is_green):
                 base_trigger = False
@@ -1357,8 +1367,21 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
         final_buy = last_bar_buy
         block_reason = ""
+        non_bull_blocked = False
 
         if not is_in_trade:
+            if require_bull_tf_buy:
+                if bull_ok_override is not None:
+                    bull_ok, bull_msg = bull_ok_override
+                else:
+                    bull_ok = (not IS_SIDEWAYS_MARKET) and (str(MARKET_REGIME).upper() == "BULL")
+                    bull_msg = f"Trh nie je BYCI ({MARKET_REGIME}) na TF {bar_tf.upper()}"
+                if not bull_ok:
+                    if final_buy:
+                        non_bull_blocked = True
+                    final_buy = False
+                    block_reason = bull_msg
+
             if require_green_ha_buy and not last_ha_is_green:
                 final_buy = False
                 if last_red_ha_blocked:
@@ -1457,6 +1480,8 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
         if final_buy and not is_in_trade:
             exec_signal_str = f"NAKUPIT ({mode_choice})"
+        elif non_bull_blocked and not is_in_trade:
+            exec_signal_str = f"BLOK: NIE JE BYCI ({MARKET_REGIME})"
         elif last_red_ha_blocked and not is_in_trade:
             exec_signal_str = "BLOK: CERVENA HA"
         elif last_bar_buy and not final_buy and not is_in_trade:
@@ -1513,7 +1538,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 async def autonomous_scanner_loop():
     global IS_SIDEWAYS_MARKET, MARKET_REGIME, LAST_SIDEWAYS_ALERT_TS
     await asyncio.sleep(3)
-    log_event(f"Autonomny skener (FIB + zakaz cervenej HA sviecky) spusteny pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"Autonomny skener (FIB + zakaz cervenej HA sviecky + len BYCI trh na TF) spusteny pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             _prune_old_logs()
@@ -1523,14 +1548,16 @@ async def autonomous_scanner_loop():
             regime_now, sideways_now = get_market_regime_and_sideways(tf_str)
             MARKET_REGIME = regime_now
             IS_SIDEWAYS_MARKET = sideways_now
+            bull_ok, bull_reason = is_bull_market_on_tf(tf_str)
+
             now_ts = datetime.now().timestamp()
             if sideways_now and (now_ts - LAST_SIDEWAYS_ALERT_TS >= SIDEWAYS_ALERT_COOLDOWN_SEC):
                 LAST_SIDEWAYS_ALERT_TS = now_ts
-                log_event(f"POZOR: BOCNY TRH zisteny na TF {CURRENT_TIMEFRAME} (uzke rozpatie + caste krizenie EMA).")
+                log_event(f"POZOR: BOCNY TRH zisteny na TF {CURRENT_TIMEFRAME} (uzke rozpatie + caste krizenie EMA) - nove nakupy su blokovane.")
                 send_telegram_msg(
                     "<b>POZOR: BOCNY TRH</b>\n"
                     f"<b>TF:</b> {CURRENT_TIMEFRAME}\n"
-                    "Trh sa pohybuje v uzkom pasme s castymi obratmi - zvysene riziko falosnych signalov."
+                    "Trh sa pohybuje v uzkom pasme - nove nakupy su povolene len v BYCOM trende (BULL)."
                 )
 
             for coin_name in list(ACTIVE_TRADES.keys()):
@@ -1538,14 +1565,16 @@ async def autonomous_scanner_loop():
                     continue
                 trade = ACTIVE_TRADES[coin_name]
                 symbol = trade["market_pair"]
-                sig = evaluate_pine_strategy(symbol, bar_tf=tf_str)
+                sig = evaluate_pine_strategy(symbol, bar_tf=tf_str, bull_ok_override=(bull_ok, bull_reason))
                 if sig["sell"]:
                     log_event(f"STRATEGIA 'SELL' SIGNAL PRE {symbol} ({sig['sell_reason']}) -> OKAMZITY PREDAJ!")
                     await close_trade_position(coin_name, sig["sell_reason"])
                 await asyncio.sleep(0.25)
 
             if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
-                if check_btc_health():
+                if bool(SETTINGS.get("require_bull_tf_buy", True)) and not bull_ok:
+                    log_block_throttled("TRH", f"Nakupy pozastavene: {bull_reason} (vyzaduje sa BULL).", cooldown_sec=60.0)
+                elif check_btc_health():
                     for symbol in list(TOP_LIQUID_SYMBOLS):
                         if not IS_BOT_ACTIVE or len(ACTIVE_TRADES) >= SETTINGS.get("max_parallel", 1):
                             break
@@ -1561,7 +1590,7 @@ async def autonomous_scanner_loop():
                         if coin_name in ACTIVE_TRADES:
                             continue
 
-                        sig = evaluate_pine_strategy(symbol, bar_tf=tf_str)
+                        sig = evaluate_pine_strategy(symbol, bar_tf=tf_str, bull_ok_override=(bull_ok, bull_reason))
 
                         if WAIT_FOR_SIGNAL_RESET.get(coin_name, False):
                             if not sig.get("raw_buy", False):
@@ -1574,7 +1603,7 @@ async def autonomous_scanner_loop():
 
                         if sig["buy"]:
                             prob_txt = f" (AI: {sig['ai_prob']*100:.1f}% [{sig.get('ai_factors', '--')}])" if sig.get("ai_prob") is not None else ""
-                            log_event(f"STRATEGIA 'BUY' SIGNAL PRE {symbol} [FIB + ZELENA HA]{prob_txt}!")
+                            log_event(f"STRATEGIA 'BUY' SIGNAL PRE {symbol} [BYCI TRH BULL + FIB + ZELENA HA]{prob_txt}!")
                             await execute_autonomous_buy(
                                 symbol,
                                 ai_prob=sig.get("ai_prob"),
@@ -1607,6 +1636,13 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
 
         if coin_name in ACTIVE_TRADES or len(ACTIVE_TRADES) >= max_allowed:
             return
+
+        # Poistka pred zadanym prikazom: trh na zvolenom TF musi byt BYCI (BULL)
+        if bool(SETTINGS.get("require_bull_tf_buy", True)):
+            bull_ok, bull_reason = is_bull_market_on_tf(CURRENT_TIMEFRAME.lower())
+            if not bull_ok:
+                log_event(f"Nakup {okx_symbol} zablokovany: {bull_reason} (povoleny len BYCI trh BULL).")
+                return
 
         # Posledna poistka pred zadanym prikazom: HA sviecka musi byt zelena
         if bool(SETTINGS.get("require_green_ha_buy", True)):
@@ -1711,7 +1747,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
 
         tp_info = f" | Fixny TP: +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp else ""
         ai_info = f" | AI: {ai_prob*100:.1f}% [{ai_factors}]" if ai_prob is not None else ""
-        log_event(f"NAKUP ({SETTINGS.get('mode_choice')} + ZELENA HA) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} {ACTIVE_BALANCE_CCY} | Investicia: {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY} | Fixny SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}{ai_info}", persist=True)
+        log_event(f"NAKUP (BULL + {SETTINGS.get('mode_choice')} + ZELENA HA) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} {ACTIVE_BALANCE_CCY} | Investicia: {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY} | Fixny SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}{ai_info}", persist=True)
 
         inline_keyboard = {
             "inline_keyboard": [
@@ -1722,7 +1758,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             ]
         }
         send_telegram_msg(
-            f"<b>FIB + ZELENA HA NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
+            f"<b>BULL + FIB + ZELENA HA NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
             f"<b>Par:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
             f"<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}\n"
@@ -1833,9 +1869,10 @@ async def fixed_stoploss_monitor_loop():
                 max_p = SETTINGS.get("max_parallel", 1)
                 sl_p = SETTINGS.get("fixed_sl_pct", 1.5)
                 mode_lbl = SETTINGS.get("mode_choice", "FIB")
+                bull_lbl = " · Len BULL" if SETTINGS.get("require_bull_tf_buy", True) else ""
                 tp_txt = f" | Fixny TP: +{SETTINGS.get('fixed_tp_pct', 1.2)}%" if SETTINGS.get("use_fixed_tp", False) else ""
                 ai_txt = f" | AI >= {SETTINGS.get('ai_min_prob', 0.38)*100:.0f}%" if SETTINGS.get("use_ai_filter", False) else ""
-                CURRENT_STAGE = f"STAV: Bot aktivny ({mode_lbl} · Zelena HA · Max {max_p}x | Fixny SL: -{sl_p}%{tp_txt}{ai_txt}). Cakam na BUY/SELL..."
+                CURRENT_STAGE = f"STAV: Bot aktivny ({mode_lbl} · Zelena HA{bull_lbl} · Max {max_p}x | Fixny SL: -{sl_p}%{tp_txt}{ai_txt}). Cakam na BUY/SELL..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastaveny."
             await asyncio.sleep(2)
@@ -1934,23 +1971,27 @@ async def fixed_stoploss_monitor_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global MARKET_REGIME, IS_SIDEWAYS_MARKET
     load_persistent_data()
     if ACTIVE_TRADES:
         log_event(f"Obnovenych {len(ACTIVE_TRADES)} otvorenych pozicii z pamate: {', '.join(ACTIVE_TRADES.keys())}", persist=True)
     update_top_liquid_symbols()
+    regime_now, sideways_now = get_market_regime_and_sideways(CURRENT_TIMEFRAME.lower())
+    MARKET_REGIME = regime_now
+    IS_SIDEWAYS_MARKET = sideways_now
     if SETTINGS.get("use_ai_filter", False) and AI_STATE.get("samples_count", 0) < 10:
         seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
         train_ai_model_from_candles(seed_sym, bar_tf=CURRENT_TIMEFRAME.lower(), force=True)
     else:
         save_ai_memory()
     log_event(
-        f"Autonomny APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Rezim: {SETTINGS.get('mode_choice')} · Zakaz cervenej HA) spusteny | AI pamat: {AI_MEMORY_FILE}",
+        f"Autonomny APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Rezim: {SETTINGS.get('mode_choice')} · Zakaz cervenej HA · Len BULL) spusteny | AI pamat: {AI_MEMORY_FILE}",
         persist=True,
     )
     monitor_task = asyncio.create_task(fixed_stoploss_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg(f"APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Rezim: {SETTINGS.get('mode_choice')} · Zakaz cervenej HA) pripraveny!")
+    send_telegram_msg(f"APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Rezim: {SETTINGS.get('mode_choice')} · Zakaz cervenej HA · Len BULL) pripraveny!")
     yield
     save_persistent_data()
     monitor_task.cancel()
@@ -1963,6 +2004,7 @@ def get_pine_settings_dict():
     return {
         "mode_choice": SETTINGS["mode_choice"],
         "require_green_ha_buy": SETTINGS["require_green_ha_buy"],
+        "require_bull_tf_buy": SETTINGS.get("require_bull_tf_buy", True),
         "strict_buy_filter": SETTINGS["strict_buy_filter"],
         "fast_len": SETTINGS["fast_len"],
         "slow_len": SETTINGS["slow_len"],
@@ -2041,7 +2083,7 @@ async def toggle_compounding():
 
 @app.post("/api/set-budget/{amount}")
 async def set_budget(amount: int):
-    if amount in [500, 1000, 3000, 5000, 10000]:
+    if amount in ALLOWED_BUDGET_CAPS:
         SETTINGS["max_budget_cap"] = float(amount)
         log_event(f"Maximalny rozpocet (strop) zmeneny na: {amount} {ACTIVE_BALANCE_CCY}", persist=True)
         send_telegram_msg(f"Zmena rozpoctu: Maximalny strop pre obchod je teraz {amount} {ACTIVE_BALANCE_CCY}.")
@@ -2079,8 +2121,8 @@ async def set_tf(tf_val: str):
         if SETTINGS.get("use_ai_filter", False):
             seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
             train_ai_model_from_candles(seed_sym, bar_tf=tf_lower, force=True)
-        log_event(f"Casovy ramec (TF) zmeneny na: {CURRENT_TIMEFRAME}", persist=True)
-        return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME})
+        log_event(f"Casovy ramec (TF) zmeneny na: {CURRENT_TIMEFRAME} (Rezim: {regime_now})", persist=True)
+        return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME, "market_regime": regime_now})
     return JSONResponse({"status": "error", "message": "Neplatny casovy ramec."})
 
 @app.post("/api/train-ai")
@@ -2107,6 +2149,7 @@ async def update_pine_settings(request: Request):
 
         SETTINGS["mode_choice"] = mode_val
         SETTINGS["require_green_ha_buy"] = bool(payload.get("require_green_ha_buy", SETTINGS["require_green_ha_buy"]))
+        SETTINGS["require_bull_tf_buy"] = bool(payload.get("require_bull_tf_buy", SETTINGS.get("require_bull_tf_buy", True)))
         SETTINGS["strict_buy_filter"] = bool(payload.get("strict_buy_filter", SETTINGS["strict_buy_filter"]))
         SETTINGS["fast_len"] = max(1, min(200, int(payload.get("fast_len", SETTINGS["fast_len"]))))
         SETTINGS["slow_len"] = max(1, min(300, int(payload.get("slow_len", SETTINGS["slow_len"]))))
@@ -2149,7 +2192,7 @@ async def update_pine_settings(request: Request):
         save_persistent_data()
         log_event(
             f"Nastavenia aktualizovane: Rezim={mode_val} (Fib={fib_val}), ZelenaHA={SETTINGS['require_green_ha_buy']}, "
-            f"HAExit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x), FixSL=-{SETTINGS['fixed_sl_pct']}%",
+            f"LenBULL={SETTINGS['require_bull_tf_buy']}, HAExit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x), FixSL=-{SETTINGS['fixed_sl_pct']}%",
             persist=True,
         )
         return JSONResponse({"status": "success", "pine_settings": get_pine_settings_dict()})
@@ -2388,11 +2431,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 3 %}btn-yellow{% endif %}" data-val="3" onclick="setParallel(3)">3x</button>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 4 %}btn-yellow{% endif %}" data-val="4" onclick="setParallel(4)">4x</button>
 
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap|int == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap|int == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap|int == 2000 %}btn-yellow{% endif %}" data-val="2000" onclick="setBudget(2000)">2K</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap|int == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap|int == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
+                <button class="budget-btn btn {% if SETTINGS.max_budget_cap|int == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
 
                 <div class="custom-buy-box">
                     <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL">
@@ -2441,7 +2485,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         <div>
             <div class="section-title">
-                <span>Nastavenia bota (FIB + zákaz červenej HA sviečky)</span>
+                <span>Nastavenia bota (FIB + zákaz červenej HA sviečky + len BYCI trh)</span>
                 <span id="pine-active-badge" class="text-yellow">REZIM: {{ SETTINGS.mode_choice }}</span>
             </div>
             <div class="pine-panel">
@@ -2459,6 +2503,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         <div class="pine-row">
                             <label for="pine-green-ha">Zakaz cervenej HA sviecky</label>
                             <input type="checkbox" id="pine-green-ha" class="pine-checkbox" {% if SETTINGS.require_green_ha_buy %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-require-bull">Len BYCI trh (BULL) na TF</label>
+                            <input type="checkbox" id="pine-require-bull" class="pine-checkbox" {% if SETTINGS.require_bull_tf_buy %}checked{% endif %}>
                         </div>
                         <div class="pine-row">
                             <label for="pine-fib-choice">Nakupna Fib hladina</label>
@@ -2598,7 +2646,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
                 <div class="pine-footer">
                     <div style="display:flex; flex-direction:column; gap:3px;">
-                        <span id="pine-save-status" class="pine-save-status">Aktivny rezim: Korekcia (Fibonacci Touch) + Zakaz nakupu na cervenej HA sviecke.</span>
+                        <span id="pine-save-status" class="pine-save-status">Aktivny rezim: Korekcia (Fibonacci Touch) + Zakaz cervenej HA + Len BYCI trh (BULL).</span>
                         <span id="ai-learned-summary" style="font-size:0.68rem; color:var(--yellow); font-weight:600;">AI nastudovane a ulozene obchody: 0 (0W / 0L)</span>
                     </div>
                     <div style="display: flex; gap: 6px; flex-wrap: wrap;">
@@ -2627,7 +2675,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre rezim FIB + zelenu HA sviecku...</td></tr>
+                        <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre rezim FIB + zelenu HA sviecku + BYCI trh...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -2662,7 +2710,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <span style="font-size:0.64rem; color:var(--text-muted);">Starsie ako 2h sa mazu automaticky</span>
             </div>
             <div class="logs-box" id="logs-container">
-                <div class="log-line">[System Initialized] FIB rezim + zakaz cervenej HA sviecky pripraveny.</div>
+                <div class="log-line">[System Initialized] FIB rezim + zakaz cervenej HA + len BYCI trh pripraveny.</div>
             </div>
         </div>
     </div>
@@ -2772,6 +2820,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             if (!ps) return;
             document.getElementById('pine-mode').value = ps.mode_choice;
             document.getElementById('pine-green-ha').checked = ps.require_green_ha_buy !== undefined ? !!ps.require_green_ha_buy : true;
+            document.getElementById('pine-require-bull').checked = ps.require_bull_tf_buy !== undefined ? !!ps.require_bull_tf_buy : true;
             document.getElementById('pine-strict-buy').checked = !!ps.strict_buy_filter;
             document.getElementById('pine-fast-len').value = ps.fast_len;
             document.getElementById('pine-slow-len').value = ps.slow_len;
@@ -2806,6 +2855,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             const payload = {
                 mode_choice: document.getElementById('pine-mode').value,
                 require_green_ha_buy: document.getElementById('pine-green-ha').checked,
+                require_bull_tf_buy: document.getElementById('pine-require-bull').checked,
                 strict_buy_filter: document.getElementById('pine-strict-buy').checked,
                 fast_len: parseInt(document.getElementById('pine-fast-len').value, 10),
                 slow_len: parseInt(document.getElementById('pine-slow-len').value, 10),
@@ -2858,6 +2908,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             const defaults = {
                 mode_choice: "FIB",
                 require_green_ha_buy: true,
+                require_bull_tf_buy: true,
                 strict_buy_filter: false,
                 fast_len: 5,
                 slow_len: 20,
@@ -2866,7 +2917,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 use_ai_filter: false,
                 ai_min_prob: 0.38,
                 min_rel_volume: 0.0,
-                block_sideways_buy: false,
+                block_sideways_buy: true,
                 use_anti_chase: false,
                 max_candle_pump_pct: 0.9,
                 max_ema9_dist_pct: 0.7,
@@ -2954,13 +3005,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     regimeBadge.classList.remove('regime-bull', 'regime-bear', 'regime-sideways');
                     if (regime === "SIDEWAYS") {
                         regimeBadge.classList.add('regime-sideways');
-                        regimeBadge.innerText = `BOCNY TRH (${data.current_tf})`;
+                        regimeBadge.innerText = `BOCNY TRH (${data.current_tf}) - STOP BUY`;
                     } else if (regime === "BEAR") {
                         regimeBadge.classList.add('regime-bear');
-                        regimeBadge.innerText = `MEDVEDI TRH (${data.current_tf})`;
+                        regimeBadge.innerText = `MEDVEDI TRH (${data.current_tf}) - STOP BUY`;
                     } else {
                         regimeBadge.classList.add('regime-bull');
-                        regimeBadge.innerText = `BYCI TRH (${data.current_tf})`;
+                        regimeBadge.innerText = `BYCI TRH (${data.current_tf}) - BUY OK`;
                     }
                 }
 
@@ -3000,7 +3051,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     activeTbody.innerHTML = html;
                     sellBtn.disabled = false;
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre rezim FIB + zelenu HA sviecku...</td></tr>`;
+                    activeTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre rezim FIB + zelenu HA sviecku + BYCI trh...</td></tr>`;
                     sellBtn.disabled = true;
                 }
 
