@@ -15,18 +15,17 @@ import uvicorn
 
 SK_TZ = ZoneInfo("Europe/Bratislava")
 
-# --- OKX KLUCE & BEZPECNOST (Z ENVIRONMENT PREMENNYCH) ---
+# --- OKX KLUCE & BEZPECNOST ---
 
-OKX_API_KEY = os.getenv("OKX_API_KEY", "")
-OKX_SECRET = os.getenv("OKX_SECRET", "")
-OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "")
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
-OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1") == "1"
+OKX_API_KEY = os.getenv("OKX_API_KEY", "54ebe9fe-1fd0-443d-8f76-0cd1a3439ddb").strip()
+OKX_SECRET = os.getenv("OKX_SECRET", "FBD5C8332D88E3ED5662470CA9C3E813").strip()
+OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Novyzeland111/").strip()
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "moje_tajne_heslo_123").strip()
 
 # --- TELEGRAM NOTIFIKACIE & INTERAKTIVNY BOT ---
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784").strip()
 
 # --- NASTAVENIA PODLA PINE SCRIPTU + FIXNY STOP-LOSS & FIXNY TP + AI ENGINE ---
 
