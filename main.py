@@ -71,7 +71,7 @@ AI_FEATURE_COUNT = 9
 # --- GLOBALNY STAV BOTA ---
 IS_BOT_ACTIVE = True
 CURRENT_TIMEFRAME = "15M"
-CURRENT_STAGE = "STAV: Inicializujem bota..."
+CURRENT_STAGE = "STAV: Inicializujem bota (FIB + zakaz cervenej HA sviecky)..."
 MARKET_REGIME = "BULL"
 IS_SIDEWAYS_MARKET = False
 LAST_SIDEWAYS_ALERT_TS = 0.0
@@ -98,14 +98,15 @@ SYSTEM_LOG_ENTRIES: list[dict] = []
 SYSTEM_LOGS: list[str] = []
 trade_lock = asyncio.Lock()
 
-# Predvolene parametre zosuladene so strategiou + zakaz nakupu na cervenej HA sviecke
+# Predvolene parametre nastavene na FIB (Korekcia Fibonacci Touch) + zakaz nakupu na cervenej HA sviecke
 SETTINGS = {
     "max_parallel": 4,
     "max_budget_cap": 1000.0,
     "compounding_enabled": False,
     "use_btc_filter": False,
     "reentry_cooldown_sec": 120,
-    "mode_choice": "ALL_GREEN",
+    "mode_choice": "FIB",
+    "require_green_ha_buy": True,
     "strict_buy_filter": False,
     "fast_len": 5,
     "slow_len": 20,
@@ -119,12 +120,12 @@ SETTINGS = {
     "use_trailing": True,
     "trail_pct": 1.5,
     "use_breakeven": True,
-    "be_trigger_pct": 1.2,
+    "be_trigger_pct": 0.35,
     "use_trailing_tp": True,
-    "ttp_trigger_pct": 1.2,
-    "ttp_callback_pct": 0.4,
+    "ttp_trigger_pct": 0.8,
+    "ttp_callback_pct": 0.2,
     "use_ha_exit": True,
-    "ha_exit_consecutive": 1,
+    "ha_exit_consecutive": 2,
     "sell_on_osc_reversal": False,
     "block_sideways_buy": False,
     "min_rel_volume": 0.0,
@@ -820,7 +821,7 @@ def get_current_ai_features_for_symbol(symbol: str, bar_tf: str = "15m") -> list
         res = okx_public_request(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=90")
         if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 30:
             return None
-        mode_choice = str(SETTINGS.get("mode_choice", "ALL_GREEN")).upper()
+        mode_choice = str(SETTINGS.get("mode_choice", "FIB")).upper()
         pack = _build_series_and_signals(res["data"], mode_choice)
         if not pack:
             return None
@@ -864,20 +865,20 @@ def _collect_symbol_training_samples(symbol: str, bar_tf: str, target_gain_pct: 
     horizon = 12
     samples = []
     for i in range(25, n - horizon):
-        if ha_closes[i] <= ha_opens[i]:
-            continue
         osc_i = oscillator[i]
         sig_i = signal_line[i]
         cl_i = ha_closes[i]
         ema9_i = close_ema_9[i]
 
-        cond_vol_bull = (osc_i > 0.0) and (osc_i > sig_i)
+        cond_vol_bull = (osc_i > 0.0) and (osc_i > sig_i) and (predicted_next[i] > osc_i)
         cond_vol_cross = (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
-        ema9_cross = (ha_closes[i - 1] <= close_ema_9[i - 1]) and (cl_i > ema9_i)
+        ema9_above = cl_i > ema9_i
         if mode_choice == "BREAKOUT":
-            is_sig = cond_vol_cross or (cond_vol_bull and ema9_cross)
+            is_sig = cond_vol_cross or (cond_vol_bull and ema9_above)
+        elif mode_choice == "FIB":
+            is_sig = cond_vol_bull and ema9_above
         else:
-            is_sig = cond_vol_bull and (cond_vol_cross or ema9_cross)
+            is_sig = cond_vol_bull and (cond_vol_cross or ema9_above)
 
         if not is_sig or cl_i <= 0:
             continue
@@ -919,11 +920,11 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         return {"ok": True, "samples": AI_STATE["samples_count"], "win_rate": AI_STATE["win_rate_train"]}
 
     try:
-        mode_choice = str(SETTINGS.get("mode_choice", "ALL_GREEN")).upper()
+        mode_choice = str(SETTINGS.get("mode_choice", "FIB")).upper()
         if SETTINGS.get("use_fixed_tp", False):
             target_gain_pct = max(0.35, float(SETTINGS.get("fixed_tp_pct", 1.2)))
         else:
-            target_gain_pct = max(0.35, float(SETTINGS.get("ttp_trigger_pct", 1.2)) * 0.8)
+            target_gain_pct = max(0.35, float(SETTINGS.get("ttp_trigger_pct", 0.8)))
         stop_loss_pct = max(0.25, float(SETTINGS.get("fixed_sl_pct", 1.5)))
 
         train_symbols = []
@@ -1078,7 +1079,7 @@ def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade
         persist=True,
     )
 
-# --- VYHODNOCOVANIE STRATEGIE (PINE LOGIKA + FIB + ZAKAZ NAKUPU NA CERVENEJ HA SVIECKE) ---
+# --- VYHODNOCOVANIE STRATEGIE PODLA INDIKATORA (REZIM FIB + ZAKAZ CERVENEJ HA SVIECKY) ---
 
 def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
     global MARKET_SCANNER_CACHE, ACTIVE_TRADES, AI_STATE
@@ -1119,18 +1120,19 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         pred_look = max(1, min(10, int(SETTINGS.get("pred_look", 3))))
         pivot_len = max(1, min(10, int(SETTINGS.get("pivot_len", 2))))
         fib_choice = str(SETTINGS.get("fib_choice", "0.786"))
-        mode_choice = str(SETTINGS.get("mode_choice", "ALL_GREEN")).upper()
+        mode_choice = str(SETTINGS.get("mode_choice", "FIB")).upper()
+        require_green_ha_buy = bool(SETTINGS.get("require_green_ha_buy", True))
         strict_buy_filter = bool(SETTINGS.get("strict_buy_filter", False))
 
         use_trailing = bool(SETTINGS.get("use_trailing", True))
         trail_pct = float(SETTINGS.get("trail_pct", 1.5))
         use_breakeven = bool(SETTINGS.get("use_breakeven", True))
-        be_trigger_pct = float(SETTINGS.get("be_trigger_pct", 1.2))
+        be_trigger_pct = float(SETTINGS.get("be_trigger_pct", 0.35))
         use_trailing_tp = bool(SETTINGS.get("use_trailing_tp", True))
-        ttp_trigger_pct = float(SETTINGS.get("ttp_trigger_pct", 1.2))
-        ttp_callback_pct = float(SETTINGS.get("ttp_callback_pct", 0.4))
+        ttp_trigger_pct = float(SETTINGS.get("ttp_trigger_pct", 0.8))
+        ttp_callback_pct = float(SETTINGS.get("ttp_callback_pct", 0.2))
         use_ha_exit = bool(SETTINGS.get("use_ha_exit", True))
-        ha_exit_consecutive = max(1, min(3, int(SETTINGS.get("ha_exit_consecutive", 1))))
+        ha_exit_consecutive = max(1, min(3, int(SETTINGS.get("ha_exit_consecutive", 2))))
         sell_on_osc_reversal = bool(SETTINGS.get("sell_on_osc_reversal", False))
 
         vol_dirs = [volumes[i] if ha_closes[i] > ha_opens[i] else -volumes[i] for i in range(n)]
@@ -1166,6 +1168,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         last_cond_volume_bullish = False
         last_buy_trigger = False
         last_ha_is_green = False
+        last_red_ha_blocked = False
 
         for i in range(n):
             if i >= 2 * pivot_len:
@@ -1195,32 +1198,36 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             osc_i = oscillator[i]
             sig_i = signal_line[i]
             cl_i = ha_closes[i]
-            op_i = ha_opens[i]
             ema9_i = close_ema_9[i]
+            ha_is_green = ha_closes[i] > ha_opens[i]
 
-            ha_green_candle = cl_i > op_i
-            cond_volume_bullish = (osc_i > 0.0) and (osc_i > sig_i)
+            # Podmienky podla indikatoru 22,11 script buy sell super_2.txt
+            cond_volume_bullish = (osc_i > 0.0) and (osc_i > sig_i) and (predicted_next[i] > osc_i)
             cond_volume_crossover = (i > 0) and (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
-            fib_touch = (fib_target is not None) and (ha_lows[i] <= fib_target)
-            ema9_cross = (i > 0) and (ha_closes[i - 1] <= close_ema_9[i - 1]) and (cl_i > ema9_i)
+            fib_touch = (fib_target is not None) and (cl_i > fib_target)
 
-            breakout_trigger = cond_volume_crossover or (cond_volume_bullish and ema9_cross)
+            breakout_trigger = cond_volume_crossover or (cond_volume_bullish and (cl_i > ema9_i))
             fib_trigger_cond = cond_volume_bullish and fib_touch
-            all_green_condition = cond_volume_bullish and (cond_volume_crossover or ema9_cross)
+            all_green_condition = cond_volume_bullish and (cond_volume_crossover or (cl_i > ema9_i))
 
             if mode_choice == "BREAKOUT":
-                buy_trigger = breakout_trigger
+                base_trigger = breakout_trigger
             elif mode_choice == "FIB":
-                buy_trigger = fib_trigger_cond
+                base_trigger = fib_trigger_cond
             else:
-                buy_trigger = all_green_condition
+                base_trigger = all_green_condition
 
-            # Prisny zakaz nakupu na cervenej (alebo neutralnej) Heikin-Ashi sviecke
-            buy_trigger = buy_trigger and ha_green_candle
+            # Striktný zákaz nákupu na červenej (alebo neutrálnej) HA sviečke
+            red_ha_blocked_now = False
+            if require_green_ha_buy and base_trigger and (not ha_is_green):
+                base_trigger = False
+                red_ha_blocked_now = True
 
-            if strict_buy_filter and buy_trigger:
+            if strict_buy_filter and base_trigger:
                 above_prev_high = (i == 0) or (cl_i > ha_highs[i - 1])
-                buy_trigger = buy_trigger and (cl_i > ema9_i) and above_prev_high
+                base_trigger = base_trigger and ha_is_green and (cl_i > ema9_i) and above_prev_high
+
+            buy_trigger = base_trigger
 
             raw_buy = buy_trigger and (not obchod_otvoreny)
             if raw_buy:
@@ -1295,11 +1302,39 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
                 last_bar_sell_reason = sell_reason
                 last_cond_volume_bullish = cond_volume_bullish
                 last_buy_trigger = buy_trigger
-                last_ha_is_green = ha_green_candle
+                last_ha_is_green = ha_is_green
+                last_red_ha_blocked = red_ha_blocked_now
 
         curr_close = ha_closes[-1]
         curr_osc = oscillator[-1]
         is_in_trade = coin_key in ACTIVE_TRADES
+
+        if is_in_trade:
+            ha_is_red_now = ha_closes[-1] < ha_opens[-1]
+            ha_live_exit = False
+            if use_ha_exit:
+                if ha_exit_consecutive == 1:
+                    ha_live_exit = ha_is_red_now
+                elif ha_exit_consecutive == 2:
+                    ha_live_exit = (n >= 2) and ha_is_red_now and (ha_closes[-2] < ha_opens[-2])
+                else:
+                    ha_live_exit = (n >= 3) and ha_is_red_now and (ha_closes[-2] < ha_opens[-2]) and (ha_closes[-3] < ha_opens[-3])
+
+            osc_live_exit = (
+                sell_on_osc_reversal
+                and n >= 2
+                and (
+                    ((oscillator[-2] >= signal_line[-2]) and (oscillator[-1] < signal_line[-1]))
+                    or ((oscillator[-2] >= 0.0) and (oscillator[-1] < 0.0))
+                )
+            )
+
+            if ha_live_exit:
+                last_bar_sell = True
+                last_bar_sell_reason = f"Pine SELL (HA Exit {ha_exit_consecutive}x)"
+            elif osc_live_exit:
+                last_bar_sell = True
+                last_bar_sell_reason = "Pine SELL (Obrat oscilatora)"
 
         feats = extract_ai_features(
             n - 1,
@@ -1320,15 +1355,16 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             AI_STATE["last_prob"] = ai_prob
             AI_STATE["last_factors"] = ai_factors_txt
 
-        final_buy = last_bar_buy and last_ha_is_green
+        final_buy = last_bar_buy
         block_reason = ""
 
-        if last_bar_buy and not last_ha_is_green and not is_in_trade:
-            final_buy = False
-            block_reason = "Cervena/ne-zelena HA sviecka (zakaz nakupu)"
+        if not is_in_trade:
+            if require_green_ha_buy and not last_ha_is_green:
+                final_buy = False
+                if last_red_ha_blocked:
+                    block_reason = "Zakaz nakupu: HA sviecka nie je zelena"
 
-        if final_buy and not is_in_trade:
-            if bool(SETTINGS.get("block_sideways_buy", False)) and IS_SIDEWAYS_MARKET:
+            if final_buy and bool(SETTINGS.get("block_sideways_buy", False)) and IS_SIDEWAYS_MARKET:
                 final_buy = False
                 block_reason = "Bocny trh (SIDEWAYS)"
 
@@ -1402,7 +1438,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
 
         momentum_str = "SILNE" if last_cond_volume_bullish else "SLABE"
         impuls_active = last_buy_trigger or is_in_trade
-        impulse_str = "AKTIVNY (V TRHU)" if impuls_active else "CAKA"
+        impulse_str = "AKTIVNY (V TRHU)" if impuls_active else ("CERVENA HA" if (not last_ha_is_green and require_green_ha_buy) else "CAKA")
 
         if is_in_trade:
             t_ref = ACTIVE_TRADES[coin_key]
@@ -1420,9 +1456,11 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
         ai_score_txt = f"{ai_prob*100:.1f}%" if ai_prob is not None else ("UCI SA" if SETTINGS.get("use_ai_filter", False) else "OFF")
 
         if final_buy and not is_in_trade:
-            exec_signal_str = "NAKUPIT (BUY)"
+            exec_signal_str = f"NAKUPIT ({mode_choice})"
+        elif last_red_ha_blocked and not is_in_trade:
+            exec_signal_str = "BLOK: CERVENA HA"
         elif last_bar_buy and not final_buy and not is_in_trade:
-            exec_signal_str = f"BLOKOVANE ({block_reason})"
+            exec_signal_str = f"BLOK ({block_reason})"
         elif last_bar_sell and is_in_trade:
             exec_signal_str = "PREDAT (SELL)"
         elif is_in_trade:
@@ -1443,8 +1481,8 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "ai_score": ai_score_txt,
             "ai_factors": ai_factors_txt,
             "exec_signal": exec_signal_str,
-            "signal": "BUY" if final_buy else ("BLOK" if last_bar_buy else ("SELL" if last_bar_sell else ("BULLISH" if last_cond_volume_bullish else "CAKA"))),
-            "is_green": final_buy
+            "signal": "BUY" if final_buy else ("CERVENA HA" if last_red_ha_blocked else ("BLOK" if last_bar_buy else ("SELL" if last_bar_sell else ("BULLISH" if last_cond_volume_bullish else "CAKA")))),
+            "is_green": final_buy and last_ha_is_green
         }
 
         last_closed_raw_price = safe_float(closed_candles[-1][4], curr_close)
@@ -1458,6 +1496,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "block_reason": block_reason,
             "features": feats,
             "last_closed_price": last_closed_raw_price,
+            "ha_is_green": last_ha_is_green,
         }
     except Exception as e:
         log_event(f"Vynimka pri vyhodnocovani {symbol}: {e}")
@@ -1467,14 +1506,14 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m"):
             "be_status": "VYPNUTY", "ttp_status": "VYPNUTY", "ts_status": "VYPNUTY",
             "ai_score": "--", "ai_factors": "--", "exec_signal": "CAKAJ", "signal": "VYNIMKA", "is_green": False
         }
-        return {"buy": False, "raw_buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "ai_factors": "--", "block_reason": "", "features": None, "last_closed_price": 0.0}
+        return {"buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "ai_factors": "--", "block_reason": "", "features": None, "ha_is_green": False}
 
 # --- AUTONOMNA SKENOVACIA SLUCKA ---
 
 async def autonomous_scanner_loop():
     global IS_SIDEWAYS_MARKET, MARKET_REGIME, LAST_SIDEWAYS_ALERT_TS
     await asyncio.sleep(3)
-    log_event(f"Autonomny skener (Pine strategia + zakaz cervenej HA sviecky) spusteny pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"Autonomny skener (FIB + zakaz cervenej HA sviecky) spusteny pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
     while True:
         try:
             _prune_old_logs()
@@ -1535,7 +1574,7 @@ async def autonomous_scanner_loop():
 
                         if sig["buy"]:
                             prob_txt = f" (AI: {sig['ai_prob']*100:.1f}% [{sig.get('ai_factors', '--')}])" if sig.get("ai_prob") is not None else ""
-                            log_event(f"STRATEGIA 'BUY' SIGNAL PRE {symbol}{prob_txt}!")
+                            log_event(f"STRATEGIA 'BUY' SIGNAL PRE {symbol} [FIB + ZELENA HA]{prob_txt}!")
                             await execute_autonomous_buy(
                                 symbol,
                                 ai_prob=sig.get("ai_prob"),
@@ -1569,6 +1608,13 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
         if coin_name in ACTIVE_TRADES or len(ACTIVE_TRADES) >= max_allowed:
             return
 
+        # Posledna poistka pred zadanym prikazom: HA sviecka musi byt zelena
+        if bool(SETTINGS.get("require_green_ha_buy", True)):
+            chk = evaluate_pine_strategy(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
+            if not chk.get("ha_is_green", False):
+                log_event(f"Nakup {okx_symbol} zablokovany: posledna uzavreta HA sviecka nie je zelena.")
+                return
+
         LAST_TRADE_TIME[coin_name] = now_ts
         stable_ccy = "USDC"
 
@@ -1591,6 +1637,13 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             return
 
         current_price = safe_float(ticker_res["data"][0]["last"])
+        max_slip_pct = float(SETTINGS.get("max_entry_slip_pct", 0.35))
+        if bool(SETTINGS.get("use_anti_chase", False)) and signal_close_price > 0 and current_price > 0:
+            slip_above_close_pct = ((current_price - signal_close_price) / signal_close_price) * 100.0
+            if slip_above_close_pct > max_slip_pct:
+                WAIT_FOR_SIGNAL_RESET[coin_name] = True
+                log_event(f"Nakup {okx_symbol} preskoceny: aktualna cena uz utiekla +{slip_above_close_pct:.2f}% nad uzavretie sviecky.")
+                return
         raw_amount = safe_budget / current_price
 
         lot_sz, min_sz = get_instrument_rules(okx_symbol)
@@ -1658,7 +1711,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
 
         tp_info = f" | Fixny TP: +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp else ""
         ai_info = f" | AI: {ai_prob*100:.1f}% [{ai_factors}]" if ai_prob is not None else ""
-        log_event(f"NAKUP (Strategia BUY) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} {ACTIVE_BALANCE_CCY} | Investicia: {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY} | Fixny SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}{ai_info}", persist=True)
+        log_event(f"NAKUP ({SETTINGS.get('mode_choice')} + ZELENA HA) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} {ACTIVE_BALANCE_CCY} | Investicia: {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY} | Fixny SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}{ai_info}", persist=True)
 
         inline_keyboard = {
             "inline_keyboard": [
@@ -1669,14 +1722,14 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             ]
         }
         send_telegram_msg(
-            f"<b>STRATEGIA BUY NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
+            f"<b>FIB + ZELENA HA NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
             f"<b>Par:</b> {okx_symbol}\n"
             f"<b>Vstup:</b> {current_price:.4f}\n"
             f"<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}\n"
             + (f"<b>AI skore:</b> {ai_prob*100:.1f}% [{ai_factors}]\n" if ai_prob is not None else "")
             + f"<b>Fixny Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})\n"
             + (f"<b>Fixny Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})\n" if use_fixed_tp else "")
-            + "<b>Vystup:</b> Pine SELL / TS / BE / TTP / Fixny SL",
+            + "<b>Vystup:</b> HA Exit / Trailing TP / Trailing Stop / Fixny SL",
             reply_markup=inline_keyboard
         )
 
@@ -1779,9 +1832,10 @@ async def fixed_stoploss_monitor_loop():
             if IS_BOT_ACTIVE:
                 max_p = SETTINGS.get("max_parallel", 1)
                 sl_p = SETTINGS.get("fixed_sl_pct", 1.5)
+                mode_lbl = SETTINGS.get("mode_choice", "FIB")
                 tp_txt = f" | Fixny TP: +{SETTINGS.get('fixed_tp_pct', 1.2)}%" if SETTINGS.get("use_fixed_tp", False) else ""
                 ai_txt = f" | AI >= {SETTINGS.get('ai_min_prob', 0.38)*100:.0f}%" if SETTINGS.get("use_ai_filter", False) else ""
-                CURRENT_STAGE = f"STAV: Bot aktivny (Max {max_p}x | Fixny SL: -{sl_p}%{tp_txt}{ai_txt}). Cakam na BUY/SELL..."
+                CURRENT_STAGE = f"STAV: Bot aktivny ({mode_lbl} · Zelena HA · Max {max_p}x | Fixny SL: -{sl_p}%{tp_txt}{ai_txt}). Cakam na BUY/SELL..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastaveny."
             await asyncio.sleep(2)
@@ -1789,12 +1843,12 @@ async def fixed_stoploss_monitor_loop():
 
         try:
             use_be = bool(SETTINGS.get("use_breakeven", True))
-            be_trig = float(SETTINGS.get("be_trigger_pct", 1.2))
+            be_trig = float(SETTINGS.get("be_trigger_pct", 0.35))
             use_ts = bool(SETTINGS.get("use_trailing", True))
             ts_pct = float(SETTINGS.get("trail_pct", 1.5))
             use_ttp = bool(SETTINGS.get("use_trailing_tp", True))
-            ttp_trig = float(SETTINGS.get("ttp_trigger_pct", 1.2))
-            ttp_cb = float(SETTINGS.get("ttp_callback_pct", 0.4))
+            ttp_trig = float(SETTINGS.get("ttp_trigger_pct", 0.8))
+            ttp_cb = float(SETTINGS.get("ttp_callback_pct", 0.2))
 
             for coin in list(ACTIVE_TRADES.keys()):
                 if coin not in ACTIVE_TRADES:
@@ -1890,13 +1944,13 @@ async def lifespan(app: FastAPI):
     else:
         save_ai_memory()
     log_event(
-        f"Autonomny APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Pine strategia + zakaz cervenej HA sviecky) spusteny | AI pamat: {AI_MEMORY_FILE}",
+        f"Autonomny APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Rezim: {SETTINGS.get('mode_choice')} · Zakaz cervenej HA) spusteny | AI pamat: {AI_MEMORY_FILE}",
         persist=True,
     )
     monitor_task = asyncio.create_task(fixed_stoploss_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg(f"APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Pine strategia + zakaz cervenej HA sviecky) pripraveny!")
+    send_telegram_msg(f"APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Rezim: {SETTINGS.get('mode_choice')} · Zakaz cervenej HA) pripraveny!")
     yield
     save_persistent_data()
     monitor_task.cancel()
@@ -1908,6 +1962,7 @@ app = FastAPI(lifespan=lifespan)
 def get_pine_settings_dict():
     return {
         "mode_choice": SETTINGS["mode_choice"],
+        "require_green_ha_buy": SETTINGS["require_green_ha_buy"],
         "strict_buy_filter": SETTINGS["strict_buy_filter"],
         "fast_len": SETTINGS["fast_len"],
         "slow_len": SETTINGS["slow_len"],
@@ -2044,13 +2099,14 @@ async def update_pine_settings(request: Request):
         payload = await request.json()
         mode_val = str(payload.get("mode_choice", SETTINGS["mode_choice"])).upper()
         if mode_val not in ["ALL_GREEN", "BREAKOUT", "FIB"]:
-            mode_val = "ALL_GREEN"
+            mode_val = "FIB"
 
         fib_val = str(payload.get("fib_choice", SETTINGS["fib_choice"]))
         if fib_val not in ["0.50", "0.618", "0.786"]:
             fib_val = "0.786"
 
         SETTINGS["mode_choice"] = mode_val
+        SETTINGS["require_green_ha_buy"] = bool(payload.get("require_green_ha_buy", SETTINGS["require_green_ha_buy"]))
         SETTINGS["strict_buy_filter"] = bool(payload.get("strict_buy_filter", SETTINGS["strict_buy_filter"]))
         SETTINGS["fast_len"] = max(1, min(200, int(payload.get("fast_len", SETTINGS["fast_len"]))))
         SETTINGS["slow_len"] = max(1, min(300, int(payload.get("slow_len", SETTINGS["slow_len"]))))
@@ -2092,8 +2148,7 @@ async def update_pine_settings(request: Request):
         MARKET_SCANNER_CACHE.clear()
         save_persistent_data()
         log_event(
-            f"Nastavenia aktualizovane: Rezim={mode_val}, AI={SETTINGS['use_ai_filter']}(min={SETTINGS['ai_min_prob']*100:.0f}%), "
-            f"AntiTop={SETTINGS['use_anti_chase']}(pump<={SETTINGS['max_candle_pump_pct']}%, wick<={SETTINGS['max_upper_wick_ratio']*100:.0f}%), "
+            f"Nastavenia aktualizovane: Rezim={mode_val} (Fib={fib_val}), ZelenaHA={SETTINGS['require_green_ha_buy']}, "
             f"HAExit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x), FixSL=-{SETTINGS['fixed_sl_pct']}%",
             persist=True,
         )
@@ -2272,7 +2327,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .section-title { font-size: 0.72rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-top: 8px; margin-bottom: 5px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
         .terminal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; overflow: hidden; }
         table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.72rem; }
-        th { color: var(--text-muted); font-weight: 500; padding: 9px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.62rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-2; }
+        th { color: var(--text-muted); font-weight: 500; padding: 9px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.62rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
         td { padding: 9px 10px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
         tr:last-child td { border-bottom: none; }
         .scrollable-card { max-height: 220px; overflow-y: auto; }
@@ -2284,6 +2339,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: #050608; }
         .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
 
+        /* Jednoduchsia a prehladna struktura nastaveni */
         .pine-panel { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
         .quick-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
         @media (max-width: 1180px) { .quick-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -2385,28 +2441,36 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         <div>
             <div class="section-title">
-                <span>Nastavenia bota (Pine strategia + zakaz nakupu na cervenej HA sviecke)</span>
+                <span>Nastavenia bota (FIB + zákaz červenej HA sviečky)</span>
                 <span id="pine-active-badge" class="text-yellow">REZIM: {{ SETTINGS.mode_choice }}</span>
             </div>
             <div class="pine-panel">
                 <div class="quick-grid">
                     <div class="pine-group">
-                        <div class="pine-group-title">1. Vstup a AI / Anti-Top</div>
+                        <div class="pine-group-title">1. Vstup, FIB a Zelena HA</div>
                         <div class="pine-row">
                             <label for="pine-mode">Rezim strategie</label>
                             <select id="pine-mode" class="pine-select">
+                                <option value="FIB" {% if SETTINGS.mode_choice == 'FIB' %}selected{% endif %}>Fibonacci Touch (FIB)</option>
                                 <option value="ALL_GREEN" {% if SETTINGS.mode_choice == 'ALL_GREEN' %}selected{% endif %}>All Green</option>
                                 <option value="BREAKOUT" {% if SETTINGS.mode_choice == 'BREAKOUT' %}selected{% endif %}>Breakout</option>
-                                <option value="FIB" {% if SETTINGS.mode_choice == 'FIB' %}selected{% endif %}>Fibonacci Touch</option>
+                            </select>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-green-ha">Zakaz cervenej HA sviecky</label>
+                            <input type="checkbox" id="pine-green-ha" class="pine-checkbox" {% if SETTINGS.require_green_ha_buy %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-fib-choice">Nakupna Fib hladina</label>
+                            <select id="pine-fib-choice" class="pine-select">
+                                <option value="0.50" {% if SETTINGS.fib_choice == '0.50' %}selected{% endif %}>0.50</option>
+                                <option value="0.618" {% if SETTINGS.fib_choice == '0.618' %}selected{% endif %}>0.618</option>
+                                <option value="0.786" {% if SETTINGS.fib_choice == '0.786' %}selected{% endif %}>0.786</option>
                             </select>
                         </div>
                         <div class="pine-row">
                             <label for="pine-use-ai">Autonomny AI filter</label>
                             <input type="checkbox" id="pine-use-ai" class="pine-checkbox" {% if SETTINGS.use_ai_filter %}checked{% endif %}>
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-use-anti-top">Anti-Top (ochrana vrcholu)</label>
-                            <input type="checkbox" id="pine-use-anti-top" class="pine-checkbox" {% if SETTINGS.use_anti_chase %}checked{% endif %}>
                         </div>
                     </div>
 
@@ -2480,10 +2544,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </div>
 
                 <details class="adv-box">
-                    <summary>+ Rozsirene nastavenia (Oscilator, Fib, Anti-Top limity)</summary>
+                    <summary>+ Rozsirene nastavenia (Oscilator, Pivot, Anti-Top)</summary>
                     <div class="adv-grid">
                         <div class="pine-group">
-                            <div class="pine-group-title">Oscilator & Fibonacci</div>
+                            <div class="pine-group-title">Oscilator & Pivot</div>
                             <div class="pine-row">
                                 <label for="pine-strict-buy">Prisnejsi filter BUY</label>
                                 <input type="checkbox" id="pine-strict-buy" class="pine-checkbox" {% if SETTINGS.strict_buy_filter %}checked{% endif %}>
@@ -2508,18 +2572,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                                 <label for="pine-pivot-len">Pivot dlzka (Fib)</label>
                                 <input type="number" id="pine-pivot-len" class="pine-input" min="1" max="10" step="1" value="{{ SETTINGS.pivot_len }}">
                             </div>
-                            <div class="pine-row">
-                                <label for="pine-fib-choice">Nakupna Fib hladina</label>
-                                <select id="pine-fib-choice" class="pine-select">
-                                    <option value="0.50" {% if SETTINGS.fib_choice == '0.50' %}selected{% endif %}>0.50</option>
-                                    <option value="0.618" {% if SETTINGS.fib_choice == '0.618' %}selected{% endif %}>0.618</option>
-                                    <option value="0.786" {% if SETTINGS.fib_choice == '0.786' %}selected{% endif %}>0.786</option>
-                                </select>
-                            </div>
                         </div>
 
                         <div class="pine-group">
-                            <div class="pine-group-title">Limity Anti-Top</div>
+                            <div class="pine-group-title">Anti-Top (volitelne)</div>
+                            <div class="pine-row">
+                                <label for="pine-use-anti-top">Anti-Top filter zapnuty</label>
+                                <input type="checkbox" id="pine-use-anti-top" class="pine-checkbox" {% if SETTINGS.use_anti_chase %}checked{% endif %}>
+                            </div>
                             <div class="pine-row">
                                 <label for="pine-max-pump">Max rast sviecky (%)</label>
                                 <input type="number" id="pine-max-pump" class="pine-input" min="0.1" max="5.0" step="0.1" value="{{ SETTINGS.max_candle_pump_pct }}">
@@ -2538,12 +2598,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
                 <div class="pine-footer">
                     <div style="display:flex; flex-direction:column; gap:3px;">
-                        <span id="pine-save-status" class="pine-save-status">Pripravene - Pine strategia + zakaz cervenej HA sviecky.</span>
+                        <span id="pine-save-status" class="pine-save-status">Aktivny rezim: Korekcia (Fibonacci Touch) + Zakaz nakupu na cervenej HA sviecke.</span>
                         <span id="ai-learned-summary" style="font-size:0.68rem; color:var(--yellow); font-weight:600;">AI nastudovane a ulozene obchody: 0 (0W / 0L)</span>
                     </div>
                     <div style="display: flex; gap: 6px; flex-wrap: wrap;">
                         <button class="btn btn-yellow" onclick="trainAiNow()">TRENOVAT AI MODEL</button>
-                        <button class="btn" onclick="resetPineDefaults()">OBNOVIT ZAKLAD</button>
+                        <button class="btn" onclick="resetPineDefaults()">OBNOVIT ZAKLAD (FIB)</button>
                         <button class="btn btn-on" onclick="savePineSettings()">ULOZIT NASTAVENIA</button>
                     </div>
                 </div>
@@ -2551,7 +2611,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Active Positions Matrix (Pine SELL / Trailing Stop / Break-Even / Trailing TP)</div>
+            <div class="section-title">Active Positions Matrix (FIB + Zelena HA · TTP / TS / BE / Fixny SL)</div>
             <div class="terminal-card">
                 <table>
                     <thead>
@@ -2567,14 +2627,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine strategiu (len zelene HA sviecky)...</td></tr>
+                        <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre rezim FIB + zelenu HA sviecku...</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs)</div>
+            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - FIB + Zelena HA)</div>
             <div class="terminal-card scrollable-card" style="max-height: 260px;">
                 <table>
                     <thead>
@@ -2602,7 +2662,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <span style="font-size:0.64rem; color:var(--text-muted);">Starsie ako 2h sa mazu automaticky</span>
             </div>
             <div class="logs-box" id="logs-container">
-                <div class="log-line">[System Initialized] Pine strategia + zakaz nakupu na cervenej HA sviecke.</div>
+                <div class="log-line">[System Initialized] FIB rezim + zakaz cervenej HA sviecky pripraveny.</div>
             </div>
         </div>
     </div>
@@ -2711,6 +2771,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         function applyPineFormValues(ps) {
             if (!ps) return;
             document.getElementById('pine-mode').value = ps.mode_choice;
+            document.getElementById('pine-green-ha').checked = ps.require_green_ha_buy !== undefined ? !!ps.require_green_ha_buy : true;
             document.getElementById('pine-strict-buy').checked = !!ps.strict_buy_filter;
             document.getElementById('pine-fast-len').value = ps.fast_len;
             document.getElementById('pine-slow-len').value = ps.slow_len;
@@ -2744,6 +2805,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         async function savePineSettings() {
             const payload = {
                 mode_choice: document.getElementById('pine-mode').value,
+                require_green_ha_buy: document.getElementById('pine-green-ha').checked,
                 strict_buy_filter: document.getElementById('pine-strict-buy').checked,
                 fast_len: parseInt(document.getElementById('pine-fast-len').value, 10),
                 slow_len: parseInt(document.getElementById('pine-slow-len').value, 10),
@@ -2794,7 +2856,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         async function resetPineDefaults() {
             const defaults = {
-                mode_choice: "ALL_GREEN",
+                mode_choice: "FIB",
+                require_green_ha_buy: true,
                 strict_buy_filter: false,
                 fast_len: 5,
                 slow_len: 20,
@@ -2817,13 +2880,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 use_trailing: true,
                 trail_pct: 1.5,
                 use_breakeven: true,
-                be_trigger_pct: 1.2,
+                be_trigger_pct: 0.35,
                 use_trailing_tp: true,
-                ttp_trigger_pct: 1.2,
-                ttp_callback_pct: 0.4,
+                ttp_trigger_pct: 0.8,
+                ttp_callback_pct: 0.2,
                 sell_on_osc_reversal: false,
                 use_ha_exit: true,
-                ha_exit_consecutive: 1
+                ha_exit_consecutive: 2
             };
             applyPineFormValues(defaults);
             await savePineSettings();
@@ -2874,7 +2937,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     const lc = data.ai_state.live_learned_count || 0;
                     const lw = data.ai_state.live_wins_count || 0;
                     const ll = Math.max(0, lc - lw);
-                    document.getElementById('header-ai').innerText = sc > 0 ? `${sc} vz. (${wr}%) | Ulozene: ${lc}` : "OFF";
+                    document.getElementById('header-ai').innerText = sc > 0 ? `${sc} vz. (${wr}%) | Ulozene: ${lc}` : "CAKA";
                     const hLearned = document.getElementById('header-ai-learned');
                     if (hLearned) hLearned.innerText = `${lc} obchodov (${lw}W / ${ll}L)`;
                     const sumEl = document.getElementById('ai-learned-summary');
@@ -2937,7 +3000,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     activeTbody.innerHTML = html;
                     sellBtn.disabled = false;
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre Pine strategiu (len zelene HA sviecky)...</td></tr>`;
+                    activeTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre rezim FIB + zelenu HA sviecku...</td></tr>`;
                     sellBtn.disabled = true;
                 }
 
