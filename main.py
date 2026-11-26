@@ -2559,7 +2559,7 @@ async def sell_now():
     return JSONResponse({"status": "success", "sold": sold})
 
 
-HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
+HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
 <html lang="sk">
 <head>
     <meta charset="UTF-8">
