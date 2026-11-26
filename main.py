@@ -1730,10 +1730,8 @@ async def autonomous_scanner_loop():
                 LAST_SIDEWAYS_ALERT_TS = now_ts
                 log_event(f"POZOR: BOCNY TRH zisteny na TF {CURRENT_TIMEFRAME} - nove nakupy su blokovane podla nastavenia.")
                 send_telegram_msg(
-                    "<b>POZOR: BOCNY TRH</b>
-"
-                    f"<b>TF:</b> {CURRENT_TIMEFRAME}
-"
+                    "<b>POZOR: BOCNY TRH</b>\n"
+                    f"<b>TF:</b> {CURRENT_TIMEFRAME}\n"
                     "Blokovanie bocneho trhu je zapnute v nastaveniach."
                 )
 
@@ -1946,20 +1944,13 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             ]
         }
         send_telegram_msg(
-            f"<b>NAKUP [{SETTINGS.get('mode_choice')} · TF: {CURRENT_TIMEFRAME}]</b>
-"
-            f"<b>Par:</b> {okx_symbol}
-"
-            f"<b>Vstup:</b> {current_price:.4f}
-"
-            f"<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}
-"
-            + (f"<b>AI skore:</b> {ai_prob*100:.1f}% [{ai_factors}]
-" if ai_prob is not None else "")
-            + (f"<b>Fixny Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})
-" if (use_fixed_sl and fixed_sl_price) else "")
-            + (f"<b>Fixny Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})
-" if use_fixed_tp else "")
+            f"<b>NAKUP [{SETTINGS.get('mode_choice')} · TF: {CURRENT_TIMEFRAME}]</b>\n"
+            f"<b>Par:</b> {okx_symbol}\n"
+            f"<b>Vstup:</b> {current_price:.4f}\n"
+            f"<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}\n"
+            + (f"<b>AI skore:</b> {ai_prob*100:.1f}% [{ai_factors}]\n" if ai_prob is not None else "")
+            + (f"<b>Fixny Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})\n" if (use_fixed_sl and fixed_sl_price) else "")
+            + (f"<b>Fixny Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})\n" if use_fixed_tp else "")
             + "<b>Vystup:</b> podla nastaveni v APEX (TTP / TS / BE / Fixny SL / HA Exit)",
             reply_markup=inline_keyboard
         )
@@ -2047,9 +2038,7 @@ async def close_trade_position(coin: str, reason: str):
             WAIT_FOR_SIGNAL_RESET[coin] = True
 
             log_event(f"Uzavreta pozicia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)", persist=True)
-            send_telegram_msg(f"<b>UZAVRETA POZICIA ({reason})</b>
-<b>Par:</b> {symbol}
-<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+            send_telegram_msg(f"<b>UZAVRETA POZICIA ({reason})</b>\n<b>Par:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
         except Exception as e:
             log_event(f"Chyba pri zatvarani {symbol}: {e}")
         finally:
@@ -2541,12 +2530,7 @@ async def manual_buy(coin: str):
             tp_info = f" | Fixny TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
             ai_info = f" | AI: {ai_prob*100:.1f}% [{ai_factors}]" if ai_prob is not None else ""
             log_event(f"Manualny nakup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investicia: {actual_spent_usdc:.2f}${sl_info}{tp_info}{ai_info}", persist=True)
-            send_telegram_msg(f"<b>MANUALNY NAKUP [TF: {CURRENT_TIMEFRAME}]</b>
-<b>Par:</b> {okx_symbol}
-<b>Vstup:</b> {current_price:.4f}
-<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}" + (f"
-<b>Fixny SL:</b> -{fixed_sl_pct}%" if use_fixed_sl else "") + (f"
-<b>Fixny TP:</b> +{fixed_tp_pct}%" if use_fixed_tp else ""))
+            send_telegram_msg(f"<b>MANUALNY NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\n<b>Par:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}" + (f"\n<b>Fixny SL:</b> -{fixed_sl_pct}%" if use_fixed_sl else "") + (f"\n<b>Fixny TP:</b> +{fixed_tp_pct}%" if use_fixed_tp else ""))
 
             return JSONResponse({"status": "success", "symbol": okx_symbol})
         except Exception as e:
