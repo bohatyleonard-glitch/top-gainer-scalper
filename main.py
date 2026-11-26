@@ -146,6 +146,8 @@ SETTINGS = {
     "max_entry_slip_pct": 0.35,
     "use_ai_filter": False,
     "ai_min_prob": 0.38,
+    "simulate_fees": True,
+    "taker_fee_pct": 0.10,
 }
 
 AI_STATE = {
@@ -462,12 +464,36 @@ def classify_trade_style(tf_str: str, source: str = "AUTO") -> str:
     return "SCALPING"
 
 
-def record_closed_trade(symbol: str, pnl_pct: float, pnl_usdc: float, reason: str, entry_features: list[float] | None = None, trade_style: str = "SCALPING"):
+def calc_simulated_fee_metrics(invested_usdc: float, exit_value_usdc: float) -> tuple[float, float, float]:
+    if not SETTINGS.get("simulate_fees", True):
+        return 0.0, 0.0, 0.0
+    fee_rate = max(0.0, safe_float(SETTINGS.get("taker_fee_pct"), 0.10)) / 100.0
+    entry_fee = invested_usdc * fee_rate
+    exit_fee = exit_value_usdc * fee_rate
+    return round(entry_fee, 4), round(exit_fee, 4), round(entry_fee + exit_fee, 4)
+
+
+def record_closed_trade(
+    symbol: str,
+    pnl_pct: float,
+    pnl_usdc: float,
+    reason: str,
+    entry_features: list[float] | None = None,
+    trade_style: str = "SCALPING",
+    gross_pnl_pct: float | None = None,
+    gross_pnl_usdc: float | None = None,
+    fee_usdc: float = 0.0,
+):
+    g_pct = pnl_pct if gross_pnl_pct is None else gross_pnl_pct
+    g_usdc = pnl_usdc if gross_pnl_usdc is None else gross_pnl_usdc
     trade_rec = {
         "time": get_sk_time_str(),
         "symbol": symbol,
         "pnl_pct": round(pnl_pct, 2),
         "pnl_usdc": round(pnl_usdc, 2),
+        "gross_pnl_pct": round(g_pct, 2),
+        "gross_pnl_usdc": round(g_usdc, 2),
+        "fee_usdc": round(fee_usdc, 4),
         "reason": reason,
         "style": trade_style,
         "entry_features": entry_features,
@@ -481,6 +507,9 @@ def record_closed_trade(symbol: str, pnl_pct: float, pnl_usdc: float, reason: st
             "symbol": symbol,
             "pnl_pct": trade_rec["pnl_pct"],
             "pnl_usdc": trade_rec["pnl_usdc"],
+            "gross_pnl_pct": trade_rec["gross_pnl_pct"],
+            "gross_pnl_usdc": trade_rec["gross_pnl_usdc"],
+            "fee_usdc": trade_rec["fee_usdc"],
             "reason": reason,
             "style": trade_style,
             "entry_features": [round(safe_float(x), 5) for x in entry_features],
@@ -495,12 +524,16 @@ def calculate_stats() -> dict:
     wins = sum(1 for t in CLOSED_TRADES_HISTORY if safe_float(t.get("pnl_usdc")) > 0)
     losses = total - wins
     total_pnl = sum(safe_float(t.get("pnl_usdc")) for t in CLOSED_TRADES_HISTORY)
+    gross_pnl = sum(safe_float(t.get("gross_pnl_usdc"), safe_float(t.get("pnl_usdc"))) for t in CLOSED_TRADES_HISTORY)
+    total_fees = sum(safe_float(t.get("fee_usdc"), 0.0) for t in CLOSED_TRADES_HISTORY)
     win_rate = (wins / total * 100.0) if total > 0 else 0.0
     return {
         "total_trades": total,
         "wins": wins,
         "losses": losses,
         "total_pnl": round(total_pnl, 2),
+        "gross_pnl": round(gross_pnl, 2),
+        "total_fees": round(total_fees, 2),
         "win_rate": round(win_rate, 1),
     }
 
@@ -1892,6 +1925,9 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
 
         coin_amount = float(formatted_sz)
         actual_spent_usdc = coin_amount * current_price
+        entry_fee_est, exit_fee_est, total_fee_est = calc_simulated_fee_metrics(actual_spent_usdc, actual_spent_usdc)
+        init_net_usdc = -total_fee_est
+        init_net_pct = (init_net_usdc / actual_spent_usdc * 100.0) if actual_spent_usdc > 0 else 0.0
         use_fixed_sl = bool(SETTINGS.get("use_fixed_sl", False))
         fixed_sl_pct = float(SETTINGS.get("fixed_sl_pct", 1.5))
         fixed_sl_price = (current_price * (1.0 - (fixed_sl_pct / 100.0))) if use_fixed_sl else None
@@ -1920,8 +1956,12 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             "market_pair": okx_symbol,
             "highest_price": current_price,
             "invested_usdc": actual_spent_usdc,
-            "live_pnl_pct": 0.0,
-            "live_pnl_usdc": 0.0,
+            "entry_fee_usdc": entry_fee_est,
+            "est_total_fee_usdc": total_fee_est,
+            "gross_pnl_pct": 0.0,
+            "gross_pnl_usdc": 0.0,
+            "live_pnl_pct": round(init_net_pct, 3),
+            "live_pnl_usdc": round(init_net_usdc, 4),
             "tf": CURRENT_TIMEFRAME,
             "ai_prob": ai_prob,
             "ai_factors": ai_factors,
@@ -2023,22 +2063,42 @@ async def close_trade_position(coin: str, reason: str):
                 return
 
             sell_ok = True
-            pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100.0
+            gross_pnl_pct = ((curr_p - trade["entry_price"]) / trade["entry_price"]) * 100.0
             invested = trade.get("invested_usdc", trade["amount"] * trade["entry_price"])
-            pnl_usdc = invested * (pnl_pct / 100.0)
+            gross_pnl_usdc = invested * (gross_pnl_pct / 100.0)
+            exit_val_usdc = max(0.0, invested + gross_pnl_usdc)
+            _, _, total_fee_usdc = calc_simulated_fee_metrics(invested, exit_val_usdc)
+            pnl_usdc = gross_pnl_usdc - total_fee_usdc
+            pnl_pct = (pnl_usdc / invested * 100.0) if invested > 0 else 0.0
 
             feats = trade.get("entry_features")
             if not feats:
                 feats = await get_current_ai_features_for_symbol(symbol, bar_tf=str(trade.get("tf", CURRENT_TIMEFRAME)).lower())
 
             t_style = classify_trade_style(trade.get("tf", CURRENT_TIMEFRAME), trade.get("source", "AUTO"))
-            record_closed_trade(symbol, pnl_pct, pnl_usdc, reason, feats, trade_style=t_style)
+            record_closed_trade(
+                symbol,
+                pnl_pct,
+                pnl_usdc,
+                reason,
+                feats,
+                trade_style=t_style,
+                gross_pnl_pct=gross_pnl_pct,
+                gross_pnl_usdc=gross_pnl_usdc,
+                fee_usdc=total_fee_usdc,
+            )
             learn_from_closed_trade(feats, pnl_usdc, trade_style=t_style, pnl_pct=pnl_pct)
             LAST_TRADE_TIME[coin] = time.time()
             WAIT_FOR_SIGNAL_RESET[coin] = True
 
-            log_event(f"Uzavreta pozicia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)", persist=True)
-            send_telegram_msg(f"<b>UZAVRETA POZICIA ({reason})</b>\n<b>Par:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+            fee_log_txt = f" | Hruby: {gross_pnl_usdc:+.2f}$ | Poplatky: -{total_fee_usdc:.2f}$" if SETTINGS.get("simulate_fees", True) else ""
+            log_event(f"Uzavreta pozicia ({reason}) pre {symbol} | Cisty PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $){fee_log_txt}", persist=True)
+            send_telegram_msg(
+                f"<b>UZAVRETA POZICIA ({reason})</b>\n"
+                f"<b>Par:</b> {symbol}\n"
+                f"<b>Cisty PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
+                + (f"\n<b>Hruby PnL / Poplatky:</b> {gross_pnl_usdc:+.2f}$ / -{total_fee_usdc:.2f}$" if SETTINGS.get("simulate_fees", True) else "")
+            )
         except Exception as e:
             log_event(f"Chyba pri zatvarani {symbol}: {e}")
         finally:
@@ -2092,9 +2152,17 @@ async def fixed_stoploss_monitor_loop():
 
                     entry_p = trade["entry_price"]
                     highest_p = trade["highest_price"]
-                    pnl_pct = ((current_price - entry_p) / entry_p) * 100.0
+                    gross_pnl_pct = ((current_price - entry_p) / entry_p) * 100.0
                     invested = trade.get("invested_usdc", trade["amount"] * entry_p)
-                    pnl_usdc = invested * (pnl_pct / 100.0)
+                    gross_pnl_usdc = invested * (gross_pnl_pct / 100.0)
+                    curr_val_usdc = max(0.0, invested + gross_pnl_usdc)
+                    entry_fee_u, _, total_fee_u = calc_simulated_fee_metrics(invested, curr_val_usdc)
+                    pnl_usdc = gross_pnl_usdc - total_fee_u
+                    pnl_pct = (pnl_usdc / invested * 100.0) if invested > 0 else 0.0
+                    trade["entry_fee_usdc"] = entry_fee_u
+                    trade["est_total_fee_usdc"] = total_fee_u
+                    trade["gross_pnl_pct"] = gross_pnl_pct
+                    trade["gross_pnl_usdc"] = gross_pnl_usdc
                     trade["live_pnl_pct"] = pnl_pct
                     trade["live_pnl_usdc"] = pnl_usdc
 
@@ -2242,6 +2310,8 @@ def get_pine_settings_dict():
         "max_entry_slip_pct": SETTINGS["max_entry_slip_pct"],
         "use_ai_filter": SETTINGS["use_ai_filter"],
         "ai_min_prob": SETTINGS["ai_min_prob"],
+        "simulate_fees": SETTINGS.get("simulate_fees", True),
+        "taker_fee_pct": SETTINGS.get("taker_fee_pct", 0.10),
     }
 
 
@@ -2417,6 +2487,9 @@ async def update_pine_settings(request: Request):
         SETTINGS["max_entry_slip_pct"] = max(0.05, min(5.0, float(payload.get("max_entry_slip_pct", SETTINGS["max_entry_slip_pct"]))))
         SETTINGS["use_ai_filter"] = bool(payload.get("use_ai_filter", SETTINGS["use_ai_filter"]))
         SETTINGS["ai_min_prob"] = max(0.25, min(0.90, float(payload.get("ai_min_prob", SETTINGS["ai_min_prob"]))))
+        SETTINGS["simulate_fees"] = bool(payload.get("simulate_fees", SETTINGS.get("simulate_fees", True)))
+        if "taker_fee_pct" in payload and payload["taker_fee_pct"] is not None:
+            SETTINGS["taker_fee_pct"] = max(0.0, min(2.0, float(payload.get("taker_fee_pct", SETTINGS.get("taker_fee_pct", 0.10)))))
 
         MARKET_SCANNER_CACHE.clear()
         save_persistent_data()
@@ -2489,6 +2562,9 @@ async def manual_buy(coin: str):
 
             coin_amount = float(formatted_sz)
             actual_spent_usdc = coin_amount * current_price
+            entry_fee_est, _, total_fee_est = calc_simulated_fee_metrics(actual_spent_usdc, actual_spent_usdc)
+            init_net_usdc = -total_fee_est
+            init_net_pct = (init_net_usdc / actual_spent_usdc * 100.0) if actual_spent_usdc > 0 else 0.0
             use_fixed_sl = bool(SETTINGS.get("use_fixed_sl", False))
             fixed_sl_pct = float(SETTINGS.get("fixed_sl_pct", 1.5))
             fixed_sl_price = (current_price * (1.0 - (fixed_sl_pct / 100.0))) if use_fixed_sl else None
@@ -2517,8 +2593,12 @@ async def manual_buy(coin: str):
                 "market_pair": okx_symbol,
                 "highest_price": current_price,
                 "invested_usdc": actual_spent_usdc,
-                "live_pnl_pct": 0.0,
-                "live_pnl_usdc": 0.0,
+                "entry_fee_usdc": entry_fee_est,
+                "est_total_fee_usdc": total_fee_est,
+                "gross_pnl_pct": 0.0,
+                "gross_pnl_usdc": 0.0,
+                "live_pnl_pct": round(init_net_pct, 3),
+                "live_pnl_usdc": round(init_net_usdc, 4),
                 "tf": CURRENT_TIMEFRAME,
                 "ai_prob": ai_prob,
                 "ai_factors": ai_factors,
@@ -2722,8 +2802,9 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 <div class="stat-value" id="stat-winloss">0W / 0L</div>
             </div>
             <div class="stat-card">
-                <div class="stat-title">Net PnL</div>
+                <div class="stat-title">Net PnL (po poplatkoch)</div>
                 <div class="stat-value" id="stat-pnl">+0.00 $</div>
+                <div id="stat-pnl-sub" style="font-size:0.62rem; color:var(--text-muted); margin-top:4px;">Hruby: +0.00 $ | Poplatky: -0.00 $</div>
             </div>
         </div>
 
@@ -2787,7 +2868,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     </div>
 
                     <div class="pine-group">
-                        <div class="pine-group-title">3. Rychly vystup (HA & Oscilator)</div>
+                        <div class="pine-group-title">3. Rychly vystup & Simulacia poplatkov</div>
                         <div class="pine-row">
                             <label for="pine-use-ha-exit">Exit pri otoceni HA</label>
                             <input type="checkbox" id="pine-use-ha-exit" class="pine-checkbox" {% if SETTINGS.use_ha_exit %}checked{% endif %}>
@@ -2803,6 +2884,14 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                         <div class="pine-row">
                             <label for="pine-use-osc-sell">SELL pri obrate oscilatora</label>
                             <input type="checkbox" id="pine-use-osc-sell" class="pine-checkbox" {% if SETTINGS.sell_on_osc_reversal %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-sim-fees">Simulovat OKX poplatky (BUY+SELL)</label>
+                            <input type="checkbox" id="pine-sim-fees" class="pine-checkbox" {% if SETTINGS.simulate_fees %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-taker-fee">Poplatok za 1 stranu (%)</label>
+                            <input type="number" id="pine-taker-fee" class="pine-input" min="0.00" max="2.00" step="0.01" value="{{ SETTINGS.taker_fee_pct }}">
                         </div>
                     </div>
 
@@ -2940,14 +3029,15 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                         <tr>
                             <th>Cas</th>
                             <th>Par</th>
-                            <th>Rezom</th>
-                            <th>PnL (%)</th>
-                            <th>PnL ($)</th>
-                            <th>Dovodom predaja</th>
+                            <th>Rezim</th>
+                            <th>Cisty PnL (%)</th>
+                            <th>Cisty PnL ($)</th>
+                            <th>Hruby / Poplatky</th>
+                            <th>Dovod predaja</th>
                         </tr>
                     </thead>
                     <tbody id="closed-trades-tbody">
-                        <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Zatial ziadne uzavrete obchody.</td></tr>
+                        <tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Zatial ziadne uzavrete obchody.</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -3194,6 +3284,8 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
             document.getElementById('pine-use-osc-sell').checked = !!ps.sell_on_osc_reversal;
             document.getElementById('pine-use-ha-exit').checked = !!ps.use_ha_exit;
             document.getElementById('pine-ha-consec').value = String(ps.ha_exit_consecutive);
+            if (document.getElementById('pine-sim-fees')) document.getElementById('pine-sim-fees').checked = ps.simulate_fees !== undefined ? !!ps.simulate_fees : true;
+            if (document.getElementById('pine-taker-fee') && ps.taker_fee_pct !== undefined) document.getElementById('pine-taker-fee').value = ps.taker_fee_pct;
             document.getElementById('pine-active-badge').innerText = `REZIM: ${ps.mode_choice} · FIB ${ps.fib_choice}`;
         }
 
@@ -3227,7 +3319,9 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 ttp_callback_pct: parseFloat(document.getElementById('pine-ttp-callback').value),
                 sell_on_osc_reversal: document.getElementById('pine-use-osc-sell').checked,
                 use_ha_exit: document.getElementById('pine-use-ha-exit').checked,
-                ha_exit_consecutive: parseInt(document.getElementById('pine-ha-consec').value, 10)
+                ha_exit_consecutive: parseInt(document.getElementById('pine-ha-consec').value, 10),
+                simulate_fees: document.getElementById('pine-sim-fees').checked,
+                taker_fee_pct: parseFloat(document.getElementById('pine-taker-fee').value)
             };
 
             let res = await fetch('/api/update-pine-settings', {
@@ -3282,7 +3376,9 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 ttp_callback_pct: 0.4,
                 sell_on_osc_reversal: false,
                 use_ha_exit: true,
-                ha_exit_consecutive: 1
+                ha_exit_consecutive: 1,
+                simulate_fees: true,
+                taker_fee_pct: 0.10
             };
             applyPineFormValues(defaults);
             await savePineSettings();
@@ -3383,12 +3479,18 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 const winsNum = Number(stats.wins || 0);
                 const lossesNum = Number(stats.losses || 0);
                 const totalPnlNum = Number(stats.total_pnl || 0);
+                const grossPnlNum = Number(stats.gross_pnl ?? totalPnlNum);
+                const totalFeesNum = Number(stats.total_fees || 0);
                 document.getElementById('stat-winrate').innerText = winRateNum.toFixed(1) + "%";
                 document.getElementById('stat-trades').innerText = totalTradesNum;
                 document.getElementById('stat-winloss').innerText = winsNum + "W / " + lossesNum + "L";
                 let pnlEl = document.getElementById('stat-pnl');
                 pnlEl.innerText = (totalPnlNum >= 0 ? "+" : "") + totalPnlNum.toFixed(2) + " $";
                 pnlEl.className = "stat-value " + (totalPnlNum >= 0 ? "text-green" : "text-red");
+                let pnlSubEl = document.getElementById('stat-pnl-sub');
+                if (pnlSubEl) {
+                    pnlSubEl.innerText = `Hruby: ${grossPnlNum >= 0 ? "+" : ""}${grossPnlNum.toFixed(2)} $ | Poplatky: -${totalFeesNum.toFixed(2)} $`;
+                }
 
                 let activeTbody = document.getElementById('active-position-tbody');
                 let sellBtn = document.getElementById('sell-btn');
@@ -3398,6 +3500,8 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     for (let [coin, t] of Object.entries(activeTradesObj)) {
                         const pnlPct = Number(t.live_pnl_pct || 0);
                         const pnlUsd = Number(t.live_pnl_usdc || 0);
+                        const grossUsd = Number(t.gross_pnl_usdc ?? pnlUsd);
+                        const estFeeUsd = Number(t.est_total_fee_usdc || 0);
                         const entryP = Number(t.entry_price || 0);
                         const currP = Number(t.current_price || entryP);
                         const fixedSlP = Number(t.fixed_sl_price || 0);
@@ -3429,7 +3533,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                             <td>${tpCell}</td>
                             <td>${slCell}</td>
                             <td>${investedUsd.toFixed(2)} ${ccy}</td>
-                            <td class="${pnlClass}">${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% (${pnlUsd >= 0 ? "+" : ""}${pnlUsd.toFixed(2)} $)</td>
+                            <td class="${pnlClass}">${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% (${pnlUsd >= 0 ? "+" : ""}${pnlUsd.toFixed(2)} $)${estFeeUsd > 0 ? `<br><span style="font-size:0.58rem; color:var(--text-muted);">Hruby: ${grossUsd >= 0 ? "+" : ""}${grossUsd.toFixed(2)}$ | Fee: -${estFeeUsd.toFixed(2)}$</span>` : ""}</td>
                             <td><button class="btn btn-sell" style="padding:3px 7px; font-size:0.62rem;" onclick="sellSingleCoin('${coin}')">SELL</button></td>
                         </tr>`;
                     }
@@ -3450,6 +3554,8 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                         for (let tr of closedList) {
                             const pctVal = parseFloat(tr.pnl_pct || 0);
                             const usdVal = parseFloat(tr.pnl_usdc || 0);
+                            const grossVal = parseFloat(tr.gross_pnl_usdc ?? usdVal);
+                            const feeVal = parseFloat(tr.fee_usdc || 0);
                             const cls = usdVal >= 0 ? "text-green" : "text-red";
                             cHtml += `<tr>
                                 <td>${tr.time || '--'}</td>
@@ -3457,12 +3563,13 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                                 <td>${tr.style || 'SCALPING'}</td>
                                 <td class="${cls}">${pctVal >= 0 ? "+" : ""}${pctVal.toFixed(2)}%</td>
                                 <td class="${cls}">${usdVal >= 0 ? "+" : ""}${usdVal.toFixed(2)} $</td>
+                                <td style="font-size:0.64rem; color:var(--text-muted);">${grossVal >= 0 ? "+" : ""}${grossVal.toFixed(2)}$ / -${feeVal.toFixed(2)}$</td>
                                 <td>${tr.reason || '--'}</td>
                             </tr>`;
                         }
                         closedTbody.innerHTML = cHtml;
                     } else {
-                        closedTbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Zatial ziadne uzavrete obchody.</td></tr>`;
+                        closedTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Zatial ziadne uzavrete obchody.</td></tr>`;
                     }
                 }
 
