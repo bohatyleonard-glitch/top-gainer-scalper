@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -179,7 +180,10 @@ def safe_float(val, default: float = 0.0) -> float:
 
 
 def get_sk_time_str() -> str:
-    sk_tz = timezone(timedelta(hours=1))
+    try:
+        sk_tz = ZoneInfo("Europe/Bratislava")
+    except Exception:
+        sk_tz = timezone(timedelta(hours=1))
     return datetime.now(sk_tz).strftime("%H:%M:%S")
 
 
@@ -483,12 +487,15 @@ def record_closed_trade(
     gross_pnl_pct: float | None = None,
     gross_pnl_usdc: float | None = None,
     fee_usdc: float = 0.0,
+    persist: bool = False,
 ):
     g_pct = pnl_pct if gross_pnl_pct is None else gross_pnl_pct
     g_usdc = pnl_usdc if gross_pnl_usdc is None else gross_pnl_usdc
+    result_badge = "🟩" if pnl_usdc >= 0 else "🟥"
     trade_rec = {
         "time": get_sk_time_str(),
         "symbol": symbol,
+        "result_badge": result_badge,
         "pnl_pct": round(pnl_pct, 2),
         "pnl_usdc": round(pnl_usdc, 2),
         "gross_pnl_pct": round(g_pct, 2),
@@ -505,6 +512,7 @@ def record_closed_trade(
         AI_LEARNED_TRADES.insert(0, {
             "time": trade_rec["time"],
             "symbol": symbol,
+            "result_badge": result_badge,
             "pnl_pct": trade_rec["pnl_pct"],
             "pnl_usdc": trade_rec["pnl_usdc"],
             "gross_pnl_pct": trade_rec["gross_pnl_pct"],
@@ -516,7 +524,8 @@ def record_closed_trade(
         })
         if len(AI_LEARNED_TRADES) > 200:
             del AI_LEARNED_TRADES[200:]
-    save_persistent_data()
+    if persist:
+        save_persistent_data()
 
 
 def calculate_stats() -> dict:
@@ -765,7 +774,8 @@ def calc_wma_series(values, length):
 
 def get_market_regime_and_sideways_sync(bar_tf: str = "15m") -> tuple[str, bool]:
     try:
-        res = okx_public_request_sync(f"/api/v5/market/candles?instId=BTC-USDC&bar={bar_tf}&limit=50")
+        tf_clean = str(bar_tf).lower().strip()
+        res = okx_public_request_sync(f"/api/v5/market/candles?instId=BTC-USDC&bar={tf_clean}&limit=50")
         if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 25:
             return "BULL", False
         candles = list(reversed(res["data"]))[:-1]
@@ -786,7 +796,14 @@ def get_market_regime_and_sideways_sync(bar_tf: str = "15m") -> tuple[str, bool]
 
         recent_win = closes[-15:]
         rng_pct = ((max(highs[-15:]) - min(lows[-15:])) / recent_win[0] * 100.0) if recent_win[0] > 0 else 0.0
-        is_sideways = (crosses >= 4) and (rng_pct < 2.2)
+        if tf_clean in ("5m", "8m"):
+            min_crosses, max_rng_pct = 6, 0.85
+        elif tf_clean == "15m":
+            min_crosses, max_rng_pct = 5, 1.35
+        else:
+            min_crosses, max_rng_pct = 4, 2.20
+
+        is_sideways = (crosses >= min_crosses) and (rng_pct < max_rng_pct)
         if is_sideways:
             return "SIDEWAYS", True
         regime = "BULL" if ema_fast[-1] >= ema_slow[-1] else "BEAR"
@@ -1240,7 +1257,7 @@ def predict_ai_probability(feats: list[float] | None) -> float | None:
     return round(clamped, 3)
 
 
-def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade_style: str = "SCALPING", pnl_pct: float | None = None):
+def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade_style: str = "SCALPING", pnl_pct: float | None = None, persist: bool = False):
     global AI_STATE
     aligned_feats = _pad_or_trim_features(features, AI_FEATURE_COUNT)
     if not aligned_feats:
@@ -1271,10 +1288,11 @@ def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade
     AI_STATE["live_learned_count"] = live_cnt
     AI_STATE["live_wins_count"] = live_wins
     AI_STATE["trained_at"] = get_sk_time_str()
-    save_ai_model()
+    if persist:
+        save_ai_model()
     log_event(
         f"AI sa doucilo [{trade_style}] ({'ZISK' if pnl_usdc > 0 else 'STRATA'} {pnl_usdc:+.2f} $, vaha {sample_weight:.2f}x) | Ulozenych obchodov: {live_cnt} ({live_wins}W)",
-        persist=True,
+        persist=False,
     )
 
 
@@ -2070,6 +2088,7 @@ async def close_trade_position(coin: str, reason: str):
             _, _, total_fee_usdc = calc_simulated_fee_metrics(invested, exit_val_usdc)
             pnl_usdc = gross_pnl_usdc - total_fee_usdc
             pnl_pct = (pnl_usdc / invested * 100.0) if invested > 0 else 0.0
+            result_square = "🟩" if pnl_usdc >= 0 else "🟥"
 
             feats = trade.get("entry_features")
             if not feats:
@@ -2086,15 +2105,16 @@ async def close_trade_position(coin: str, reason: str):
                 gross_pnl_pct=gross_pnl_pct,
                 gross_pnl_usdc=gross_pnl_usdc,
                 fee_usdc=total_fee_usdc,
+                persist=False,
             )
-            learn_from_closed_trade(feats, pnl_usdc, trade_style=t_style, pnl_pct=pnl_pct)
+            learn_from_closed_trade(feats, pnl_usdc, trade_style=t_style, pnl_pct=pnl_pct, persist=False)
             LAST_TRADE_TIME[coin] = time.time()
             WAIT_FOR_SIGNAL_RESET[coin] = True
 
             fee_log_txt = f" | Hruby: {gross_pnl_usdc:+.2f}$ | Poplatky: -{total_fee_usdc:.2f}$" if SETTINGS.get("simulate_fees", True) else ""
-            log_event(f"Uzavreta pozicia ({reason}) pre {symbol} | Cisty PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $){fee_log_txt}", persist=True)
+            log_event(f"{result_square} Uzavreta pozicia ({reason}) pre {symbol} | Cisty PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $){fee_log_txt}", persist=False)
             send_telegram_msg(
-                f"<b>UZAVRETA POZICIA ({reason})</b>\n"
+                f"{result_square} <b>UZAVRETA POZICIA ({reason})</b>\n"
                 f"<b>Par:</b> {symbol}\n"
                 f"<b>Cisty PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)"
                 + (f"\n<b>Hruby PnL / Poplatky:</b> {gross_pnl_usdc:+.2f}$ / -{total_fee_usdc:.2f}$" if SETTINGS.get("simulate_fees", True) else "")
@@ -2189,17 +2209,18 @@ async def fixed_stoploss_monitor_loop():
                         await close_trade_position(coin, f"Fixny Stop-Loss (-{fixed_sl_pct_now}%)")
                         continue
 
-                    # 2. Fixny Take-Profit
+                    # 2. Fixny Take-Profit (uzamkne ciel a pri zapnutom TTP necha dalej tahat zisk)
                     if use_fixed_tp and current_price >= fixed_tp_price:
                         if not trade.get("tp_goal_reached", False):
                             trade["tp_goal_reached"] = True
                             if use_be:
                                 trade["be_active"] = True
-                            if use_ttp and not trade.get("ttp_active", False):
-                                trade["ttp_active"] = True
-                                trade["ttp_stop_price"] = highest_p * (1.0 - (ttp_cb / 100.0))
-                                log_event(f"Ciel TP (+{fixed_tp_pct}%) dosiahnuty pre {symbol} -> aktivovany TTP (odstup {ttp_cb}%)!")
-                            elif not use_ttp:
+                            if use_ttp:
+                                if not trade.get("ttp_active", False):
+                                    trade["ttp_active"] = True
+                                    trade["ttp_stop_price"] = highest_p * (1.0 - (ttp_cb / 100.0))
+                                log_event(f"Ciel TP (+{fixed_tp_pct}%) dosiahnuty pre {symbol} -> uzamknute a pokracuje TTP (odstup {ttp_cb}%)!")
+                            else:
                                 await close_trade_position(coin, f"Fixny Take-Profit (+{fixed_tp_pct}%)")
                                 continue
 
@@ -2223,7 +2244,12 @@ async def fixed_stoploss_monitor_loop():
                             ttp_stop = highest_p * (1.0 - (ttp_cb / 100.0))
                             trade["ttp_stop_price"] = ttp_stop
                             if current_price <= ttp_stop:
-                                await close_trade_position(coin, f"Trailing Take-Profit (-{ttp_cb}% z maxima)")
+                                ttp_reason = (
+                                    f"Fixny TP (+{fixed_tp_pct}%) -> Trailing TP (-{ttp_cb}% z maxima)"
+                                    if trade.get("tp_goal_reached", False)
+                                    else f"Trailing Take-Profit (-{ttp_cb}% z maxima)"
+                                )
+                                await close_trade_position(coin, ttp_reason)
                                 continue
 
                     # 5. Trailing Stop
@@ -2322,6 +2348,13 @@ async def telegram_webhook(request: Request):
         if WEBHOOK_SECRET and secret_hdr != WEBHOOK_SECRET:
             return JSONResponse({"status": "unauthorized"}, status_code=401)
         data = await request.json()
+        incoming_chat_id = ""
+        if "callback_query" in data:
+            incoming_chat_id = str(data["callback_query"].get("message", {}).get("chat", {}).get("id", "")).strip()
+        elif "message" in data:
+            incoming_chat_id = str(data["message"].get("chat", {}).get("id", "")).strip()
+        if TELEGRAM_CHAT_ID and incoming_chat_id and incoming_chat_id != TELEGRAM_CHAT_ID:
+            return JSONResponse({"status": "forbidden"}, status_code=403)
         if "callback_query" in data:
             cb = data["callback_query"]
             cb_data = cb.get("data", "")
@@ -3557,9 +3590,10 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                             const grossVal = parseFloat(tr.gross_pnl_usdc ?? usdVal);
                             const feeVal = parseFloat(tr.fee_usdc || 0);
                             const cls = usdVal >= 0 ? "text-green" : "text-red";
+                            const badge = tr.result_badge || (usdVal >= 0 ? "🟩" : "🟥");
                             cHtml += `<tr>
                                 <td>${tr.time || '--'}</td>
-                                <td><b>${tr.symbol || '--'}</b></td>
+                                <td>${badge} <b>${tr.symbol || '--'}</b></td>
                                 <td>${tr.style || 'SCALPING'}</td>
                                 <td class="${cls}">${pctVal >= 0 ? "+" : ""}${pctVal.toFixed(2)}%</td>
                                 <td class="${cls}">${usdVal >= 0 ? "+" : ""}${usdVal.toFixed(2)} $</td>
@@ -3695,4 +3729,4 @@ async def get_state():
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
