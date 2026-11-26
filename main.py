@@ -29,12 +29,12 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-# Sukromne poziadavky (zostatok, nakup, predaj) -> OKX Demo EEA (oddelene od OKX_BASE_URL)
+# Sukromne poziadavky (zostatok, nakup, predaj) -> OKX Demo EEA
 _env_demo_url = os.getenv("OKX_DEMO_BASE_URL", os.getenv("OKX_BASE_URL", "https://eea.okx.com")).strip().rstrip("/")
 OKX_DEMO_BASE_URL = "https://eea.okx.com" if (not _env_demo_url or "www.okx.com" in _env_demo_url) else _env_demo_url
 # Verejne trhove data (grafy/sviecky, tickery, instrumenty) -> OKX Live
 OKX_PUBLIC_URL = os.getenv("OKX_PUBLIC_URL", "https://www.okx.com").strip().rstrip("/")
-OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1").strip()  # "1" pre OKX Demo Trading
+OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1").strip()
 
 STATE_FILE = os.getenv("BOT_STATE_FILE", "/var/data/apex_ai_bot_state.json")
 LOG_RETENTION_SEC = 2 * 3600
@@ -58,6 +58,7 @@ AI_MEMORY_FILE = _resolve_ai_memory_path()
 ALLOWED_TIMEFRAMES = ["5m", "8m", "15m", "30m", "45m"]
 ALLOWED_BUDGET_CAPS = [500, 1000, 2000, 3000, 5000, 10000]
 
+# Pary, ktore demo ucet nepodporuje alebo ich nechces obchodovat
 EXCLUDED_SYMBOLS = {
     "BTC-USDC", "ETH-USDC",
     "USDT-USDC", "DAI-USDC", "FDUSD-USDC",
@@ -74,7 +75,7 @@ AI_FEATURE_COUNT = 9
 # --- GLOBALNY STAV BOTA ---
 IS_BOT_ACTIVE = True
 CURRENT_TIMEFRAME = "15M"
-CURRENT_STAGE = "STAV: Inicializujem bota (FIB + zakaz cervenej HA sviecky + len BYCI trh na TF)..."
+CURRENT_STAGE = "STAV: Inicializujem bota (Pine logika + nastavenia z APEX panela)..."
 MARKET_REGIME = "BULL"
 IS_SIDEWAYS_MARKET = False
 LAST_SIDEWAYS_ALERT_TS = 0.0
@@ -85,13 +86,14 @@ ACTIVE_BALANCE_CCY = "USDC"
 _BALANCE_CACHE: dict[str, tuple[float, float, str]] = {}
 LAST_LOG_PRUNE_STR = "--"
 
-TOP_LIQUID_SYMBOLS = [
-    "SOL-USDC", "SUI-USDC", "XRP-USDC", "TAO-USDC",
-    "DOGE-USDC", "ADA-USDC", "AVAX-USDC", "LINK-USDC", "TON-USDC",
-    "NEAR-USDC", "APT-USDC", "TRX-USDC", "LTC-USDC", "PEPE-USDC",
-    "AAVE-USDC", "UNI-USDC", "POL-USDC", "RENDER-USDC", "TIA-USDC",
+INITIAL_TOP_SYMBOLS = [
+    "SOL-USDC", "SUI-USDC", "DOGE-USDC", "ADA-USDC",
+    "AVAX-USDC", "LINK-USDC", "TON-USDC", "NEAR-USDC",
+    "APT-USDC", "TRX-USDC", "LTC-USDC", "PEPE-USDC",
+    "AAVE-USDC", "UNI-USDC", "POL-USDC", "TIA-USDC",
     "PUMP-USDC"
 ]
+TOP_LIQUID_SYMBOLS: list[str] = [s for s in INITIAL_TOP_SYMBOLS if s not in EXCLUDED_SYMBOLS]
 
 ACTIVE_TRADES: dict[str, dict] = {}
 LAST_TRADE_TIME: dict[str, float] = {}
@@ -111,8 +113,8 @@ SETTINGS = {
     "use_btc_filter": False,
     "reentry_cooldown_sec": 120,
     "mode_choice": "FIB",
-    "require_green_ha_buy": True,
-    "require_bull_tf_buy": True,
+    "require_green_ha_buy": False,
+    "require_bull_tf_buy": False,
     "strict_buy_filter": False,
     "fast_len": 5,
     "slow_len": 20,
@@ -120,20 +122,22 @@ SETTINGS = {
     "pred_look": 3,
     "pivot_len": 2,
     "fib_choice": "0.786",
+    # Fixny Stop-Loss je teraz riaditelny prepinacom use_fixed_sl
+    "use_fixed_sl": False,
     "fixed_sl_pct": 1.5,
     "use_fixed_tp": False,
     "fixed_tp_pct": 1.2,
     "use_trailing": True,
     "trail_pct": 1.5,
     "use_breakeven": True,
-    "be_trigger_pct": 0.35,
+    "be_trigger_pct": 1.2,
     "use_trailing_tp": True,
-    "ttp_trigger_pct": 0.8,
-    "ttp_callback_pct": 0.2,
+    "ttp_trigger_pct": 1.2,
+    "ttp_callback_pct": 0.4,
     "use_ha_exit": True,
-    "ha_exit_consecutive": 2,
+    "ha_exit_consecutive": 1,
     "sell_on_osc_reversal": False,
-    "block_sideways_buy": True,
+    "block_sideways_buy": False,
     "min_rel_volume": 0.0,
     "use_anti_chase": False,
     "max_candle_pump_pct": 0.9,
@@ -161,6 +165,7 @@ AI_STATE = {
     "_last_train_ts": 0.0,
 }
 
+
 def safe_float(val, default: float = 0.0) -> float:
     try:
         if val is None or val == "":
@@ -170,9 +175,11 @@ def safe_float(val, default: float = 0.0) -> float:
     except Exception:
         return default
 
+
 def get_sk_time_str() -> str:
     sk_tz = timezone(timedelta(hours=1))
     return datetime.now(sk_tz).strftime("%H:%M:%S")
+
 
 def _detect_log_category_and_symbol(msg: str) -> tuple[str, str]:
     upper = msg.upper()
@@ -192,6 +199,7 @@ def _detect_log_category_and_symbol(msg: str) -> tuple[str, str]:
         cat = "INFO"
     return cat, sym
 
+
 def _prune_old_logs(now_ts: float | None = None):
     global LAST_LOG_PRUNE_STR
     ref_ts = time.time() if now_ts is None else now_ts
@@ -209,6 +217,7 @@ def _prune_old_logs(now_ts: float | None = None):
     if len(SYSTEM_LOG_ENTRIES) != before_len:
         LAST_LOG_PRUNE_STR = get_sk_time_str()
     SYSTEM_LOGS[:] = [entry["line"] for entry in SYSTEM_LOG_ENTRIES[:200]]
+
 
 def log_event(msg: str, persist: bool = False):
     now_ts = time.time()
@@ -234,6 +243,7 @@ def log_event(msg: str, persist: bool = False):
     if persist:
         save_persistent_data()
 
+
 def log_block_throttled(symbol: str, reason: str, cooldown_sec: float = 60.0):
     key = f"{symbol}:{reason}"
     now_ts = time.time()
@@ -241,6 +251,7 @@ def log_block_throttled(symbol: str, reason: str, cooldown_sec: float = 60.0):
     if now_ts - last_ts >= cooldown_sec:
         LAST_BLOCK_LOG_TS[key] = now_ts
         log_event(f"Signal {symbol} [{CURRENT_TIMEFRAME}] pozastaveny: {reason}")
+
 
 def send_telegram_msg(text: str, reply_markup: dict | None = None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -261,6 +272,7 @@ def send_telegram_msg(text: str, reply_markup: dict | None = None):
             pass
     except Exception:
         pass
+
 
 def _http_get_json_sync(url: str, headers: dict | None = None) -> dict:
     try:
@@ -283,6 +295,7 @@ def _http_get_json_sync(url: str, headers: dict | None = None) -> dict:
     except Exception as e:
         return {"code": "-1", "msg": str(e), "data": []}
 
+
 def okx_public_request_sync(path_and_query: str) -> dict:
     for base in [OKX_PUBLIC_URL, "https://www.okx.com", "https://aws.okx.com"]:
         base_clean = base.strip().rstrip("/")
@@ -293,8 +306,10 @@ def okx_public_request_sync(path_and_query: str) -> dict:
             return res
     return _http_get_json_sync(f"{OKX_PUBLIC_URL}{path_and_query}")
 
+
 async def okx_public_request(path_and_query: str) -> dict:
     return await asyncio.to_thread(okx_public_request_sync, path_and_query)
+
 
 def _build_okx_auth_headers(method: str, request_path: str, body: str = "") -> dict:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -317,6 +332,7 @@ def _build_okx_auth_headers(method: str, request_path: str, body: str = "") -> d
     if OKX_SIMULATED == "1":
         headers["x-simulated-trading"] = "1"
     return headers
+
 
 def okx_request_sync(method: str, request_path: str, body: str = "") -> dict:
     if not OKX_API_KEY or not OKX_SECRET or not OKX_PASSPHRASE:
@@ -348,8 +364,10 @@ def okx_request_sync(method: str, request_path: str, body: str = "") -> dict:
     except Exception as e:
         return {"code": "-1", "msg": str(e), "data": []}
 
+
 async def okx_request(method: str, request_path: str, body: str = "") -> dict:
     return await asyncio.to_thread(okx_request_sync, method, request_path, body)
+
 
 def fetch_account_capital_sync(ccy: str = "USDC", force_refresh: bool = False) -> float:
     global LAST_BALANCE_ERROR_LOG_TS, ACTIVE_BALANCE_CCY
@@ -401,8 +419,10 @@ def fetch_account_capital_sync(ccy: str = "USDC", force_refresh: bool = False) -
             log_event(f"Chyba pri nacitani zostatku: {err}")
     return cached[1] if cached is not None else 0.0
 
+
 async def fetch_account_capital(ccy: str = "USDC", force_refresh: bool = False) -> float:
     return await asyncio.to_thread(fetch_account_capital_sync, ccy, force_refresh)
+
 
 def get_instrument_rules_sync(inst_id: str) -> tuple[float, float]:
     try:
@@ -416,8 +436,10 @@ def get_instrument_rules_sync(inst_id: str) -> tuple[float, float]:
         pass
     return 0.01, 0.01
 
+
 async def get_instrument_rules(inst_id: str) -> tuple[float, float]:
     return await asyncio.to_thread(get_instrument_rules_sync, inst_id)
+
 
 def format_amount(raw_amount: float, lot_sz: float, min_sz: float) -> str | None:
     if raw_amount < min_sz or lot_sz <= 0:
@@ -430,6 +452,7 @@ def format_amount(raw_amount: float, lot_sz: float, min_sz: float) -> str | None
     decimals = len(lot_str.split(".")[1]) if "." in lot_str else 0
     return f"{amt:.{decimals}f}"
 
+
 def classify_trade_style(tf_str: str, source: str = "AUTO") -> str:
     if str(source).upper() == "MANUAL":
         return "MANUAL"
@@ -437,6 +460,7 @@ def classify_trade_style(tf_str: str, source: str = "AUTO") -> str:
     if tf_clean in ("30m", "45m", "1h", "4h"):
         return "SWING"
     return "SCALPING"
+
 
 def record_closed_trade(symbol: str, pnl_pct: float, pnl_usdc: float, reason: str, entry_features: list[float] | None = None, trade_style: str = "SCALPING"):
     trade_rec = {
@@ -465,6 +489,7 @@ def record_closed_trade(symbol: str, pnl_pct: float, pnl_usdc: float, reason: st
             del AI_LEARNED_TRADES[200:]
     save_persistent_data()
 
+
 def calculate_stats() -> dict:
     total = len(CLOSED_TRADES_HISTORY)
     wins = sum(1 for t in CLOSED_TRADES_HISTORY if safe_float(t.get("pnl_usdc")) > 0)
@@ -479,10 +504,12 @@ def calculate_stats() -> dict:
         "win_rate": round(win_rate, 1),
     }
 
+
 def _ensure_parent_dir(file_path: str):
     parent = os.path.dirname(file_path)
     if parent:
         os.makedirs(parent, exist_ok=True)
+
 
 def _pad_or_trim_features(feats: list[float] | None, target_len: int = AI_FEATURE_COUNT) -> list[float] | None:
     if not feats or len(feats) < 6:
@@ -491,6 +518,7 @@ def _pad_or_trim_features(feats: list[float] | None, target_len: int = AI_FEATUR
     while len(cleaned) < target_len:
         cleaned.append(0.0)
     return cleaned
+
 
 def save_ai_memory():
     try:
@@ -511,6 +539,7 @@ def save_ai_memory():
         os.replace(tmp_path, AI_MEMORY_FILE)
     except Exception:
         pass
+
 
 def load_ai_memory():
     global AI_LEARNED_TRADES, CLOSED_TRADES_HISTORY
@@ -543,9 +572,11 @@ def load_ai_memory():
     except Exception:
         pass
 
+
 def save_ai_model():
     save_ai_memory()
     save_persistent_data()
+
 
 def save_persistent_data():
     try:
@@ -568,6 +599,7 @@ def save_persistent_data():
         save_ai_memory()
     except Exception:
         pass
+
 
 def load_persistent_data():
     global CLOSED_TRADES_HISTORY, SYSTEM_LOGS, SYSTEM_LOG_ENTRIES, SYSTEM_LOG_24H_ENTRIES, AI_LEARNED_TRADES, ACTIVE_TRADES
@@ -650,6 +682,7 @@ def load_persistent_data():
             pass
     load_ai_memory()
 
+
 def calc_ema_series(values, length):
     if not values:
         return []
@@ -658,6 +691,7 @@ def calc_ema_series(values, length):
     for val in values[1:]:
         ema.append(val * alpha + ema[-1] * (1.0 - alpha))
     return ema
+
 
 def calc_linreg_series(values, length, offset=0):
     n = len(values)
@@ -682,6 +716,7 @@ def calc_linreg_series(values, length, offset=0):
         out[i] = intercept + slope * (length - 1 - offset)
     return out
 
+
 def calc_wma_series(values, length):
     n = len(values)
     out = [None] * n
@@ -693,6 +728,7 @@ def calc_wma_series(values, length):
             continue
         out[i] = sum(window[j] * weights[j] for j in range(length)) / w_sum
     return out
+
 
 def get_market_regime_and_sideways_sync(bar_tf: str = "15m") -> tuple[str, bool]:
     try:
@@ -725,8 +761,10 @@ def get_market_regime_and_sideways_sync(bar_tf: str = "15m") -> tuple[str, bool]
     except Exception:
         return "BULL", False
 
+
 async def get_market_regime_and_sideways(bar_tf: str = "15m") -> tuple[str, bool]:
     return await asyncio.to_thread(get_market_regime_and_sideways_sync, bar_tf)
+
 
 def is_bull_market_on_tf_sync(bar_tf: str | None = None) -> tuple[bool, str]:
     tf_clean = (bar_tf or CURRENT_TIMEFRAME).lower().strip()
@@ -737,8 +775,10 @@ def is_bull_market_on_tf_sync(bar_tf: str | None = None) -> tuple[bool, str]:
         return False, f"Medvedi trh ({regime}) na TF {tf_clean.upper()}"
     return True, "BULL"
 
+
 async def is_bull_market_on_tf(bar_tf: str | None = None) -> tuple[bool, str]:
     return await asyncio.to_thread(is_bull_market_on_tf_sync, bar_tf)
+
 
 def check_btc_health_sync() -> bool:
     if not SETTINGS.get("use_btc_filter", False):
@@ -755,39 +795,38 @@ def check_btc_health_sync() -> bool:
     except Exception:
         return True
 
+
 async def check_btc_health() -> bool:
     return await asyncio.to_thread(check_btc_health_sync)
+
 
 def update_top_liquid_symbols_sync():
     global TOP_LIQUID_SYMBOLS
     try:
         res = okx_public_request_sync("/api/v5/market/tickers?instType=SPOT")
         if res.get("code") != "0" or not res.get("data"):
-            log_event(f"Nepodarilo sa nacitat tickery pre 20 symbolov: {res.get('msg')}")
+            log_event(f"Nepodarilo sa nacitat tickery pre symboly: {res.get('msg')}")
             return
         candidates = []
-        available_usdc = set()
         for t in res["data"]:
             inst = t.get("instId", "")
             if inst.endswith("-USDC") and inst not in EXCLUDED_SYMBOLS:
-                available_usdc.add(inst)
                 vol_ccy = safe_float(t.get("volCcy24h"), 0.0)
                 if vol_ccy >= 500000.0:
                     candidates.append((vol_ccy, inst))
         candidates.sort(key=lambda x: x[0], reverse=True)
-        top = [inst for _, inst in candidates[:20]]
-        if "RENDER-USDC" in available_usdc and "RENDER-USDC" not in top:
-            if len(top) >= 20:
-                top[-1] = "RENDER-USDC"
-            else:
-                top.append("RENDER-USDC")
+        top = [inst for _, inst in candidates[:20] if inst not in EXCLUDED_SYMBOLS]
         if len(top) >= 5:
             TOP_LIQUID_SYMBOLS = top
+        else:
+            TOP_LIQUID_SYMBOLS = [s for s in INITIAL_TOP_SYMBOLS if s not in EXCLUDED_SYMBOLS]
     except Exception as e:
         log_event(f"Chyba pri aktualizacii top symbolov: {e}")
 
+
 async def update_top_liquid_symbols():
     await asyncio.to_thread(update_top_liquid_symbols_sync)
+
 
 def _sigmoid(x: float) -> float:
     if x >= 0:
@@ -796,12 +835,14 @@ def _sigmoid(x: float) -> float:
     z = math.exp(min(-x, 60.0))
     return z / (1.0 + z)
 
+
 def _regime_numeric_value() -> float:
     if IS_SIDEWAYS_MARKET or str(MARKET_REGIME).upper() == "SIDEWAYS":
         return 0.0
     if str(MARKET_REGIME).upper() == "BEAR":
         return -0.75
     return 0.75
+
 
 def extract_ai_features(idx: int, ha_closes, ha_opens, ha_highs, ha_lows, volumes, oscillator, signal_line, close_ema_9, predicted_next, close_ema_50=None):
     cl = ha_closes[idx]
@@ -851,6 +892,7 @@ def extract_ai_features(idx: int, ha_closes, ha_opens, ha_highs, ha_lows, volume
         regime_norm,
     ]
 
+
 def describe_ai_factors(feats: list[float] | None) -> str:
     if not feats or len(feats) < 6:
         return "--"
@@ -871,6 +913,7 @@ def describe_ai_factors(feats: list[float] | None) -> str:
     ranked = sorted(labels, key=lambda item: abs(item[1]), reverse=True)[:3]
     parts = [f"{name}{'+' if val >= 0 else '-'}" for name, val in ranked]
     return ", ".join(parts)
+
 
 def _build_series_and_signals(candles_raw, mode_choice: str):
     candles = list(reversed(candles_raw))
@@ -925,6 +968,7 @@ def _build_series_and_signals(candles_raw, mode_choice: str):
         "mode_choice": mode_choice,
     }
 
+
 def get_current_ai_features_for_symbol_sync(symbol: str, bar_tf: str = "15m") -> list[float] | None:
     try:
         res = okx_public_request_sync(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=90")
@@ -951,8 +995,10 @@ def get_current_ai_features_for_symbol_sync(symbol: str, bar_tf: str = "15m") ->
     except Exception:
         return None
 
+
 async def get_current_ai_features_for_symbol(symbol: str, bar_tf: str = "15m") -> list[float] | None:
     return await asyncio.to_thread(get_current_ai_features_for_symbol_sync, symbol, bar_tf)
+
 
 def _collect_symbol_training_samples_sync(symbol: str, bar_tf: str, target_gain_pct: float, stop_loss_pct: float, mode_choice: str) -> list[tuple[list[float], int, float]]:
     res = okx_public_request_sync(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=250")
@@ -982,15 +1028,15 @@ def _collect_symbol_training_samples_sync(symbol: str, bar_tf: str, target_gain_
         cl_i = ha_closes[i]
         ema9_i = close_ema_9[i]
 
-        cond_vol_bull = (osc_i > 0.0) and (osc_i > sig_i) and (predicted_next[i] > osc_i)
+        cond_vol_bull = (osc_i > 0.0) and (osc_i > sig_i)
         cond_vol_cross = (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
-        ema9_above = cl_i > ema9_i
+        ema9_cross = (close_ema_9[i - 1] <= ha_closes[i - 1]) and (cl_i > ema9_i)
         if mode_choice == "BREAKOUT":
-            is_sig = cond_vol_cross or (cond_vol_bull and ema9_above)
+            is_sig = cond_vol_cross or (cond_vol_bull and ema9_cross)
         elif mode_choice == "FIB":
-            is_sig = cond_vol_bull and ema9_above
+            is_sig = cond_vol_bull and (ha_lows[i] <= cl_i)
         else:
-            is_sig = cond_vol_bull and (cond_vol_cross or ema9_above)
+            is_sig = cond_vol_bull and (cond_vol_cross or ema9_cross)
 
         if not is_sig or cl_i <= 0:
             continue
@@ -1025,6 +1071,7 @@ def _collect_symbol_training_samples_sync(symbol: str, bar_tf: str, target_gain_
         samples.append((feats, label, weight))
     return samples
 
+
 def train_ai_model_from_candles_sync(symbol: str, bar_tf: str = "15m", force: bool = False) -> dict:
     global AI_STATE
     now_ts = time.time()
@@ -1036,7 +1083,7 @@ def train_ai_model_from_candles_sync(symbol: str, bar_tf: str = "15m", force: bo
         if SETTINGS.get("use_fixed_tp", False):
             target_gain_pct = max(0.35, float(SETTINGS.get("fixed_tp_pct", 1.2)))
         else:
-            target_gain_pct = max(0.35, float(SETTINGS.get("ttp_trigger_pct", 0.8)))
+            target_gain_pct = max(0.35, float(SETTINGS.get("ttp_trigger_pct", 1.2)))
         stop_loss_pct = max(0.25, float(SETTINGS.get("fixed_sl_pct", 1.5)))
 
         train_symbols = []
@@ -1139,8 +1186,10 @@ def train_ai_model_from_candles_sync(symbol: str, bar_tf: str = "15m", force: bo
     except Exception as e:
         return {"ok": False, "msg": str(e)}
 
+
 async def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = False) -> dict:
     return await asyncio.to_thread(train_ai_model_from_candles_sync, symbol, bar_tf, force)
+
 
 def predict_ai_probability(feats: list[float] | None) -> float | None:
     if AI_STATE.get("samples_count", 0) < 10:
@@ -1156,6 +1205,7 @@ def predict_ai_probability(feats: list[float] | None) -> float | None:
     raw_prob = _sigmoid(z * 0.65)
     clamped = max(0.08, min(0.88, raw_prob))
     return round(clamped, 3)
+
 
 def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade_style: str = "SCALPING", pnl_pct: float | None = None):
     global AI_STATE
@@ -1193,6 +1243,7 @@ def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade
         f"AI sa doucilo [{trade_style}] ({'ZISK' if pnl_usdc > 0 else 'STRATA'} {pnl_usdc:+.2f} $, vaha {sample_weight:.2f}x) | Ulozenych obchodov: {live_cnt} ({live_wins}W)",
         persist=True,
     )
+
 
 def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_override: tuple[bool, str] | None = None, exit_only_for_active: bool = False):
     global MARKET_SCANNER_CACHE, ACTIVE_TRADES, AI_STATE
@@ -1234,19 +1285,21 @@ def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_overri
         pivot_len = max(1, min(10, int(SETTINGS.get("pivot_len", 2))))
         fib_choice = str(SETTINGS.get("fib_choice", "0.786"))
         mode_choice = str(SETTINGS.get("mode_choice", "FIB")).upper()
-        require_green_ha_buy = bool(SETTINGS.get("require_green_ha_buy", True))
-        require_bull_tf_buy = bool(SETTINGS.get("require_bull_tf_buy", True))
+        require_green_ha_buy = bool(SETTINGS.get("require_green_ha_buy", False))
+        require_bull_tf_buy = bool(SETTINGS.get("require_bull_tf_buy", False))
         strict_buy_filter = bool(SETTINGS.get("strict_buy_filter", False))
 
+        use_fixed_sl = bool(SETTINGS.get("use_fixed_sl", False))
+        fixed_sl_pct = float(SETTINGS.get("fixed_sl_pct", 1.5))
         use_trailing = bool(SETTINGS.get("use_trailing", True))
         trail_pct = float(SETTINGS.get("trail_pct", 1.5))
         use_breakeven = bool(SETTINGS.get("use_breakeven", True))
-        be_trigger_pct = float(SETTINGS.get("be_trigger_pct", 0.35))
+        be_trigger_pct = float(SETTINGS.get("be_trigger_pct", 1.2))
         use_trailing_tp = bool(SETTINGS.get("use_trailing_tp", True))
-        ttp_trigger_pct = float(SETTINGS.get("ttp_trigger_pct", 0.8))
-        ttp_callback_pct = float(SETTINGS.get("ttp_callback_pct", 0.2))
+        ttp_trigger_pct = float(SETTINGS.get("ttp_trigger_pct", 1.2))
+        ttp_callback_pct = float(SETTINGS.get("ttp_callback_pct", 0.4))
         use_ha_exit = bool(SETTINGS.get("use_ha_exit", True))
-        ha_exit_consecutive = max(1, min(3, int(SETTINGS.get("ha_exit_consecutive", 2))))
+        ha_exit_consecutive = max(1, min(3, int(SETTINGS.get("ha_exit_consecutive", 1))))
         sell_on_osc_reversal = bool(SETTINGS.get("sell_on_osc_reversal", False))
 
         vol_dirs = [volumes[i] if ha_closes[i] > ha_opens[i] else -volumes[i] for i in range(n)]
@@ -1283,6 +1336,7 @@ def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_overri
         last_buy_trigger = False
         last_ha_is_green = False
         last_red_ha_blocked = False
+        last_effective_stop = None
 
         for i in range(n):
             if i >= 2 * pivot_len:
@@ -1312,16 +1366,19 @@ def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_overri
             osc_i = oscillator[i]
             sig_i = signal_line[i]
             cl_i = ha_closes[i]
+            lo_i = ha_lows[i]
             ema9_i = close_ema_9[i]
             ha_is_green = ha_closes[i] > ha_opens[i]
 
-            cond_volume_bullish = (osc_i > 0.0) and (osc_i > sig_i) and (predicted_next[i] > osc_i)
+            # Logika blizka Pine Scriptu: r_low <= fib_target a crossover EMA9
+            cond_volume_bullish = (osc_i > 0.0) and (osc_i > sig_i)
             cond_volume_crossover = (i > 0) and (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
-            fib_touch = (fib_target is not None) and (cl_i > fib_target)
+            ema9_crossover = (i > 0) and (ha_closes[i - 1] <= close_ema_9[i - 1]) and (cl_i > ema9_i)
+            fib_touch = (fib_target is not None) and (lo_i <= fib_target)
 
-            breakout_trigger = cond_volume_crossover or (cond_volume_bullish and (cl_i > ema9_i))
+            breakout_trigger = cond_volume_crossover or (cond_volume_bullish and ema9_crossover)
             fib_trigger_cond = cond_volume_bullish and fib_touch
-            all_green_condition = cond_volume_bullish and (cond_volume_crossover or (cl_i > ema9_i))
+            all_green_condition = cond_volume_bullish and (cond_volume_crossover or ema9_crossover)
 
             if mode_choice == "BREAKOUT":
                 base_trigger = breakout_trigger
@@ -1416,6 +1473,7 @@ def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_overri
                 last_buy_trigger = buy_trigger
                 last_ha_is_green = ha_is_green
                 last_red_ha_blocked = red_ha_blocked_now
+                last_effective_stop = effective_stop
 
         curr_close = ha_closes[-1]
         curr_osc = oscillator[-1]
@@ -1484,6 +1542,8 @@ def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_overri
                     block_reason = bull_msg
 
             if require_green_ha_buy and not last_ha_is_green:
+                if final_buy or last_red_ha_blocked:
+                    last_red_ha_blocked = True
                 final_buy = False
                 if last_red_ha_blocked:
                     block_reason = "Zakaz nakupu: HA sviecka nie je zelena"
@@ -1571,12 +1631,22 @@ def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_overri
             be_status_txt = f"{t_ref['entry_price']:.4f}" if (use_breakeven and t_ref.get("be_active", False)) else ("CAKA" if use_breakeven else "VYPNUTY")
             ttp_stop_live = t_ref.get("ttp_stop_price")
             ttp_status_txt = f"{ttp_stop_live:.4f}" if (use_trailing_tp and t_ref.get("ttp_active", False) and ttp_stop_live) else ("V TRHU" if use_trailing_tp else "VYPNUTY")
-            ts_status_txt = f"{t_ref['fixed_sl_price']:.4f}"
+            if bool(t_ref.get("use_fixed_sl", False)) and safe_float(t_ref.get("fixed_sl_price"), 0.0) > 0:
+                ts_status_txt = f"SL {safe_float(t_ref.get('fixed_sl_price')):.4f} (-{safe_float(t_ref.get('fixed_sl_pct'), fixed_sl_pct)}%)"
+            elif use_trailing and safe_float(t_ref.get("trail_stop_price"), 0.0) > 0:
+                ts_status_txt = f"TS {safe_float(t_ref.get('trail_stop_price')):.4f}"
+            else:
+                ts_status_txt = "VYPNUTY"
         else:
             trade_status_txt = "---"
             be_status_txt = "VYPNUTY"
             ttp_status_txt = "VYPNUTY"
-            ts_status_txt = f"-{SETTINGS['fixed_sl_pct']}%"
+            if use_fixed_sl:
+                ts_status_txt = f"Fixny SL -{fixed_sl_pct}%"
+            elif use_trailing:
+                ts_status_txt = f"TS -{trail_pct}%"
+            else:
+                ts_status_txt = "VYPNUTY"
 
         ai_score_txt = f"{ai_prob*100:.1f}%" if ai_prob is not None else ("UCI SA" if SETTINGS.get("use_ai_filter", False) else "OFF")
 
@@ -1635,13 +1705,15 @@ def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_overri
         }
         return {"buy": False, "raw_buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "ai_factors": "--", "block_reason": "", "features": None, "last_closed_price": 0.0, "ha_is_green": False}
 
+
 async def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: tuple[bool, str] | None = None, exit_only_for_active: bool = False):
     return await asyncio.to_thread(evaluate_pine_strategy_sync, symbol, bar_tf, bull_ok_override, exit_only_for_active)
+
 
 async def autonomous_scanner_loop():
     global IS_SIDEWAYS_MARKET, MARKET_REGIME, LAST_SIDEWAYS_ALERT_TS
     await asyncio.sleep(3)
-    log_event(f"Autonomny skener (FIB + zakaz cervenej HA sviecky + len BYCI trh na TF) spusteny pre {len(TOP_LIQUID_SYMBOLS)} symbolov!")
+    log_event(f"Autonomny skener spusteny pre {len(TOP_LIQUID_SYMBOLS)} symbolov (rezim: {SETTINGS.get('mode_choice')}).")
     while True:
         try:
             _prune_old_logs()
@@ -1654,13 +1726,15 @@ async def autonomous_scanner_loop():
             bull_ok, bull_reason = await is_bull_market_on_tf(tf_str)
 
             now_ts = time.time()
-            if sideways_now and (now_ts - LAST_SIDEWAYS_ALERT_TS >= SIDEWAYS_ALERT_COOLDOWN_SEC):
+            if sideways_now and bool(SETTINGS.get("block_sideways_buy", False)) and (now_ts - LAST_SIDEWAYS_ALERT_TS >= SIDEWAYS_ALERT_COOLDOWN_SEC):
                 LAST_SIDEWAYS_ALERT_TS = now_ts
-                log_event(f"POZOR: BOCNY TRH zisteny na TF {CURRENT_TIMEFRAME} (uzke rozpatie + caste krizenie EMA) - nove nakupy su blokovane.")
+                log_event(f"POZOR: BOCNY TRH zisteny na TF {CURRENT_TIMEFRAME} - nove nakupy su blokovane podla nastavenia.")
                 send_telegram_msg(
-                    "<b>POZOR: BOCNY TRH</b>\n"
-                    f"<b>TF:</b> {CURRENT_TIMEFRAME}\n"
-                    "Trh sa pohybuje v uzkom pasme - nove nakupy su povolene len v BYCOM trende (BULL)."
+                    "<b>POZOR: BOCNY TRH</b>
+"
+                    f"<b>TF:</b> {CURRENT_TIMEFRAME}
+"
+                    "Blokovanie bocneho trhu je zapnute v nastaveniach."
                 )
 
             for coin_name in list(ACTIVE_TRADES.keys()):
@@ -1670,19 +1744,19 @@ async def autonomous_scanner_loop():
                 symbol = trade["market_pair"]
                 sig = await evaluate_pine_strategy(symbol, bar_tf=tf_str, bull_ok_override=(bull_ok, bull_reason), exit_only_for_active=True)
                 if sig["sell"]:
-                    log_event(f"STRATEGIA 'SELL' SIGNAL PRE {symbol} ({sig['sell_reason']}) -> OKAMZITY PREDAJ!")
+                    log_event(f"STRATEGIA 'SELL' SIGNAL PRE {symbol} ({sig['sell_reason']}) -> PREDAJ!")
                     await close_trade_position(coin_name, sig["sell_reason"])
                 await asyncio.sleep(0.25)
 
             can_buy_now = (
                 IS_BOT_ACTIVE
                 and len(ACTIVE_TRADES) < max_allowed
-                and (not bool(SETTINGS.get("require_bull_tf_buy", True)) or bull_ok)
+                and (not bool(SETTINGS.get("require_bull_tf_buy", False)) or bull_ok)
                 and await check_btc_health()
             )
 
-            if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed and bool(SETTINGS.get("require_bull_tf_buy", True)) and not bull_ok:
-                log_block_throttled("TRH", f"Nakupy pozastavene: {bull_reason} (vyzaduje sa BULL).", cooldown_sec=60.0)
+            if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed and bool(SETTINGS.get("require_bull_tf_buy", False)) and not bull_ok:
+                log_block_throttled("TRH", f"Nakupy pozastavene: {bull_reason}.", cooldown_sec=60.0)
 
             for symbol in list(TOP_LIQUID_SYMBOLS):
                 if symbol in EXCLUDED_SYMBOLS:
@@ -1710,7 +1784,7 @@ async def autonomous_scanner_loop():
 
                 if sig["buy"]:
                     prob_txt = f" (AI: {sig['ai_prob']*100:.1f}% [{sig.get('ai_factors', '--')}])" if sig.get("ai_prob") is not None else ""
-                    log_event(f"STRATEGIA 'BUY' SIGNAL PRE {symbol} [BYCI TRH BULL + FIB + ZELENA HA]{prob_txt}!")
+                    log_event(f"STRATEGIA 'BUY' SIGNAL PRE {symbol} [{SETTINGS.get('mode_choice')}]{prob_txt}!")
                     await execute_autonomous_buy(
                         symbol,
                         ai_prob=sig.get("ai_prob"),
@@ -1727,6 +1801,7 @@ async def autonomous_scanner_loop():
             log_event(f"Chyba v autonomnom skeneri: {e}")
         await asyncio.sleep(10)
 
+
 async def top_symbols_updater_loop():
     while True:
         try:
@@ -1735,9 +1810,12 @@ async def top_symbols_updater_loop():
             log_event(f"Chyba v slucke top symbolov: {e}")
         await asyncio.sleep(3600)
 
+
 async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, ai_factors: str = "--", entry_features: list[float] | None = None, signal_close_price: float = 0.0, ha_is_green: bool = False):
     global ACTIVE_TRADES, LAST_TRADE_TIME
     async with trade_lock:
+        if okx_symbol in EXCLUDED_SYMBOLS:
+            return
         coin_name = okx_symbol.split("-")[0]
         now_ts = time.time()
         max_allowed = SETTINGS.get("max_parallel", 1)
@@ -1745,16 +1823,16 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
         if coin_name in ACTIVE_TRADES or len(ACTIVE_TRADES) >= max_allowed:
             return
 
-        if bool(SETTINGS.get("require_bull_tf_buy", True)):
+        if bool(SETTINGS.get("require_bull_tf_buy", False)):
             bull_ok, bull_reason = await is_bull_market_on_tf(CURRENT_TIMEFRAME.lower())
             if not bull_ok:
-                log_event(f"Nakup {okx_symbol} zablokovany: {bull_reason} (povoleny len BYCI trh BULL).")
+                log_event(f"Nakup {okx_symbol} zablokovany: {bull_reason}.")
                 return
 
-        if bool(SETTINGS.get("require_green_ha_buy", True)) and not ha_is_green:
+        if bool(SETTINGS.get("require_green_ha_buy", False)) and not ha_is_green:
             chk = await evaluate_pine_strategy(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
             if not chk.get("ha_is_green", False):
-                log_event(f"Nakup {okx_symbol} zablokovany: posledna uzavreta HA sviecka nie je zelena.")
+                log_event(f"Nakup {okx_symbol} zablokovany: HA sviecka nie je zelena.")
                 return
 
         LAST_TRADE_TIME[coin_name] = now_ts
@@ -1816,8 +1894,9 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
 
         coin_amount = float(formatted_sz)
         actual_spent_usdc = coin_amount * current_price
-        fixed_sl_pct = SETTINGS.get("fixed_sl_pct", 1.5)
-        fixed_sl_price = current_price * (1.0 - (fixed_sl_pct / 100.0))
+        use_fixed_sl = bool(SETTINGS.get("use_fixed_sl", False))
+        fixed_sl_pct = float(SETTINGS.get("fixed_sl_pct", 1.5))
+        fixed_sl_price = (current_price * (1.0 - (fixed_sl_pct / 100.0))) if use_fixed_sl else None
         use_fixed_tp = bool(SETTINGS.get("use_fixed_tp", False))
         fixed_tp_pct = float(SETTINGS.get("fixed_tp_pct", 1.2))
         fixed_tp_price = current_price * (1.0 + (fixed_tp_pct / 100.0))
@@ -1825,6 +1904,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
         ACTIVE_TRADES[coin_name] = {
             "entry_price": current_price,
             "current_price": current_price,
+            "use_fixed_sl": use_fixed_sl,
             "fixed_sl_price": fixed_sl_price,
             "fixed_sl_pct": fixed_sl_pct,
             "use_fixed_tp": use_fixed_tp,
@@ -1833,6 +1913,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             "be_active": False,
             "ttp_active": False,
             "ttp_stop_price": None,
+            "trail_stop_price": None,
             "amount": coin_amount,
             "initial_amount": coin_amount,
             "lot_sz": lot_sz,
@@ -1851,9 +1932,10 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
         }
         save_persistent_data()
 
+        sl_info = f" | Fixny SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f})" if (use_fixed_sl and fixed_sl_price) else " | Fixny SL: VYPNUTY"
         tp_info = f" | Fixny TP: +{fixed_tp_pct}% ({fixed_tp_price:.4f})" if use_fixed_tp else ""
         ai_info = f" | AI: {ai_prob*100:.1f}% [{ai_factors}]" if ai_prob is not None else ""
-        log_event(f"NAKUP (BULL + {SETTINGS.get('mode_choice')} + ZELENA HA) [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} {ACTIVE_BALANCE_CCY} | Investicia: {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY} | Fixny SL: -{fixed_sl_pct}% ({fixed_sl_price:.4f}){tp_info}{ai_info}", persist=True)
+        log_event(f"NAKUP [{SETTINGS.get('mode_choice')}] [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} {ACTIVE_BALANCE_CCY} | Investicia: {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}{sl_info}{tp_info}{ai_info}", persist=True)
 
         inline_keyboard = {
             "inline_keyboard": [
@@ -1864,16 +1946,24 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             ]
         }
         send_telegram_msg(
-            f"<b>BULL + FIB + ZELENA HA NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\n"
-            f"<b>Par:</b> {okx_symbol}\n"
-            f"<b>Vstup:</b> {current_price:.4f}\n"
-            f"<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}\n"
-            + (f"<b>AI skore:</b> {ai_prob*100:.1f}% [{ai_factors}]\n" if ai_prob is not None else "")
-            + f"<b>Fixny Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})\n"
-            + (f"<b>Fixny Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})\n" if use_fixed_tp else "")
-            + "<b>Vystup:</b> HA Exit / Trailing TP / Trailing Stop / Fixny SL",
+            f"<b>NAKUP [{SETTINGS.get('mode_choice')} · TF: {CURRENT_TIMEFRAME}]</b>
+"
+            f"<b>Par:</b> {okx_symbol}
+"
+            f"<b>Vstup:</b> {current_price:.4f}
+"
+            f"<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}
+"
+            + (f"<b>AI skore:</b> {ai_prob*100:.1f}% [{ai_factors}]
+" if ai_prob is not None else "")
+            + (f"<b>Fixny Stop-Loss:</b> -{fixed_sl_pct}% ({fixed_sl_price:.4f})
+" if (use_fixed_sl and fixed_sl_price) else "")
+            + (f"<b>Fixny Take Profit:</b> +{fixed_tp_pct}% ({fixed_tp_price:.4f})
+" if use_fixed_tp else "")
+            + "<b>Vystup:</b> podla nastaveni v APEX (TTP / TS / BE / Fixny SL / HA Exit)",
             reply_markup=inline_keyboard
         )
+
 
 async def fetch_coin_available_balance(coin_ccy: str) -> float | None:
     try:
@@ -1887,6 +1977,7 @@ async def fetch_coin_available_balance(coin_ccy: str) -> float | None:
     except Exception:
         pass
     return None
+
 
 async def close_trade_position(coin: str, reason: str):
     global ACTIVE_TRADES, LAST_TRADE_TIME
@@ -1956,13 +2047,16 @@ async def close_trade_position(coin: str, reason: str):
             WAIT_FOR_SIGNAL_RESET[coin] = True
 
             log_event(f"Uzavreta pozicia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)", persist=True)
-            send_telegram_msg(f"<b>UZAVRETA POZICIA ({reason})</b>\n<b>Par:</b> {symbol}\n<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
+            send_telegram_msg(f"<b>UZAVRETA POZICIA ({reason})</b>
+<b>Par:</b> {symbol}
+<b>PnL:</b> {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)")
         except Exception as e:
             log_event(f"Chyba pri zatvarani {symbol}: {e}")
         finally:
             if sell_ok and coin in ACTIVE_TRADES:
                 del ACTIVE_TRADES[coin]
                 save_persistent_data()
+
 
 async def fixed_stoploss_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
@@ -1971,12 +2065,11 @@ async def fixed_stoploss_monitor_loop():
         if not ACTIVE_TRADES:
             if IS_BOT_ACTIVE:
                 max_p = SETTINGS.get("max_parallel", 1)
-                sl_p = SETTINGS.get("fixed_sl_pct", 1.5)
                 mode_lbl = SETTINGS.get("mode_choice", "FIB")
-                bull_lbl = " · Len BULL" if SETTINGS.get("require_bull_tf_buy", True) else ""
+                sl_txt = f" | Fixny SL: -{SETTINGS.get('fixed_sl_pct', 1.5)}%" if SETTINGS.get("use_fixed_sl", False) else " | Fixny SL: OFF"
                 tp_txt = f" | Fixny TP: +{SETTINGS.get('fixed_tp_pct', 1.2)}%" if SETTINGS.get("use_fixed_tp", False) else ""
                 ai_txt = f" | AI >= {SETTINGS.get('ai_min_prob', 0.38)*100:.0f}%" if SETTINGS.get("use_ai_filter", False) else ""
-                CURRENT_STAGE = f"STAV: Bot aktivny ({mode_lbl} · Zelena HA{bull_lbl} · Max {max_p}x | Fixny SL: -{sl_p}%{tp_txt}{ai_txt}). Cakam na BUY/SELL..."
+                CURRENT_STAGE = f"STAV: Bot aktivny ({mode_lbl} · Max {max_p}x{sl_txt}{tp_txt}{ai_txt}). Cakam na BUY/SELL..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastaveny."
             await asyncio.sleep(2)
@@ -1984,12 +2077,12 @@ async def fixed_stoploss_monitor_loop():
 
         try:
             use_be = bool(SETTINGS.get("use_breakeven", True))
-            be_trig = float(SETTINGS.get("be_trigger_pct", 0.35))
+            be_trig = float(SETTINGS.get("be_trigger_pct", 1.2))
             use_ts = bool(SETTINGS.get("use_trailing", True))
             ts_pct = float(SETTINGS.get("trail_pct", 1.5))
             use_ttp = bool(SETTINGS.get("use_trailing_tp", True))
-            ttp_trig = float(SETTINGS.get("ttp_trigger_pct", 0.8))
-            ttp_cb = float(SETTINGS.get("ttp_callback_pct", 0.2))
+            ttp_trig = float(SETTINGS.get("ttp_trigger_pct", 1.2))
+            ttp_cb = float(SETTINGS.get("ttp_callback_pct", 0.4))
 
             for coin in list(ACTIVE_TRADES.keys()):
                 if coin not in ACTIVE_TRADES:
@@ -2016,31 +2109,44 @@ async def fixed_stoploss_monitor_loop():
                     trade["live_pnl_pct"] = pnl_pct
                     trade["live_pnl_usdc"] = pnl_usdc
 
-                    fixed_sl_price = trade["fixed_sl_price"]
-                    fixed_sl_pct = trade["fixed_sl_pct"]
-                    use_fixed_tp = bool(trade.get("use_fixed_tp", False))
-                    fixed_tp_price = trade.get("fixed_tp_price")
-                    fixed_tp_pct = trade.get("fixed_tp_pct", SETTINGS.get("fixed_tp_pct", 1.2))
+                    use_fixed_sl_now = bool(SETTINGS.get("use_fixed_sl", False))
+                    fixed_sl_pct_now = float(SETTINGS.get("fixed_sl_pct", trade.get("fixed_sl_pct", 1.5)))
+                    fixed_sl_price_now = entry_p * (1.0 - (fixed_sl_pct_now / 100.0))
+                    trade["use_fixed_sl"] = use_fixed_sl_now
+                    trade["fixed_sl_pct"] = fixed_sl_pct_now
+                    trade["fixed_sl_price"] = fixed_sl_price_now
 
+                    use_fixed_tp = bool(SETTINGS.get("use_fixed_tp", False))
+                    fixed_tp_pct = float(SETTINGS.get("fixed_tp_pct", trade.get("fixed_tp_pct", 1.2)))
+                    fixed_tp_price = entry_p * (1.0 + (fixed_tp_pct / 100.0))
+                    trade["use_fixed_tp"] = use_fixed_tp
+                    trade["fixed_tp_pct"] = fixed_tp_pct
+                    trade["fixed_tp_price"] = fixed_tp_price
+
+                    sl_stage = f" | Fixny SL: -{fixed_sl_pct_now}%" if use_fixed_sl_now else ""
                     tp_stage = f" | Fixny TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
-                    CURRENT_STAGE = f"STAV: Pozicii: {len(ACTIVE_TRADES)} | {symbol} ({pnl_pct:+.2f}%) | Fixny SL: -{fixed_sl_pct}%{tp_stage}"
+                    CURRENT_STAGE = f"STAV: Pozicii: {len(ACTIVE_TRADES)} | {symbol} ({pnl_pct:+.2f}%){sl_stage}{tp_stage}"
 
-                    if current_price <= fixed_sl_price:
-                        await close_trade_position(coin, f"Fixny Stop-Loss (-{fixed_sl_pct}%)")
+                    # 1. Fixny Stop-Loss bezi iba ak je v nastaveniach zapnuty
+                    if use_fixed_sl_now and current_price <= fixed_sl_price_now:
+                        await close_trade_position(coin, f"Fixny Stop-Loss (-{fixed_sl_pct_now}%)")
                         continue
 
-                    if use_fixed_tp and fixed_tp_price is not None and current_price >= fixed_tp_price:
+                    # 2. Fixny Take-Profit
+                    if use_fixed_tp and current_price >= fixed_tp_price:
                         if not trade.get("tp_goal_reached", False):
                             trade["tp_goal_reached"] = True
-                            trade["be_active"] = True
+                            if use_be:
+                                trade["be_active"] = True
                             if use_ttp and not trade.get("ttp_active", False):
                                 trade["ttp_active"] = True
                                 trade["ttp_stop_price"] = highest_p * (1.0 - (ttp_cb / 100.0))
-                                log_event(f"Ciel TP (+{fixed_tp_pct}%) dosiahnuty pre {symbol} -> aktivovany TTP (odstup {ttp_cb}%) a BE na ochranu zisku!")
+                                log_event(f"Ciel TP (+{fixed_tp_pct}%) dosiahnuty pre {symbol} -> aktivovany TTP (odstup {ttp_cb}%)!")
                             elif not use_ttp:
                                 await close_trade_position(coin, f"Fixny Take-Profit (+{fixed_tp_pct}%)")
                                 continue
 
+                    # 3. Break-Even
                     if use_be and not trade.get("be_active", False):
                         if current_price >= entry_p * (1.0 + (be_trig / 100.0)):
                             trade["be_active"] = True
@@ -2050,6 +2156,7 @@ async def fixed_stoploss_monitor_loop():
                         await close_trade_position(coin, "Break-Even Exit (0.00% / ochrana vstupu)")
                         continue
 
+                    # 4. Trailing Take-Profit
                     if use_ttp:
                         if not trade.get("ttp_active", False) and current_price >= entry_p * (1.0 + (ttp_trig / 100.0)):
                             trade["ttp_active"] = True
@@ -2062,16 +2169,21 @@ async def fixed_stoploss_monitor_loop():
                                 await close_trade_position(coin, f"Trailing Take-Profit (-{ttp_cb}% z maxima)")
                                 continue
 
+                    # 5. Trailing Stop
                     if use_ts and highest_p > entry_p:
                         ts_stop = highest_p * (1.0 - (ts_pct / 100.0))
-                        if trade.get("be_active", False):
+                        if use_be and trade.get("be_active", False):
                             ts_stop = max(ts_stop, entry_p)
+                        trade["trail_stop_price"] = ts_stop
                         if current_price <= ts_stop:
                             await close_trade_position(coin, f"Trailing Stop (-{ts_pct}% z maxima)")
                             continue
+                    else:
+                        trade["trail_stop_price"] = None
         except Exception as e:
             log_event(f"Chyba v monitore rizik: {e}")
         await asyncio.sleep(2)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -2089,26 +2201,28 @@ async def lifespan(app: FastAPI):
     else:
         save_ai_memory()
     log_event(
-        f"Autonomny APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Rezim: {SETTINGS.get('mode_choice')} · Zakaz cervenej HA · Len BULL) spusteny | AI pamat: {AI_MEMORY_FILE}",
+        f"Autonomny APEX BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Rezim: {SETTINGS.get('mode_choice')} · Fixny SL: {'ON' if SETTINGS.get('use_fixed_sl') else 'OFF'}) spusteny | AI pamat: {AI_MEMORY_FILE}",
         persist=True,
     )
     monitor_task = asyncio.create_task(fixed_stoploss_monitor_loop())
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
-    send_telegram_msg(f"APEX MATRIX_SCALPER_v1_BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Rezim: {SETTINGS.get('mode_choice')} · Zakaz cervenej HA · Len BULL) pripraveny!")
+    send_telegram_msg(f"APEX BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Rezim: {SETTINGS.get('mode_choice')}) pripraveny!")
     yield
     save_persistent_data()
     monitor_task.cancel()
     scanner_task.cancel()
     updater_task.cancel()
 
+
 app = FastAPI(lifespan=lifespan)
+
 
 def get_pine_settings_dict():
     return {
         "mode_choice": SETTINGS["mode_choice"],
         "require_green_ha_buy": SETTINGS["require_green_ha_buy"],
-        "require_bull_tf_buy": SETTINGS.get("require_bull_tf_buy", True),
+        "require_bull_tf_buy": SETTINGS.get("require_bull_tf_buy", False),
         "strict_buy_filter": SETTINGS["strict_buy_filter"],
         "fast_len": SETTINGS["fast_len"],
         "slow_len": SETTINGS["slow_len"],
@@ -2116,6 +2230,7 @@ def get_pine_settings_dict():
         "pred_look": SETTINGS["pred_look"],
         "pivot_len": SETTINGS["pivot_len"],
         "fib_choice": SETTINGS["fib_choice"],
+        "use_fixed_sl": SETTINGS.get("use_fixed_sl", False),
         "fixed_sl_pct": SETTINGS["fixed_sl_pct"],
         "use_fixed_tp": SETTINGS["use_fixed_tp"],
         "fixed_tp_pct": SETTINGS["fixed_tp_pct"],
@@ -2140,11 +2255,12 @@ def get_pine_settings_dict():
         "ai_min_prob": SETTINGS["ai_min_prob"],
     }
 
+
 @app.post("/api/telegram-webhook")
 async def telegram_webhook(request: Request):
     try:
         secret_hdr = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if WEBHOOK_SECRET and secret_hdr and secret_hdr != WEBHOOK_SECRET:
+        if WEBHOOK_SECRET and secret_hdr != WEBHOOK_SECRET:
             return JSONResponse({"status": "unauthorized"}, status_code=401)
         data = await request.json()
         if "callback_query" in data:
@@ -2159,6 +2275,7 @@ async def telegram_webhook(request: Request):
         log_event(f"Chyba v Telegram webhooku: {e}")
     return {"status": "ok"}
 
+
 @app.post("/api/toggle-bot")
 async def toggle_bot():
     global IS_BOT_ACTIVE, CURRENT_STAGE
@@ -2169,6 +2286,7 @@ async def toggle_bot():
     send_telegram_msg(f"Zmena stavu: Bot je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "is_bot_active": IS_BOT_ACTIVE})
 
+
 @app.post("/api/toggle-btc-filter")
 async def toggle_btc_filter():
     SETTINGS["use_btc_filter"] = not SETTINGS.get("use_btc_filter", False)
@@ -2177,6 +2295,7 @@ async def toggle_btc_filter():
     send_telegram_msg(f"Zmena stavu: BTC Trend Guard filter je teraz {status_str.upper()}.")
     return JSONResponse({"status": "success", "use_btc_filter": SETTINGS["use_btc_filter"]})
 
+
 @app.post("/api/toggle-compounding")
 async def toggle_compounding():
     SETTINGS["compounding_enabled"] = not SETTINGS.get("compounding_enabled", False)
@@ -2184,6 +2303,7 @@ async def toggle_compounding():
     log_event(f"Automaticke reinvestovanie (COMPOUNDING): {status_str.upper()}", persist=True)
     send_telegram_msg(f"Zmena stavu: Auto-Compounding je teraz {status_str}.")
     return JSONResponse({"status": "success", "compounding_enabled": SETTINGS["compounding_enabled"]})
+
 
 @app.post("/api/set-budget/{amount}")
 async def set_budget(amount: int):
@@ -2194,6 +2314,7 @@ async def set_budget(amount: int):
         return JSONResponse({"status": "success", "max_budget_cap": amount})
     return JSONResponse({"status": "error", "message": "Neplatna hodnota rozpoctu."})
 
+
 @app.post("/api/set-parallel/{count}")
 async def set_parallel(count: int):
     if count in [1, 2, 3, 4]:
@@ -2203,14 +2324,17 @@ async def set_parallel(count: int):
         return JSONResponse({"status": "success", "max_parallel": count})
     return JSONResponse({"status": "error", "message": "Neplatna hodnota."})
 
+
 @app.post("/api/set-sl/{sl_val}")
 async def set_sl(sl_val: float):
     if 0.1 <= sl_val <= 50.0:
         SETTINGS["fixed_sl_pct"] = float(sl_val)
-        log_event(f"Fixny Stop-Loss zmeneny na: -{sl_val}%", persist=True)
-        send_telegram_msg(f"Zmena Stop-Lossu: Fixny SL pre nove obchody je teraz -{sl_val}%.")
-        return JSONResponse({"status": "success", "fixed_sl_pct": sl_val})
+        SETTINGS["use_fixed_sl"] = True
+        log_event(f"Fixny Stop-Loss nastaveny na -{sl_val}% a zapnuty.", persist=True)
+        send_telegram_msg(f"Zmena Stop-Lossu: Fixny SL je zapnuty na -{sl_val}%.")
+        return JSONResponse({"status": "success", "fixed_sl_pct": sl_val, "use_fixed_sl": True})
     return JSONResponse({"status": "error", "message": "Neplatna hodnota SL (povolene 0.1 - 50.0 %)." })
+
 
 @app.post("/api/set-tf/{tf_val}")
 async def set_tf(tf_val: str):
@@ -2229,6 +2353,7 @@ async def set_tf(tf_val: str):
         return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME, "market_regime": regime_now})
     return JSONResponse({"status": "error", "message": "Neplatny casovy ramec."})
 
+
 @app.post("/api/train-ai")
 async def api_train_ai():
     seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
@@ -2238,6 +2363,7 @@ async def api_train_ai():
         return JSONResponse({"status": "success", "ai_state": AI_STATE, "details": res})
     return JSONResponse({"status": "error", "message": res.get("msg", "Chyba trenovania AI.")})
 
+
 @app.post("/api/clear-logs")
 async def api_clear_logs():
     global LAST_LOG_PRUNE_STR
@@ -2246,6 +2372,7 @@ async def api_clear_logs():
     LAST_LOG_PRUNE_STR = get_sk_time_str()
     log_event("System Execution Logs rucne precistene (24h zaznamy zachovane).", persist=True)
     return JSONResponse({"status": "success"})
+
 
 @app.post("/api/update-pine-settings")
 async def update_pine_settings(request: Request):
@@ -2262,7 +2389,7 @@ async def update_pine_settings(request: Request):
 
         SETTINGS["mode_choice"] = mode_val
         SETTINGS["require_green_ha_buy"] = bool(payload.get("require_green_ha_buy", SETTINGS["require_green_ha_buy"]))
-        SETTINGS["require_bull_tf_buy"] = bool(payload.get("require_bull_tf_buy", SETTINGS.get("require_bull_tf_buy", True)))
+        SETTINGS["require_bull_tf_buy"] = bool(payload.get("require_bull_tf_buy", SETTINGS.get("require_bull_tf_buy", False)))
         SETTINGS["strict_buy_filter"] = bool(payload.get("strict_buy_filter", SETTINGS["strict_buy_filter"]))
         SETTINGS["fast_len"] = max(1, min(200, int(payload.get("fast_len", SETTINGS["fast_len"]))))
         SETTINGS["slow_len"] = max(1, min(300, int(payload.get("slow_len", SETTINGS["slow_len"]))))
@@ -2272,6 +2399,7 @@ async def update_pine_settings(request: Request):
         SETTINGS["pivot_len"] = max(1, min(10, int(payload.get("pivot_len", SETTINGS["pivot_len"]))))
         SETTINGS["fib_choice"] = fib_val
 
+        SETTINGS["use_fixed_sl"] = bool(payload.get("use_fixed_sl", SETTINGS.get("use_fixed_sl", False)))
         if "fixed_sl_pct" in payload and payload["fixed_sl_pct"] is not None:
             SETTINGS["fixed_sl_pct"] = max(0.1, min(50.0, float(payload.get("fixed_sl_pct", SETTINGS["fixed_sl_pct"]))))
 
@@ -2303,14 +2431,16 @@ async def update_pine_settings(request: Request):
 
         MARKET_SCANNER_CACHE.clear()
         save_persistent_data()
+        sl_log = f"-{SETTINGS['fixed_sl_pct']}% (ZAP)" if SETTINGS["use_fixed_sl"] else "VYP"
         log_event(
             f"Nastavenia aktualizovane: Rezim={mode_val} (Fib={fib_val}), ZelenaHA={SETTINGS['require_green_ha_buy']}, "
-            f"LenBULL={SETTINGS['require_bull_tf_buy']}, HAExit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x), FixSL=-{SETTINGS['fixed_sl_pct']}%",
+            f"LenBULL={SETTINGS['require_bull_tf_buy']}, HAExit={SETTINGS['use_ha_exit']}({SETTINGS['ha_exit_consecutive']}x), FixSL={sl_log}",
             persist=True,
         )
         return JSONResponse({"status": "success", "pine_settings": get_pine_settings_dict()})
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)})
+
 
 @app.post("/api/manual-buy/{coin}")
 async def manual_buy(coin: str):
@@ -2370,8 +2500,9 @@ async def manual_buy(coin: str):
 
             coin_amount = float(formatted_sz)
             actual_spent_usdc = coin_amount * current_price
-            fixed_sl_pct = SETTINGS.get("fixed_sl_pct", 1.5)
-            fixed_sl_price = current_price * (1.0 - (fixed_sl_pct / 100.0))
+            use_fixed_sl = bool(SETTINGS.get("use_fixed_sl", False))
+            fixed_sl_pct = float(SETTINGS.get("fixed_sl_pct", 1.5))
+            fixed_sl_price = (current_price * (1.0 - (fixed_sl_pct / 100.0))) if use_fixed_sl else None
             use_fixed_tp = bool(SETTINGS.get("use_fixed_tp", False))
             fixed_tp_pct = float(SETTINGS.get("fixed_tp_pct", 1.2))
             fixed_tp_price = current_price * (1.0 + (fixed_tp_pct / 100.0))
@@ -2379,6 +2510,7 @@ async def manual_buy(coin: str):
             ACTIVE_TRADES[coin_upper] = {
                 "entry_price": current_price,
                 "current_price": current_price,
+                "use_fixed_sl": use_fixed_sl,
                 "fixed_sl_price": fixed_sl_price,
                 "fixed_sl_pct": fixed_sl_pct,
                 "use_fixed_tp": use_fixed_tp,
@@ -2387,6 +2519,7 @@ async def manual_buy(coin: str):
                 "be_active": False,
                 "ttp_active": False,
                 "ttp_stop_price": None,
+                "trail_stop_price": None,
                 "amount": coin_amount,
                 "initial_amount": coin_amount,
                 "lot_sz": lot_sz,
@@ -2404,14 +2537,21 @@ async def manual_buy(coin: str):
                 "source": "MANUAL",
             }
             save_persistent_data()
+            sl_info = f" | Fixny SL: -{fixed_sl_pct}%" if use_fixed_sl else " | Fixny SL: OFF"
             tp_info = f" | Fixny TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
             ai_info = f" | AI: {ai_prob*100:.1f}% [{ai_factors}]" if ai_prob is not None else ""
-            log_event(f"Manualny nakup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investicia: {actual_spent_usdc:.2f}$ | Fixny SL: -{fixed_sl_pct}%{tp_info}{ai_info}", persist=True)
-            send_telegram_msg(f"<b>MANUALNY NAKUP [TF: {CURRENT_TIMEFRAME}]</b>\n<b>Par:</b> {okx_symbol}\n<b>Vstup:</b> {current_price:.4f}\n<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}\n<b>Fixny SL:</b> -{fixed_sl_pct}%" + (f"\n<b>Fixny TP:</b> +{fixed_tp_pct}%" if use_fixed_tp else ""))
+            log_event(f"Manualny nakup [{CURRENT_TIMEFRAME}]: {okx_symbol} za {current_price:.4f} | Investicia: {actual_spent_usdc:.2f}${sl_info}{tp_info}{ai_info}", persist=True)
+            send_telegram_msg(f"<b>MANUALNY NAKUP [TF: {CURRENT_TIMEFRAME}]</b>
+<b>Par:</b> {okx_symbol}
+<b>Vstup:</b> {current_price:.4f}
+<b>Investicia:</b> {actual_spent_usdc:.2f} {ACTIVE_BALANCE_CCY}" + (f"
+<b>Fixny SL:</b> -{fixed_sl_pct}%" if use_fixed_sl else "") + (f"
+<b>Fixny TP:</b> +{fixed_tp_pct}%" if use_fixed_tp else ""))
 
             return JSONResponse({"status": "success", "symbol": okx_symbol})
         except Exception as e:
             return JSONResponse({"status": "error", "message": str(e)})
+
 
 @app.post("/api/sell-coin/{coin}")
 async def sell_single_coin(coin: str):
@@ -2421,6 +2561,7 @@ async def sell_single_coin(coin: str):
     symbol = ACTIVE_TRADES[coin_upper]["market_pair"]
     await close_trade_position(coin_upper, f"Rucny Emergency predaj ({symbol})")
     return JSONResponse({"status": "success", "sold": symbol})
+
 
 @app.post("/api/sell-now")
 async def sell_now():
@@ -2432,6 +2573,7 @@ async def sell_now():
         await close_trade_position(coin, "Rucny okamzity predaj (Emergency)")
         sold.append(symbol)
     return JSONResponse({"status": "success", "sold": sold})
+
 
 HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 <html lang="sk">
@@ -2525,11 +2667,11 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             <div class="brand">
                 <h1>APEX MATRIX_SCALPER_v1_BOT + AI</h1>
                 <p>
-                    <span id="header-pair">Top 20 USDC · OKX Demo (Live Grafy)</span>
+                    <span id="header-pair">Demo exekucia (Live OKX data)</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
                     <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
                     <span>Fib: <span id="header-fib" class="balance-tag">{{ SETTINGS.fib_choice }}</span></span>
-                    <span>Fixny SL: <span id="header-sl" class="balance-tag">-{{ SETTINGS.fixed_sl_pct }}%</span></span>
+                    <span>Fixny SL: <span id="header-sl" class="balance-tag">{% if SETTINGS.use_fixed_sl %}-{{ SETTINGS.fixed_sl_pct }}%{% else %}OFF{% endif %}</span></span>
                     <span>AI Model: <span id="header-ai" class="balance-tag">Nacitavam...</span></span>
                     <span>AI Pamat (ulozene): <span id="header-ai-learned" class="balance-tag">0 obchodov (0W / 0L)</span></span>
                 </p>
@@ -2603,13 +2745,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         <div>
             <div class="section-title">
-                <span>Nastavenia bota (FIB + zákaz červenej HA sviečky + len BYCI trh)</span>
+                <span>Nastavenia bota (vsetky pravidla si riadite tu v APEX rozhrani)</span>
                 <span id="pine-active-badge" class="text-yellow">REZIM: {{ SETTINGS.mode_choice }} · FIB {{ SETTINGS.fib_choice }}</span>
             </div>
             <div class="pine-panel">
                 <div class="quick-grid">
                     <div class="pine-group">
-                        <div class="pine-group-title">1. Vstup, FIB a Zelena HA</div>
+                        <div class="pine-group-title">1. Vstup, FIB a volitelne filtre</div>
                         <div class="pine-row">
                             <label for="pine-mode">Rezim strategie</label>
                             <select id="pine-mode" class="pine-select">
@@ -2617,14 +2759,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                                 <option value="ALL_GREEN" {% if SETTINGS.mode_choice == 'ALL_GREEN' %}selected{% endif %}>All Green</option>
                                 <option value="BREAKOUT" {% if SETTINGS.mode_choice == 'BREAKOUT' %}selected{% endif %}>Breakout</option>
                             </select>
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-green-ha">Zakaz cervenej HA sviecky</label>
-                            <input type="checkbox" id="pine-green-ha" class="pine-checkbox" {% if SETTINGS.require_green_ha_buy %}checked{% endif %}>
-                        </div>
-                        <div class="pine-row">
-                            <label for="pine-require-bull">Len BYCI trh (BULL) na TF</label>
-                            <input type="checkbox" id="pine-require-bull" class="pine-checkbox" {% if SETTINGS.require_bull_tf_buy %}checked{% endif %}>
                         </div>
                         <div class="pine-row">
                             <label for="pine-fib-choice">Nakupna Fib hladina</label>
@@ -2635,6 +2769,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             </select>
                         </div>
                         <div class="pine-row">
+                            <label for="pine-green-ha">Vyzadovat zelenu HA sviecku</label>
+                            <input type="checkbox" id="pine-green-ha" class="pine-checkbox" {% if SETTINGS.require_green_ha_buy %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-require-bull">Len BYCI trh (BULL) na TF</label>
+                            <input type="checkbox" id="pine-require-bull" class="pine-checkbox" {% if SETTINGS.require_bull_tf_buy %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
                             <label for="pine-use-ai">Autonomny AI filter</label>
                             <input type="checkbox" id="pine-use-ai" class="pine-checkbox" {% if SETTINGS.use_ai_filter %}checked{% endif %}>
                         </div>
@@ -2642,6 +2784,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
                     <div class="pine-group">
                         <div class="pine-group-title">2. Ciel (TP) a Stop-Loss (SL)</div>
+                        <div class="pine-row">
+                            <label for="pine-use-fixed-sl">Fixny SL zapnuty</label>
+                            <input type="checkbox" id="pine-use-fixed-sl" class="pine-checkbox" {% if SETTINGS.use_fixed_sl %}checked{% endif %}>
+                        </div>
                         <div class="pine-row">
                             <label for="pine-fixed-sl-pct">Fixny SL (%)</label>
                             <input type="number" id="pine-fixed-sl-pct" class="pine-input" min="0.1" max="50.0" step="0.1" value="{{ SETTINGS.fixed_sl_pct }}">
@@ -2764,12 +2910,12 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
                 <div class="pine-footer">
                     <div style="display:flex; flex-direction:column; gap:3px;">
-                        <span id="pine-save-status" class="pine-save-status">Aktivny rezim: Korekcia (Fibonacci Touch) + Zakaz cervenej HA + Len BYCI trh (BULL).</span>
+                        <span id="pine-save-status" class="pine-save-status">Platia presne nastavenia zvolene v APEX rozhrani (Fixny SL sa uplatnuje iba ked je zapnuty).</span>
                         <span id="ai-learned-summary" style="font-size:0.68rem; color:var(--yellow); font-weight:600;">AI nastudovane a ulozene obchody: 0 (0W / 0L)</span>
                     </div>
                     <div style="display: flex; gap: 6px; flex-wrap: wrap;">
                         <button class="btn btn-yellow" onclick="trainAiNow()">TRENOVAT AI MODEL</button>
-                        <button class="btn" onclick="resetPineDefaults()">OBNOVIT ZAKLAD (FIB)</button>
+                        <button class="btn" onclick="resetPineDefaults()">OBNOVIT ZAKLAD (PINE)</button>
                         <button class="btn btn-on" onclick="savePineSettings()">ULOZIT NASTAVENIA</button>
                     </div>
                 </div>
@@ -2777,7 +2923,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Active Positions Matrix (FIB + Zelena HA · TTP / TS / BE / Fixny SL)</div>
+            <div class="section-title">Active Positions Matrix (TTP / Trailing Stop / Break-Even / Volitelny Fixny SL)</div>
             <div class="terminal-card">
                 <table>
                     <thead>
@@ -2786,14 +2932,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <th>Entry Price</th>
                             <th>Current Price</th>
                             <th>TP -> TTP Status</th>
-                            <th>Fixed SL Price</th>
+                            <th>Stop-Loss / TS</th>
                             <th>Invested USDC</th>
                             <th>Live PnL</th>
                             <th>Emergency</th>
                         </tr>
                     </thead>
                     <tbody id="active-position-tbody">
-                        <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre rezim FIB + zelenu HA sviecku + BYCI trh...</td></tr>
+                        <tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh podla nastaveni v APEX...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -2825,7 +2971,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         <div>
             <div class="section-title">
-                <span>Live Market Scanner Status (20 Top Liquid USDC Pairs · FIB: <span id="scanner-fib-level" class="text-yellow">{{ SETTINGS.fib_choice }}</span>)</span>
+                <span>Live Market Scanner Status (Podporovane USDC pary · FIB: <span id="scanner-fib-level" class="text-yellow">{{ SETTINGS.fib_choice }}</span>)</span>
                 <div class="filter-bar">
                     <button class="btn btn-yellow scanner-filter-btn" data-filter="ALL" onclick="setScannerFilter('ALL')">VSETKY</button>
                     <button class="btn scanner-filter-btn" data-filter="BUY" onclick="setScannerFilter('BUY')">BUY</button>
@@ -2844,7 +2990,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <th>2. Nakupny Impulz</th>
                             <th>3. Stav Obchodu</th>
                             <th>4. AI Skore</th>
-                            <th>5. Fixny SL</th>
+                            <th>5. Ochrana / SL</th>
                             <th>6. Exekucny Pokyn</th>
                         </tr>
                     </thead>
@@ -2870,7 +3016,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 </div>
             </div>
             <div class="logs-box" id="logs-container">
-                <div class="log-line">[System Initialized] FIB rezim + zakaz cervenej HA + len BYCI trh pripraveny.</div>
+                <div class="log-line">[System Initialized] Pripraveny podla nastaveni v APEX.</div>
             </div>
         </div>
     </div>
@@ -2906,7 +3052,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             const rows = (latestLogs24h && latestLogs24h.length > 0)
                 ? latestLogs24h.map(item => typeof item === 'string' ? item : (item.line || `[${item.time}] [${item.category}] ${item.symbol}: ${item.message}`))
                 : Array.from(document.querySelectorAll('#logs-container .log-line')).map(el => el.innerText);
-            const blob = new Blob([rows.join("\\n")], {type: "text/plain;charset=utf-8"});
+            const blob = new Blob([rows.join("\n")], {type: "text/plain;charset=utf-8"});
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
@@ -2915,14 +3061,23 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             URL.revokeObjectURL(url);
         }
 
-        function syncSlUi(slVal) {
+        function syncSlUi(slVal, slEnabled) {
             const numVal = parseFloat(slVal);
-            if (isNaN(numVal)) return;
             const hSl = document.getElementById('header-sl');
-            if (hSl) hSl.innerText = `-${numVal}%`;
+            if (hSl) {
+                if (slEnabled && !isNaN(numVal)) {
+                    hSl.innerText = `-${numVal}%`;
+                } else {
+                    hSl.innerText = "OFF";
+                }
+            }
             const pineSlInput = document.getElementById('pine-fixed-sl-pct');
-            if (pineSlInput) {
+            if (pineSlInput && !isNaN(numVal)) {
                 pineSlInput.value = numVal;
+            }
+            const pineSlCheck = document.getElementById('pine-use-fixed-sl');
+            if (pineSlCheck && slEnabled !== undefined) {
+                pineSlCheck.checked = !!slEnabled;
             }
         }
 
@@ -3027,24 +3182,22 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         function applyPineFormValues(ps) {
             if (!ps) return;
             document.getElementById('pine-mode').value = ps.mode_choice;
-            document.getElementById('pine-green-ha').checked = ps.require_green_ha_buy !== undefined ? !!ps.require_green_ha_buy : true;
-            document.getElementById('pine-require-bull').checked = ps.require_bull_tf_buy !== undefined ? !!ps.require_bull_tf_buy : true;
+            document.getElementById('pine-green-ha').checked = !!ps.require_green_ha_buy;
+            document.getElementById('pine-require-bull').checked = !!ps.require_bull_tf_buy;
             document.getElementById('pine-strict-buy').checked = !!ps.strict_buy_filter;
             document.getElementById('pine-fast-len').value = ps.fast_len;
             document.getElementById('pine-slow-len').value = ps.slow_len;
             document.getElementById('pine-signal-len').value = ps.signal_len;
             document.getElementById('pine-pred-look').value = ps.pred_look;
             document.getElementById('pine-use-ai').checked = !!ps.use_ai_filter;
-            document.getElementById('pine-use-anti-top').checked = ps.use_anti_chase !== undefined ? !!ps.use_anti_chase : false;
+            document.getElementById('pine-use-anti-top').checked = !!ps.use_anti_chase;
             if (ps.max_candle_pump_pct !== undefined) document.getElementById('pine-max-pump').value = ps.max_candle_pump_pct;
             if (ps.max_ema9_dist_pct !== undefined) document.getElementById('pine-max-ema-dist').value = ps.max_ema9_dist_pct;
             if (ps.max_upper_wick_ratio !== undefined) document.getElementById('pine-max-wick').value = ps.max_upper_wick_ratio;
             document.getElementById('pine-pivot-len').value = ps.pivot_len;
             document.getElementById('pine-fib-choice').value = ps.fib_choice;
             syncFibUi(ps.fib_choice);
-            if (ps.fixed_sl_pct !== undefined) {
-                document.getElementById('pine-fixed-sl-pct').value = ps.fixed_sl_pct;
-            }
+            syncSlUi(ps.fixed_sl_pct, ps.use_fixed_sl);
             document.getElementById('pine-use-fixed-tp').checked = !!ps.use_fixed_tp;
             document.getElementById('pine-fixed-tp-pct').value = ps.fixed_tp_pct;
             document.getElementById('pine-use-trailing').checked = !!ps.use_trailing;
@@ -3054,7 +3207,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             document.getElementById('pine-use-ttp').checked = !!ps.use_trailing_tp;
             document.getElementById('pine-ttp-trigger').value = ps.ttp_trigger_pct;
             document.getElementById('pine-ttp-callback').value = ps.ttp_callback_pct;
-            document.getElementById('pine-use-osc-sell').checked = ps.sell_on_osc_reversal !== undefined ? !!ps.sell_on_osc_reversal : false;
+            document.getElementById('pine-use-osc-sell').checked = !!ps.sell_on_osc_reversal;
             document.getElementById('pine-use-ha-exit').checked = !!ps.use_ha_exit;
             document.getElementById('pine-ha-consec').value = String(ps.ha_exit_consecutive);
             document.getElementById('pine-active-badge').innerText = `REZIM: ${ps.mode_choice} · FIB ${ps.fib_choice}`;
@@ -3077,6 +3230,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 max_upper_wick_ratio: parseFloat(document.getElementById('pine-max-wick').value),
                 pivot_len: parseInt(document.getElementById('pine-pivot-len').value, 10),
                 fib_choice: document.getElementById('pine-fib-choice').value,
+                use_fixed_sl: document.getElementById('pine-use-fixed-sl').checked,
                 fixed_sl_pct: parseFloat(document.getElementById('pine-fixed-sl-pct').value),
                 use_fixed_tp: document.getElementById('pine-use-fixed-tp').checked,
                 fixed_tp_pct: parseFloat(document.getElementById('pine-fixed-tp-pct').value),
@@ -3101,9 +3255,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             let statusEl = document.getElementById('pine-save-status');
             if (data.status === 'success') {
                 applyPineFormValues(data.pine_settings);
-                if (data.pine_settings && data.pine_settings.fixed_sl_pct !== undefined) {
-                    syncSlUi(data.pine_settings.fixed_sl_pct);
-                }
                 statusEl.style.color = 'var(--green)';
                 statusEl.innerText = 'Ulozene! Nastavenia boli aplikovane.';
                 updateState();
@@ -3116,8 +3267,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         async function resetPineDefaults() {
             const defaults = {
                 mode_choice: "FIB",
-                require_green_ha_buy: true,
-                require_bull_tf_buy: true,
+                require_green_ha_buy: false,
+                require_bull_tf_buy: false,
                 strict_buy_filter: false,
                 fast_len: 5,
                 slow_len: 20,
@@ -3126,7 +3277,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 use_ai_filter: false,
                 ai_min_prob: 0.38,
                 min_rel_volume: 0.0,
-                block_sideways_buy: true,
+                block_sideways_buy: false,
                 use_anti_chase: false,
                 max_candle_pump_pct: 0.9,
                 max_ema9_dist_pct: 0.7,
@@ -3134,19 +3285,20 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 max_entry_slip_pct: 0.35,
                 pivot_len: 2,
                 fib_choice: "0.786",
+                use_fixed_sl: false,
                 fixed_sl_pct: 1.5,
                 use_fixed_tp: false,
                 fixed_tp_pct: 1.2,
                 use_trailing: true,
                 trail_pct: 1.5,
                 use_breakeven: true,
-                be_trigger_pct: 0.35,
+                be_trigger_pct: 1.2,
                 use_trailing_tp: true,
-                ttp_trigger_pct: 0.8,
-                ttp_callback_pct: 0.2,
+                ttp_trigger_pct: 1.2,
+                ttp_callback_pct: 0.4,
                 sell_on_osc_reversal: false,
                 use_ha_exit: true,
-                ha_exit_consecutive: 2
+                ha_exit_consecutive: 1
             };
             applyPineFormValues(defaults);
             await savePineSettings();
@@ -3200,12 +3352,16 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 document.getElementById('header-balance').innerText = (isNaN(balNum) ? "0.00" : balNum.toFixed(2)) + " " + ccy;
                 document.getElementById('current-stage').innerText = data.current_stage || "STAV: Aktivny";
                 document.getElementById('header-tf').innerText = data.current_tf || "15M";
-                document.getElementById('header-sl').innerText = `-${data.fixed_sl_pct ?? 1.5}%`;
 
-                if (data.pine_settings) {
-                    syncFibUi(data.pine_settings.fib_choice);
-                    document.getElementById('pine-active-badge').innerText = `REZIM: ${data.pine_settings.mode_choice || 'FIB'} · FIB ${data.pine_settings.fib_choice || '0.786'}`;
+                const ps = data.pine_settings || {};
+                const slOn = ps.use_fixed_sl !== undefined ? !!ps.use_fixed_sl : !!data.use_fixed_sl;
+                const slPct = data.fixed_sl_pct ?? ps.fixed_sl_pct ?? 1.5;
+                document.getElementById('header-sl').innerText = slOn ? `-${slPct}%` : "OFF";
+
+                if (ps.fib_choice) {
+                    syncFibUi(ps.fib_choice);
                 }
+                document.getElementById('pine-active-badge').innerText = `REZIM: ${ps.mode_choice || 'FIB'} · FIB ${ps.fib_choice || '0.786'}`;
 
                 if (data.ai_state) {
                     const sc = data.ai_state.samples_count || 0;
@@ -3227,13 +3383,13 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     regimeBadge.classList.remove('regime-bull', 'regime-bear', 'regime-sideways');
                     if (regime === "SIDEWAYS") {
                         regimeBadge.classList.add('regime-sideways');
-                        regimeBadge.innerText = `BOCNY TRH (${tfLabel}) - STOP BUY`;
+                        regimeBadge.innerText = `BOCNY TRH (${tfLabel})`;
                     } else if (regime === "BEAR") {
                         regimeBadge.classList.add('regime-bear');
-                        regimeBadge.innerText = `MEDVEDI TRH (${tfLabel}) - STOP BUY`;
+                        regimeBadge.innerText = `MEDVEDI TRH (${tfLabel})`;
                     } else {
                         regimeBadge.classList.add('regime-bull');
-                        regimeBadge.innerText = `BYCI TRH (${tfLabel}) - BUY OK`;
+                        regimeBadge.innerText = `BYCI TRH (${tfLabel})`;
                     }
                 }
 
@@ -3272,12 +3428,22 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         } else {
                             tpCell = `<span style="color:var(--text-muted);">VYPNUTY</span>`;
                         }
+
+                        let slCell = "";
+                        if (t.use_fixed_sl && fixedSlP > 0) {
+                            slCell = `<span class="text-red">SL ${fixedSlP.toFixed(4)} (-${fixedSlPct}%)</span>`;
+                        } else if (t.trail_stop_price) {
+                            slCell = `<span class="text-yellow">TS ${Number(t.trail_stop_price).toFixed(4)}</span>`;
+                        } else {
+                            slCell = `<span style="color:var(--text-muted);">FIXNY SL OFF</span>`;
+                        }
+
                         html += `<tr>
                             <td><b>${t.market_pair || coin}</b><br><span style="font-size:0.6rem; color:var(--text-muted);">TF: ${t.tf || '15M'}</span></td>
                             <td>${entryP.toFixed(4)}</td>
                             <td>${currP.toFixed(4)}</td>
                             <td>${tpCell}</td>
-                            <td class="text-red">${fixedSlP.toFixed(4)} (-${fixedSlPct}%)</td>
+                            <td>${slCell}</td>
                             <td>${investedUsd.toFixed(2)} ${ccy}</td>
                             <td class="${pnlClass}">${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% (${pnlUsd >= 0 ? "+" : ""}${pnlUsd.toFixed(2)} $)</td>
                             <td><button class="btn btn-sell" style="padding:3px 7px; font-size:0.62rem;" onclick="sellSingleCoin('${coin}')">SELL</button></td>
@@ -3286,7 +3452,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     activeTbody.innerHTML = html;
                     sellBtn.disabled = false;
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh pre rezim FIB + zelenu HA sviecku + BYCI trh...</td></tr>`;
+                    activeTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh podla nastaveni v APEX...</td></tr>`;
                     sellBtn.disabled = true;
                 }
 
@@ -3393,6 +3559,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 </html>
 """
 
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     balance = await fetch_account_capital("USDC")
@@ -3404,6 +3571,7 @@ async def dashboard():
         CURRENT_STAGE=CURRENT_STAGE,
         balance=balance,
     )
+
 
 @app.get("/api/state")
 async def get_state():
@@ -3419,6 +3587,7 @@ async def get_state():
         "current_tf": CURRENT_TIMEFRAME,
         "is_sideways_market": IS_SIDEWAYS_MARKET,
         "market_regime": MARKET_REGIME,
+        "use_fixed_sl": SETTINGS.get("use_fixed_sl", False),
         "fixed_sl_pct": SETTINGS.get("fixed_sl_pct", 1.5),
         "pine_settings": get_pine_settings_dict(),
         "ai_state": ai_public,
@@ -3431,6 +3600,7 @@ async def get_state():
         "logs_24h": SYSTEM_LOG_24H_ENTRIES[:300],
         "last_log_prune": LAST_LOG_PRUNE_STR,
     })
+
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
