@@ -19,15 +19,15 @@ import uvicorn
 
 # --- OKX KLUCE & BEZPECNOST ---
 
-OKX_API_KEY = os.getenv("OKX_API_KEY", "54ebe9fe-1fd0-443d-8f76-0cd1a3439ddb").strip()
-OKX_SECRET = os.getenv("OKX_SECRET", "FBD5C8332D88E3ED5662470CA9C3E813").strip()
-OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Novyzeland111/").strip()
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "moje_tajne_heslo_123").strip()
+OKX_API_KEY = os.getenv("OKX_API_KEY", "").strip()
+OKX_SECRET = os.getenv("OKX_SECRET", "").strip()
+OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "").strip()
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
 # --- TELEGRAM NOTIFIKACIE & INTERAKTIVNY BOT ---
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "9130979784").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
 # Sukromne poziadavky (zostatok, nakup, predaj) -> OKX Demo EEA (oddelene od OKX_BASE_URL)
 _env_demo_url = os.getenv("OKX_DEMO_BASE_URL", os.getenv("OKX_BASE_URL", "https://eea.okx.com")).strip().rstrip("/")
@@ -38,6 +38,8 @@ OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1").strip()  # "1" pre OKX Demo Trad
 
 STATE_FILE = os.getenv("BOT_STATE_FILE", "/var/data/apex_ai_bot_state.json")
 LOG_RETENTION_SEC = 2 * 3600
+LOG_24H_RETENTION_SEC = 24 * 3600
+BALANCE_CACHE_TTL_SEC = 4.0
 
 
 def _resolve_ai_memory_path() -> str:
@@ -80,6 +82,8 @@ SIDEWAYS_ALERT_COOLDOWN_SEC = 1800
 LAST_BALANCE_ERROR_LOG_TS = 0.0
 LAST_BLOCK_LOG_TS: dict[str, float] = {}
 ACTIVE_BALANCE_CCY = "USDC"
+_BALANCE_CACHE: dict[str, tuple[float, float, str]] = {}
+LAST_LOG_PRUNE_STR = "--"
 
 TOP_LIQUID_SYMBOLS = [
     "SOL-USDC", "SUI-USDC", "XRP-USDC", "TAO-USDC",
@@ -96,6 +100,7 @@ CLOSED_TRADES_HISTORY: list[dict] = []
 AI_LEARNED_TRADES: list[dict] = []
 MARKET_SCANNER_CACHE: dict[str, dict] = {}
 SYSTEM_LOG_ENTRIES: list[dict] = []
+SYSTEM_LOG_24H_ENTRIES: list[dict] = []
 SYSTEM_LOGS: list[str] = []
 trade_lock = asyncio.Lock()
 
@@ -172,21 +177,61 @@ def get_sk_time_str() -> str:
     sk_tz = timezone(timedelta(hours=1))
     return datetime.now(sk_tz).strftime("%H:%M:%S")
 
+def _detect_log_category_and_symbol(msg: str) -> tuple[str, str]:
+    upper = msg.upper()
+    sym = "SYS"
+    for token in TOP_LIQUID_SYMBOLS + ["BTC-USDC", "ETH-USDC"]:
+        base = token.split("-")[0]
+        if token in upper or f" {base} " in f" {upper} " or f" {base}-" in f" {upper} ":
+            sym = token
+            break
+    if any(k in upper for k in ["CHYBA", "ZLYHAL", "ODMIETNUTY", "VYNIMKA", "POZOR"]):
+        cat = "ERROR"
+    elif any(k in upper for k in ["NAKUP", "UZAVRETA POZICIA", "PREDAJ", "SIGNAL 'BUY'", "SIGNAL 'SELL'"]):
+        cat = "TRADE"
+    elif any(k in upper for k in ["BLOK", "POZASTAVENY", "ZABLOKOVANY", "PAUZA"]):
+        cat = "FILTER"
+    else:
+        cat = "INFO"
+    return cat, sym
+
 def _prune_old_logs(now_ts: float | None = None):
-    cutoff = (time.time() if now_ts is None else now_ts) - LOG_RETENTION_SEC
+    global LAST_LOG_PRUNE_STR
+    ref_ts = time.time() if now_ts is None else now_ts
+    cutoff_2h = ref_ts - LOG_RETENTION_SEC
+    cutoff_24h = ref_ts - LOG_24H_RETENTION_SEC
+    before_len = len(SYSTEM_LOG_ENTRIES)
     SYSTEM_LOG_ENTRIES[:] = [
         entry for entry in SYSTEM_LOG_ENTRIES
-        if safe_float(entry.get("ts"), 0.0) >= cutoff
+        if safe_float(entry.get("ts"), 0.0) >= cutoff_2h
     ]
+    SYSTEM_LOG_24H_ENTRIES[:] = [
+        entry for entry in SYSTEM_LOG_24H_ENTRIES
+        if safe_float(entry.get("ts"), 0.0) >= cutoff_24h
+    ]
+    if len(SYSTEM_LOG_ENTRIES) != before_len:
+        LAST_LOG_PRUNE_STR = get_sk_time_str()
     SYSTEM_LOGS[:] = [entry["line"] for entry in SYSTEM_LOG_ENTRIES[:200]]
 
 def log_event(msg: str, persist: bool = False):
     now_ts = time.time()
     ts = get_sk_time_str()
     line = f"[{ts}] {msg}"
-    SYSTEM_LOG_ENTRIES.insert(0, {"ts": now_ts, "line": line})
+    cat, sym = _detect_log_category_and_symbol(msg)
+    entry_obj = {
+        "ts": now_ts,
+        "time": ts,
+        "category": cat,
+        "symbol": sym,
+        "message": msg,
+        "line": line,
+    }
+    SYSTEM_LOG_ENTRIES.insert(0, entry_obj)
     if len(SYSTEM_LOG_ENTRIES) > 500:
         del SYSTEM_LOG_ENTRIES[500:]
+    SYSTEM_LOG_24H_ENTRIES.insert(0, entry_obj)
+    if len(SYSTEM_LOG_24H_ENTRIES) > 1500:
+        del SYSTEM_LOG_24H_ENTRIES[1500:]
     _prune_old_logs(now_ts)
     print(line, flush=True)
     if persist:
@@ -305,8 +350,14 @@ def okx_request(method: str, request_path: str, body: str = "") -> dict:
     except Exception as e:
         return {"code": "-1", "msg": str(e), "data": []}
 
-def fetch_account_capital(ccy: str = "USDC") -> float:
+def fetch_account_capital(ccy: str = "USDC", force_refresh: bool = False) -> float:
     global LAST_BALANCE_ERROR_LOG_TS, ACTIVE_BALANCE_CCY
+    preferred = str(ccy).upper()
+    now_ts = time.time()
+    cached = _BALANCE_CACHE.get(preferred)
+    if not force_refresh and cached is not None and (now_ts - cached[0]) < BALANCE_CACHE_TTL_SEC:
+        ACTIVE_BALANCE_CCY = cached[2]
+        return cached[1]
     try:
         res = okx_request("GET", "/api/v5/account/balance")
         if res.get("code") == "0":
@@ -323,29 +374,31 @@ def fetch_account_capital(ccy: str = "USDC") -> float:
                     if best_val > balances_by_ccy.get(item_ccy, 0.0):
                         balances_by_ccy[item_ccy] = best_val
 
-            preferred = str(ccy).upper()
             if balances_by_ccy.get(preferred, 0.0) > 0:
                 ACTIVE_BALANCE_CCY = preferred
-                return balances_by_ccy[preferred]
+                val = balances_by_ccy[preferred]
+                _BALANCE_CACHE[preferred] = (now_ts, val, ACTIVE_BALANCE_CCY)
+                return val
 
             for fallback_ccy in ["USDC", "USDT"]:
                 if balances_by_ccy.get(fallback_ccy, 0.0) > 0:
                     ACTIVE_BALANCE_CCY = fallback_ccy
-                    return balances_by_ccy[fallback_ccy]
+                    val = balances_by_ccy[fallback_ccy]
+                    _BALANCE_CACHE[preferred] = (now_ts, val, ACTIVE_BALANCE_CCY)
+                    return val
 
             ACTIVE_BALANCE_CCY = preferred
+            _BALANCE_CACHE[preferred] = (now_ts, 0.0, ACTIVE_BALANCE_CCY)
             return 0.0
 
-        now_ts = time.time()
         if now_ts - LAST_BALANCE_ERROR_LOG_TS >= 60:
             LAST_BALANCE_ERROR_LOG_TS = now_ts
             log_event(f"OKX zostatok chyba (code={res.get('code')}): {res.get('msg')}")
     except Exception as err:
-        now_ts = time.time()
         if now_ts - LAST_BALANCE_ERROR_LOG_TS >= 60:
             LAST_BALANCE_ERROR_LOG_TS = now_ts
             log_event(f"Chyba pri nacitani zostatku: {err}")
-    return 0.0
+    return cached[1] if cached is not None else 0.0
 
 def get_instrument_rules(inst_id: str) -> tuple[float, float]:
     try:
@@ -499,6 +552,7 @@ def save_persistent_data():
             "history": CLOSED_TRADES_HISTORY[:100],
             "logs": SYSTEM_LOGS[:100],
             "log_entries": SYSTEM_LOG_ENTRIES[:100],
+            "log_entries_24h": SYSTEM_LOG_24H_ENTRIES[:400],
         }
         tmp_path = f"{STATE_FILE}.tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -509,7 +563,7 @@ def save_persistent_data():
         pass
 
 def load_persistent_data():
-    global CLOSED_TRADES_HISTORY, SYSTEM_LOGS, SYSTEM_LOG_ENTRIES, AI_LEARNED_TRADES, ACTIVE_TRADES
+    global CLOSED_TRADES_HISTORY, SYSTEM_LOGS, SYSTEM_LOG_ENTRIES, SYSTEM_LOG_24H_ENTRIES, AI_LEARNED_TRADES, ACTIVE_TRADES
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
@@ -545,16 +599,45 @@ def load_persistent_data():
                 loaded_entries = []
                 for item in data["log_entries"][:200]:
                     if isinstance(item, dict) and item.get("line"):
+                        line_str = str(item["line"])
+                        msg_str = str(item.get("message") or line_str)
+                        cat_v, sym_v = _detect_log_category_and_symbol(msg_str)
                         loaded_entries.append({
                             "ts": safe_float(item.get("ts"), now_ts),
-                            "line": str(item["line"]),
+                            "time": str(item.get("time") or get_sk_time_str()),
+                            "category": str(item.get("category") or cat_v),
+                            "symbol": str(item.get("symbol") or sym_v),
+                            "message": msg_str,
+                            "line": line_str,
                         })
                 SYSTEM_LOG_ENTRIES[:] = loaded_entries
             elif isinstance(data.get("logs"), list):
                 SYSTEM_LOG_ENTRIES[:] = [
-                    {"ts": now_ts, "line": str(line)}
+                    {
+                        "ts": now_ts,
+                        "time": get_sk_time_str(),
+                        "category": "INFO",
+                        "symbol": "SYS",
+                        "message": str(line),
+                        "line": str(line),
+                    }
                     for line in data["logs"][:200]
                 ]
+            if isinstance(data.get("log_entries_24h"), list):
+                SYSTEM_LOG_24H_ENTRIES[:] = [
+                    {
+                        "ts": safe_float(item.get("ts"), now_ts),
+                        "time": str(item.get("time") or get_sk_time_str()),
+                        "category": str(item.get("category") or "INFO"),
+                        "symbol": str(item.get("symbol") or "SYS"),
+                        "message": str(item.get("message") or item.get("line") or ""),
+                        "line": str(item.get("line") or ""),
+                    }
+                    for item in data["log_entries_24h"][:500]
+                    if isinstance(item, dict) and item.get("line")
+                ]
+            else:
+                SYSTEM_LOG_24H_ENTRIES[:] = list(SYSTEM_LOG_ENTRIES)
             _prune_old_logs(now_ts)
         except Exception:
             pass
@@ -1092,7 +1175,7 @@ def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade
 
 # --- VYHODNOCOVANIE STRATEGIE PODLA INDIKATORA (REZIM FIB + ZAKAZ CERVENEJ HA SVIECKY + LEN BYCI TRH) ---
 
-def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: tuple[bool, str] | None = None):
+def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: tuple[bool, str] | None = None, exit_only_for_active: bool = False):
     global MARKET_SCANNER_CACHE, ACTIVE_TRADES, AI_STATE
     coin_key = symbol.split("-")[0]
 
@@ -1319,6 +1402,11 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: t
         curr_osc = oscillator[-1]
         is_in_trade = coin_key in ACTIVE_TRADES
 
+        # Zjednotenie vystupu otvorenej pozicie:
+        # SL / BE / TTP / TS sleduje na zivej cene fixed_stoploss_monitor_loop.
+        # V skeneri vyhodnocujeme len signalove vystupy (HA Exit / Obrat oscilatora) bez duplicitnej simulacie.
+        live_exit_now = False
+        live_exit_reason = ""
         if is_in_trade:
             ha_is_red_now = ha_closes[-1] < ha_opens[-1]
             ha_live_exit = False
@@ -1340,11 +1428,11 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: t
             )
 
             if ha_live_exit:
-                last_bar_sell = True
-                last_bar_sell_reason = f"Pine SELL (HA Exit {ha_exit_consecutive}x)"
+                live_exit_now = True
+                live_exit_reason = f"Pine SELL (HA Exit {ha_exit_consecutive}x)"
             elif osc_live_exit:
-                last_bar_sell = True
-                last_bar_sell_reason = "Pine SELL (Obrat oscilatora)"
+                live_exit_now = True
+                live_exit_reason = "Pine SELL (Obrat oscilatora)"
 
         feats = extract_ai_features(
             n - 1,
@@ -1361,9 +1449,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: t
         )
         ai_factors_txt = describe_ai_factors(feats)
         ai_prob = predict_ai_probability(feats)
-        if ai_prob is not None:
-            AI_STATE["last_prob"] = ai_prob
-            AI_STATE["last_factors"] = ai_factors_txt
 
         final_buy = last_bar_buy
         block_reason = ""
@@ -1447,9 +1532,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: t
                     )
                     ai_factors_txt = describe_ai_factors(feats)
                     ai_prob = predict_ai_probability(feats)
-                    if ai_prob is not None:
-                        AI_STATE["last_prob"] = ai_prob
-                        AI_STATE["last_factors"] = ai_factors_txt
 
                 min_prob = float(SETTINGS.get("ai_min_prob", 0.38))
                 if ai_prob is not None and ai_prob < min_prob:
@@ -1458,6 +1540,11 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: t
                     AI_STATE["blocked_count"] = AI_STATE.get("blocked_count", 0) + 1
                 else:
                     AI_STATE["passed_count"] = AI_STATE.get("passed_count", 0) + 1
+
+        # Zabrani prepisovaniu AI_STATE["last_prob"] / last_factors pri kazdom neaktivnom coine v cykle
+        if ai_prob is not None and (final_buy or bool(SETTINGS.get("use_ai_filter", False))):
+            AI_STATE["last_prob"] = ai_prob
+            AI_STATE["last_factors"] = ai_factors_txt
 
         momentum_str = "SILNE" if last_cond_volume_bullish else "SLABE"
         impuls_active = last_buy_trigger or is_in_trade
@@ -1486,7 +1573,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: t
             exec_signal_str = "BLOK: CERVENA HA"
         elif last_bar_buy and not final_buy and not is_in_trade:
             exec_signal_str = f"BLOK ({block_reason})"
-        elif last_bar_sell and is_in_trade:
+        elif live_exit_now and is_in_trade:
             exec_signal_str = "PREDAT (SELL)"
         elif is_in_trade:
             exec_signal_str = "DRZAT"
@@ -1506,16 +1593,16 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: t
             "ai_score": ai_score_txt,
             "ai_factors": ai_factors_txt,
             "exec_signal": exec_signal_str,
-            "signal": "BUY" if final_buy else ("CERVENA HA" if last_red_ha_blocked else ("BLOK" if last_bar_buy else ("SELL" if last_bar_sell else ("BULLISH" if last_cond_volume_bullish else "CAKA")))),
+            "signal": "BUY" if final_buy else ("CERVENA HA" if last_red_ha_blocked else ("BLOK" if last_bar_buy else ("SELL" if live_exit_now else ("BULLISH" if last_cond_volume_bullish else "CAKA")))),
             "is_green": final_buy and last_ha_is_green
         }
 
         last_closed_raw_price = safe_float(closed_candles[-1][4], curr_close)
         return {
-            "buy": final_buy,
-            "raw_buy": last_bar_buy,
-            "sell": last_bar_sell,
-            "sell_reason": last_bar_sell_reason,
+            "buy": False if exit_only_for_active else final_buy,
+            "raw_buy": False if exit_only_for_active else last_bar_buy,
+            "sell": live_exit_now,
+            "sell_reason": live_exit_reason,
             "ai_prob": ai_prob,
             "ai_factors": ai_factors_txt,
             "block_reason": block_reason,
@@ -1550,7 +1637,7 @@ async def autonomous_scanner_loop():
             IS_SIDEWAYS_MARKET = sideways_now
             bull_ok, bull_reason = is_bull_market_on_tf(tf_str)
 
-            now_ts = datetime.now().timestamp()
+            now_ts = time.time()
             if sideways_now and (now_ts - LAST_SIDEWAYS_ALERT_TS >= SIDEWAYS_ALERT_COOLDOWN_SEC):
                 LAST_SIDEWAYS_ALERT_TS = now_ts
                 log_event(f"POZOR: BOCNY TRH zisteny na TF {CURRENT_TIMEFRAME} (uzke rozpatie + caste krizenie EMA) - nove nakupy su blokovane.")
@@ -1565,7 +1652,7 @@ async def autonomous_scanner_loop():
                     continue
                 trade = ACTIVE_TRADES[coin_name]
                 symbol = trade["market_pair"]
-                sig = evaluate_pine_strategy(symbol, bar_tf=tf_str, bull_ok_override=(bull_ok, bull_reason))
+                sig = evaluate_pine_strategy(symbol, bar_tf=tf_str, bull_ok_override=(bull_ok, bull_reason), exit_only_for_active=True)
                 if sig["sell"]:
                     log_event(f"STRATEGIA 'SELL' SIGNAL PRE {symbol} ({sig['sell_reason']}) -> OKAMZITY PREDAJ!")
                     await close_trade_position(coin_name, sig["sell_reason"])
@@ -1583,8 +1670,8 @@ async def autonomous_scanner_loop():
                             continue
 
                         coin_name = symbol.split("-")[0]
-                        now_ts = datetime.now().timestamp()
-                        if time.time() < DEMO_REJECTED_COOLDOWN.get(symbol, 0.0):
+                        now_ts = time.time()
+                        if now_ts < DEMO_REJECTED_COOLDOWN.get(symbol, 0.0):
                             continue
 
                         if coin_name in ACTIVE_TRADES:
@@ -1631,7 +1718,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
     global ACTIVE_TRADES, LAST_TRADE_TIME
     async with trade_lock:
         coin_name = okx_symbol.split("-")[0]
-        now_ts = datetime.now().timestamp()
+        now_ts = time.time()
         max_allowed = SETTINGS.get("max_parallel", 1)
 
         if coin_name in ACTIVE_TRADES or len(ACTIVE_TRADES) >= max_allowed:
@@ -1807,7 +1894,7 @@ async def close_trade_position(coin: str, reason: str):
                 if real_avail < min_sz:
                     log_event(f"Pozicia {symbol} uz nema predajny zostatok na OKX ({real_avail} < {min_sz}) - uvolnujem zo zoznamu.", persist=True)
                     del ACTIVE_TRADES[coin]
-                    LAST_TRADE_TIME[coin] = datetime.now().timestamp()
+                    LAST_TRADE_TIME[coin] = time.time()
                     save_persistent_data()
                     return
                 sell_amount = min(sell_amount, real_avail)
@@ -1828,7 +1915,7 @@ async def close_trade_position(coin: str, reason: str):
                 if fail_cnt >= 10:
                     log_event(f"Predaj {symbol} zlyhal {fail_cnt}x ({sell_res.get('msg')}) - uvolnujem poziciu, aby neblokovala sloty.", persist=True)
                     del ACTIVE_TRADES[coin]
-                    LAST_TRADE_TIME[coin] = datetime.now().timestamp()
+                    LAST_TRADE_TIME[coin] = time.time()
                     save_persistent_data()
                 else:
                     log_event(f"Predaj {symbol} vratil chybu z OKX Demo ({sell_res.get('msg')}) - pokus #{fail_cnt}/10 (dalsi o 30s).", persist=True)
@@ -1846,7 +1933,7 @@ async def close_trade_position(coin: str, reason: str):
             t_style = classify_trade_style(trade.get("tf", CURRENT_TIMEFRAME), trade.get("source", "AUTO"))
             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason, feats, trade_style=t_style)
             learn_from_closed_trade(feats, pnl_usdc, trade_style=t_style, pnl_pct=pnl_pct)
-            LAST_TRADE_TIME[coin] = datetime.now().timestamp()
+            LAST_TRADE_TIME[coin] = time.time()
             WAIT_FOR_SIGNAL_RESET[coin] = True
 
             log_event(f"Uzavreta pozicia ({reason}) pre {symbol} | PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $)", persist=True)
@@ -2134,6 +2221,15 @@ async def api_train_ai():
         return JSONResponse({"status": "success", "ai_state": AI_STATE, "details": res})
     return JSONResponse({"status": "error", "message": res.get("msg", "Chyba trenovania AI.")})
 
+@app.post("/api/clear-logs")
+async def api_clear_logs():
+    global LAST_LOG_PRUNE_STR
+    SYSTEM_LOG_ENTRIES.clear()
+    SYSTEM_LOGS.clear()
+    LAST_LOG_PRUNE_STR = get_sk_time_str()
+    log_event("System Execution Logs rucne precistene (24h zaznamy zachovane).", persist=True)
+    return JSONResponse({"status": "success"})
+
 @app.post("/api/update-pine-settings")
 async def update_pine_settings(request: Request):
     global MARKET_SCANNER_CACHE
@@ -2403,6 +2499,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         @media (max-width: 1000px) { .adv-grid { grid-template-columns: 1fr; } }
         .pine-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; border-top: 1px solid var(--border-color); padding-top: 10px; }
         .pine-save-status { font-size: 0.68rem; color: var(--green); font-weight: 600; }
+        .filter-bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+        .filter-input { background: #000000; border: 1px solid var(--border-hover); color: var(--text-main); border-radius: 4px; padding: 4px 8px; font-size: 0.68rem; outline: none; width: 120px; }
     </style>
 </head>
 <body>
@@ -2414,6 +2512,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     <span id="header-pair">Top 20 USDC · OKX Demo (Live Grafy)</span>
                     <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
                     <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
+                    <span>Fib: <span id="header-fib" class="balance-tag">{{ SETTINGS.fib_choice }}</span></span>
                     <span>Fixny SL: <span id="header-sl" class="balance-tag">-{{ SETTINGS.fixed_sl_pct }}%</span></span>
                     <span>AI Model: <span id="header-ai" class="balance-tag">Nacitavam...</span></span>
                     <span>AI Pamat (ulozene): <span id="header-ai-learned" class="balance-tag">0 obchodov (0W / 0L)</span></span>
@@ -2461,7 +2560,10 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 <div class="status-dot"></div>
                 <span id="current-stage">{{ CURRENT_STAGE }}</span>
             </div>
-            <span id="market-regime-badge" class="regime-badge regime-bull">BYCI TRH</span>
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <span id="last-update-tag" style="font-size:0.66rem; color:var(--text-muted); font-weight:500;">Aktualizacia: --:--:--</span>
+                <span id="market-regime-badge" class="regime-badge regime-bull">BYCI TRH</span>
+            </div>
         </div>
 
         <div class="stats-grid">
@@ -2486,7 +2588,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         <div>
             <div class="section-title">
                 <span>Nastavenia bota (FIB + zákaz červenej HA sviečky + len BYCI trh)</span>
-                <span id="pine-active-badge" class="text-yellow">REZIM: {{ SETTINGS.mode_choice }}</span>
+                <span id="pine-active-badge" class="text-yellow">REZIM: {{ SETTINGS.mode_choice }} · FIB {{ SETTINGS.fib_choice }}</span>
             </div>
             <div class="pine-panel">
                 <div class="quick-grid">
@@ -2682,7 +2784,40 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         </div>
 
         <div>
-            <div class="section-title">Live Market Scanner Status (20 Top Liquid USDC Pairs - FIB + Zelena HA)</div>
+            <div class="section-title">
+                <span>Closed Trades History (Posledne uzavrete obchody)</span>
+                <span id="closed-trades-count" style="font-size:0.64rem; color:var(--text-muted);">0 obchodov</span>
+            </div>
+            <div class="terminal-card scrollable-card" style="max-height: 200px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Cas</th>
+                            <th>Par</th>
+                            <th>Rezom</th>
+                            <th>PnL (%)</th>
+                            <th>PnL ($)</th>
+                            <th>Dovodom predaja</th>
+                        </tr>
+                    </thead>
+                    <tbody id="closed-trades-tbody">
+                        <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Zatial ziadne uzavrete obchody.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div>
+            <div class="section-title">
+                <span>Live Market Scanner Status (20 Top Liquid USDC Pairs · FIB: <span id="scanner-fib-level" class="text-yellow">{{ SETTINGS.fib_choice }}</span>)</span>
+                <div class="filter-bar">
+                    <button class="btn btn-yellow scanner-filter-btn" data-filter="ALL" onclick="setScannerFilter('ALL')">VSETKY</button>
+                    <button class="btn scanner-filter-btn" data-filter="BUY" onclick="setScannerFilter('BUY')">BUY</button>
+                    <button class="btn scanner-filter-btn" data-filter="BLOK" onclick="setScannerFilter('BLOK')">BLOK</button>
+                    <button class="btn scanner-filter-btn" data-filter="IN_TRADE" onclick="setScannerFilter('IN_TRADE')">V OBCHODE</button>
+                    <input type="text" id="scanner-search" class="filter-input" placeholder="Hladat coin..." oninput="updateState()">
+                </div>
+            </div>
             <div class="terminal-card scrollable-card" style="max-height: 260px;">
                 <table>
                     <thead>
@@ -2706,8 +2841,17 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         <div>
             <div class="section-title">
-                <span>System Execution Logs (Auto-cistenie po 2h)</span>
-                <span style="font-size:0.64rem; color:var(--text-muted);">Starsie ako 2h sa mazu automaticky</span>
+                <span>24h System Execution Logs (Auto-cistenie po 2h)</span>
+                <div class="filter-bar">
+                    <span id="log-prune-info" style="font-size:0.64rem; color:var(--text-muted);">Auto-cistenie: kazde 2h (posledne: --) · 24h register: 0</span>
+                    <button class="btn log-filter-btn btn-yellow" data-logcat="ALL" onclick="setLogFilter('ALL')">ALL</button>
+                    <button class="btn log-filter-btn" data-logcat="TRADE" onclick="setLogFilter('TRADE')">TRADE</button>
+                    <button class="btn log-filter-btn" data-logcat="FILTER" onclick="setLogFilter('FILTER')">FILTER</button>
+                    <button class="btn log-filter-btn" data-logcat="ERROR" onclick="setLogFilter('ERROR')">ERROR</button>
+                    <input type="text" id="log-search" class="filter-input" placeholder="Filter coin/text..." oninput="updateState()">
+                    <button class="btn" onclick="exportLogs24h()">EXPORT 24H</button>
+                    <button class="btn btn-off" onclick="clearLogsNow()">VYCISTIT 2H</button>
+                </div>
             </div>
             <div class="logs-box" id="logs-container">
                 <div class="log-line">[System Initialized] FIB rezim + zakaz cervenej HA + len BYCI trh pripraveny.</div>
@@ -2716,6 +2860,45 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
     </div>
 
     <script>
+        let currentScannerFilter = "ALL";
+        let currentLogCategory = "ALL";
+        let latestLogs24h = [];
+
+        function setScannerFilter(flt) {
+            currentScannerFilter = flt;
+            document.querySelectorAll('.scanner-filter-btn').forEach(b => {
+                b.classList.toggle('btn-yellow', b.getAttribute('data-filter') === flt);
+            });
+            updateState();
+        }
+
+        function setLogFilter(cat) {
+            currentLogCategory = cat;
+            document.querySelectorAll('.log-filter-btn').forEach(b => {
+                b.classList.toggle('btn-yellow', b.getAttribute('data-logcat') === cat);
+            });
+            updateState();
+        }
+
+        async function clearLogsNow() {
+            if (!confirm("Vycarovat aktualne 2h exekucne logy? (24h register ostane zachovany na export)")) return;
+            await fetch('/api/clear-logs', {method: 'POST'});
+            updateState();
+        }
+
+        function exportLogs24h() {
+            const rows = (latestLogs24h && latestLogs24h.length > 0)
+                ? latestLogs24h.map(item => typeof item === 'string' ? item : (item.line || `[${item.time}] [${item.category}] ${item.symbol}: ${item.message}`))
+                : Array.from(document.querySelectorAll('#logs-container .log-line')).map(el => el.innerText);
+            const blob = new Blob([rows.join("\n")], {type: "text/plain;charset=utf-8"});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `apex_logs_24h_${new Date().toISOString().slice(0, 10)}.txt`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
         function syncSlUi(slVal) {
             const numVal = parseFloat(slVal);
             if (isNaN(numVal)) return;
@@ -2724,6 +2907,14 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             if (pineSlInput) {
                 pineSlInput.value = numVal;
             }
+        }
+
+        function syncFibUi(fibVal) {
+            if (!fibVal) return;
+            const hFib = document.getElementById('header-fib');
+            if (hFib) hFib.innerText = fibVal;
+            const sFib = document.getElementById('scanner-fib-level');
+            if (sFib) sFib.innerText = fibVal;
         }
 
         async function toggleBot() {
@@ -2833,6 +3024,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             if (ps.max_upper_wick_ratio !== undefined) document.getElementById('pine-max-wick').value = ps.max_upper_wick_ratio;
             document.getElementById('pine-pivot-len').value = ps.pivot_len;
             document.getElementById('pine-fib-choice').value = ps.fib_choice;
+            syncFibUi(ps.fib_choice);
             if (ps.fixed_sl_pct !== undefined) {
                 document.getElementById('pine-fixed-sl-pct').value = ps.fixed_sl_pct;
             }
@@ -2848,7 +3040,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             document.getElementById('pine-use-osc-sell').checked = ps.sell_on_osc_reversal !== undefined ? !!ps.sell_on_osc_reversal : false;
             document.getElementById('pine-use-ha-exit').checked = !!ps.use_ha_exit;
             document.getElementById('pine-ha-consec').value = String(ps.ha_exit_consecutive);
-            document.getElementById('pine-active-badge').innerText = `REZIM: ${ps.mode_choice}`;
+            document.getElementById('pine-active-badge').innerText = `REZIM: ${ps.mode_choice} · FIB ${ps.fib_choice}`;
         }
 
         async function savePineSettings() {
@@ -2976,11 +3168,20 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 let res = await fetch('/api/state');
                 let data = await res.json();
 
+                const nowStr = new Date().toLocaleTimeString('sk-SK', {hour12: false});
+                const updTag = document.getElementById('last-update-tag');
+                if (updTag) updTag.innerText = `Aktualizacia: ${nowStr}`;
+
                 const ccy = data.balance_ccy || "USDC";
                 document.getElementById('header-balance').innerText = data.balance.toFixed(2) + " " + ccy;
                 document.getElementById('current-stage').innerText = data.current_stage;
                 document.getElementById('header-tf').innerText = data.current_tf;
                 document.getElementById('header-sl').innerText = `-${data.fixed_sl_pct}%`;
+
+                if (data.pine_settings) {
+                    syncFibUi(data.pine_settings.fib_choice);
+                    document.getElementById('pine-active-badge').innerText = `REZIM: ${data.pine_settings.mode_choice} · FIB ${data.pine_settings.fib_choice}`;
+                }
 
                 if (data.ai_state) {
                     const sc = data.ai_state.samples_count || 0;
@@ -2993,10 +3194,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     if (hLearned) hLearned.innerText = `${lc} obchodov (${lw}W / ${ll}L)`;
                     const sumEl = document.getElementById('ai-learned-summary');
                     if (sumEl) sumEl.innerText = `AI nastudovane a ulozene obchody: ${lc} (${lw}W / ${ll}L) | Celkovo vzoriek v pamati: ${sc}`;
-                }
-
-                if (data.pine_settings) {
-                    document.getElementById('pine-active-badge').innerText = `REZIM: ${data.pine_settings.mode_choice}`;
                 }
 
                 let regimeBadge = document.getElementById('market-regime-badge');
@@ -3055,11 +3252,45 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     sellBtn.disabled = true;
                 }
 
+                let closedTbody = document.getElementById('closed-trades-tbody');
+                let closedList = data.history || [];
+                const closedCntEl = document.getElementById('closed-trades-count');
+                if (closedCntEl) closedCntEl.innerText = `${closedList.length} obchodov`;
+                if (closedTbody) {
+                    if (closedList.length > 0) {
+                        let cHtml = "";
+                        for (let tr of closedList) {
+                            const pctVal = parseFloat(tr.pnl_pct || 0);
+                            const usdVal = parseFloat(tr.pnl_usdc || 0);
+                            const cls = usdVal >= 0 ? "text-green" : "text-red";
+                            cHtml += `<tr>
+                                <td>${tr.time || '--'}</td>
+                                <td><b>${tr.symbol || '--'}</b></td>
+                                <td>${tr.style || 'SCALPING'}</td>
+                                <td class="${cls}">${pctVal >= 0 ? "+" : ""}${pctVal.toFixed(2)}%</td>
+                                <td class="${cls}">${usdVal >= 0 ? "+" : ""}${usdVal.toFixed(2)} $</td>
+                                <td>${tr.reason || '--'}</td>
+                            </tr>`;
+                        }
+                        closedTbody.innerHTML = cHtml;
+                    } else {
+                        closedTbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Zatial ziadne uzavrete obchody.</td></tr>`;
+                    }
+                }
+
                 let scannerTbody = document.getElementById('scanner-tbody');
                 let scannerData = data.scanner_cache || {};
+                const searchVal = (document.getElementById('scanner-search')?.value || "").trim().toUpperCase();
                 if (Object.keys(scannerData).length > 0) {
                     let sHtml = "";
                     for (let [coin, info] of Object.entries(scannerData)) {
+                        const symUpper = (info.symbol || coin).toUpperCase();
+                        if (searchVal && !symUpper.includes(searchVal)) continue;
+                        const isInTr = info.trade_status && info.trade_status !== "---";
+                        if (currentScannerFilter === "BUY" && !(info.exec_signal || "").includes("NAKUPIT")) continue;
+                        if (currentScannerFilter === "BLOK" && !(info.exec_signal || "").includes("BLOK")) continue;
+                        if (currentScannerFilter === "IN_TRADE" && !isInTr) continue;
+
                         let momClass = info.momentum === "SILNE" ? "text-green" : "text-red";
                         let impClass = info.impulse.includes("AKTIVNY") ? "text-green" : "text-yellow";
                         let execClass = info.exec_signal.includes("NAKUPIT") ? "text-green" : (info.exec_signal.includes("PREDAT") || info.exec_signal.includes("BLOK") ? "text-red" : "text-yellow");
@@ -3076,17 +3307,37 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                             <td class="${execClass}">${info.exec_signal}</td>
                         </tr>`;
                     }
-                    scannerTbody.innerHTML = sHtml;
+                    scannerTbody.innerHTML = sHtml || `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Ziadne pary nezodpovedaju filtru.</td></tr>`;
                 } else {
                     scannerTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Prebieha uvodne skenovanie trhu...</td></tr>`;
                 }
 
+                latestLogs24h = data.logs_24h || [];
+                const logSearch = (document.getElementById('log-search')?.value || "").trim().toUpperCase();
+                const pruneInfoEl = document.getElementById('log-prune-info');
+                if (pruneInfoEl) {
+                    pruneInfoEl.innerText = `Auto-cistenie: kazde 2h (posledne: ${data.last_log_prune || '--'}) · 24h register: ${latestLogs24h.length}`;
+                }
+
                 let logsBox = document.getElementById('logs-container');
                 let lHtml = "";
-                for (let log of data.logs) {
-                    lHtml += `<div class="log-line">${log}</div>`;
+                const logEntries = data.log_entries || [];
+                if (logEntries.length > 0) {
+                    for (let item of logEntries) {
+                        const cat = item.category || "INFO";
+                        if (currentLogCategory !== "ALL" && cat !== currentLogCategory) continue;
+                        const lineStr = item.line || `[${item.time}] ${item.message}`;
+                        if (logSearch && !lineStr.toUpperCase().includes(logSearch) && !(item.symbol || "").toUpperCase().includes(logSearch)) continue;
+                        const catClass = cat === "ERROR" ? "text-red" : (cat === "TRADE" ? "text-green" : (cat === "FILTER" ? "text-yellow" : ""));
+                        lHtml += `<div class="log-line ${catClass}">${lineStr}</div>`;
+                    }
+                } else {
+                    for (let log of (data.logs || [])) {
+                        if (logSearch && !String(log).toUpperCase().includes(logSearch)) continue;
+                        lHtml += `<div class="log-line">${log}</div>`;
+                    }
                 }
-                logsBox.innerHTML = lHtml;
+                logsBox.innerHTML = lHtml || `<div class="log-line">Ziadne zaznamy pre zvoleny filter.</div>`;
 
             } catch (err) {
                 console.error("Chyba pri obnove stavu:", err);
@@ -3134,6 +3385,9 @@ async def get_state():
         "scanner_cache": MARKET_SCANNER_CACHE,
         "history": CLOSED_TRADES_HISTORY[:20],
         "logs": SYSTEM_LOGS,
+        "log_entries": SYSTEM_LOG_ENTRIES[:200],
+        "logs_24h": SYSTEM_LOG_24H_ENTRIES[:300],
+        "last_log_prune": LAST_LOG_PRUNE_STR,
     })
 
 if __name__ == "__main__":
