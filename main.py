@@ -262,7 +262,7 @@ def send_telegram_msg(text: str, reply_markup: dict | None = None):
     except Exception:
         pass
 
-def _http_get_json(url: str, headers: dict | None = None) -> dict:
+def _http_get_json_sync(url: str, headers: dict | None = None) -> dict:
     try:
         req_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -283,15 +283,18 @@ def _http_get_json(url: str, headers: dict | None = None) -> dict:
     except Exception as e:
         return {"code": "-1", "msg": str(e), "data": []}
 
-def okx_public_request(path_and_query: str) -> dict:
+def okx_public_request_sync(path_and_query: str) -> dict:
     for base in [OKX_PUBLIC_URL, "https://www.okx.com", "https://aws.okx.com"]:
         base_clean = base.strip().rstrip("/")
         if not base_clean:
             continue
-        res = _http_get_json(f"{base_clean}{path_and_query}")
+        res = _http_get_json_sync(f"{base_clean}{path_and_query}")
         if res.get("code") == "0":
             return res
-    return _http_get_json(f"{OKX_PUBLIC_URL}{path_and_query}")
+    return _http_get_json_sync(f"{OKX_PUBLIC_URL}{path_and_query}")
+
+async def okx_public_request(path_and_query: str) -> dict:
+    return await asyncio.to_thread(okx_public_request_sync, path_and_query)
 
 def _build_okx_auth_headers(method: str, request_path: str, body: str = "") -> dict:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
@@ -315,7 +318,7 @@ def _build_okx_auth_headers(method: str, request_path: str, body: str = "") -> d
         headers["x-simulated-trading"] = "1"
     return headers
 
-def okx_request(method: str, request_path: str, body: str = "") -> dict:
+def okx_request_sync(method: str, request_path: str, body: str = "") -> dict:
     if not OKX_API_KEY or not OKX_SECRET or not OKX_PASSPHRASE:
         return {"code": "-1", "msg": "Chybaju OKX API kluce", "data": []}
     try:
@@ -345,7 +348,10 @@ def okx_request(method: str, request_path: str, body: str = "") -> dict:
     except Exception as e:
         return {"code": "-1", "msg": str(e), "data": []}
 
-def fetch_account_capital(ccy: str = "USDC", force_refresh: bool = False) -> float:
+async def okx_request(method: str, request_path: str, body: str = "") -> dict:
+    return await asyncio.to_thread(okx_request_sync, method, request_path, body)
+
+def fetch_account_capital_sync(ccy: str = "USDC", force_refresh: bool = False) -> float:
     global LAST_BALANCE_ERROR_LOG_TS, ACTIVE_BALANCE_CCY
     preferred = str(ccy).upper()
     now_ts = time.time()
@@ -354,7 +360,7 @@ def fetch_account_capital(ccy: str = "USDC", force_refresh: bool = False) -> flo
         ACTIVE_BALANCE_CCY = cached[2]
         return cached[1]
     try:
-        res = okx_request("GET", "/api/v5/account/balance")
+        res = okx_request_sync("GET", "/api/v5/account/balance")
         if res.get("code") == "0":
             balances_by_ccy: dict[str, float] = {}
             for acc in res.get("data", []):
@@ -395,9 +401,12 @@ def fetch_account_capital(ccy: str = "USDC", force_refresh: bool = False) -> flo
             log_event(f"Chyba pri nacitani zostatku: {err}")
     return cached[1] if cached is not None else 0.0
 
-def get_instrument_rules(inst_id: str) -> tuple[float, float]:
+async def fetch_account_capital(ccy: str = "USDC", force_refresh: bool = False) -> float:
+    return await asyncio.to_thread(fetch_account_capital_sync, ccy, force_refresh)
+
+def get_instrument_rules_sync(inst_id: str) -> tuple[float, float]:
     try:
-        res = okx_public_request(f"/api/v5/public/instruments?instType=SPOT&instId={inst_id}")
+        res = okx_public_request_sync(f"/api/v5/public/instruments?instType=SPOT&instId={inst_id}")
         if res.get("code") == "0" and res.get("data"):
             d = res["data"][0]
             lot_sz = safe_float(d.get("lotSz"), 0.01)
@@ -406,6 +415,9 @@ def get_instrument_rules(inst_id: str) -> tuple[float, float]:
     except Exception:
         pass
     return 0.01, 0.01
+
+async def get_instrument_rules(inst_id: str) -> tuple[float, float]:
+    return await asyncio.to_thread(get_instrument_rules_sync, inst_id)
 
 def format_amount(raw_amount: float, lot_sz: float, min_sz: float) -> str | None:
     if raw_amount < min_sz or lot_sz <= 0:
@@ -638,89 +650,6 @@ def load_persistent_data():
             pass
     load_ai_memory()
 
-def get_market_regime_and_sideways(bar_tf: str = "15m") -> tuple[str, bool]:
-    try:
-        res = okx_public_request(f"/api/v5/market/candles?instId=BTC-USDC&bar={bar_tf}&limit=50")
-        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 25:
-            return "BULL", False
-        candles = list(reversed(res["data"]))[:-1]
-        closes = [safe_float(c[4]) for c in candles if safe_float(c[4]) > 0]
-        highs = [safe_float(c[2]) for c in candles if safe_float(c[2]) > 0]
-        lows = [safe_float(c[3]) for c in candles if safe_float(c[3]) > 0]
-        if len(closes) < 20:
-            return "BULL", False
-
-        ema_fast = calc_ema_series(closes, 9)
-        ema_slow = calc_ema_series(closes, 21)
-        crosses = 0
-        for i in range(1, len(closes)):
-            prev_diff = ema_fast[i - 1] - ema_slow[i - 1]
-            curr_diff = ema_fast[i] - ema_slow[i]
-            if (prev_diff <= 0 < curr_diff) or (prev_diff >= 0 > curr_diff):
-                crosses += 1
-
-        recent_win = closes[-15:]
-        rng_pct = ((max(highs[-15:]) - min(lows[-15:])) / recent_win[0] * 100.0) if recent_win[0] > 0 else 0.0
-        is_sideways = (crosses >= 4) and (rng_pct < 2.2)
-        if is_sideways:
-            return "SIDEWAYS", True
-        regime = "BULL" if ema_fast[-1] >= ema_slow[-1] else "BEAR"
-        return regime, False
-    except Exception:
-        return "BULL", False
-
-def is_bull_market_on_tf(bar_tf: str | None = None) -> tuple[bool, str]:
-    tf_clean = (bar_tf or CURRENT_TIMEFRAME).lower().strip()
-    regime, sideways = get_market_regime_and_sideways(tf_clean)
-    if sideways or str(regime).upper() == "SIDEWAYS":
-        return False, f"Bocny trh (SIDEWAYS) na TF {tf_clean.upper()}"
-    if str(regime).upper() != "BULL":
-        return False, f"Medvedi trh ({regime}) na TF {tf_clean.upper()}"
-    return True, "BULL"
-
-def check_btc_health() -> bool:
-    if not SETTINGS.get("use_btc_filter", False):
-        return True
-    try:
-        res = okx_public_request("/api/v5/market/candles?instId=BTC-USDC&bar=15m&limit=30")
-        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 20:
-            return True
-        closes = [safe_float(c[4]) for c in reversed(res["data"]) if safe_float(c[4]) > 0]
-        if len(closes) < 15:
-            return True
-        ema20 = calc_ema_series(closes, 20)[-1]
-        return closes[-1] >= ema20 * 0.992
-    except Exception:
-        return True
-
-def update_top_liquid_symbols():
-    global TOP_LIQUID_SYMBOLS
-    try:
-        res = okx_public_request("/api/v5/market/tickers?instType=SPOT")
-        if res.get("code") != "0" or not res.get("data"):
-            log_event(f"Nepodarilo sa nacitat tickery pre 20 symbolov: {res.get('msg')}")
-            return
-        candidates = []
-        available_usdc = set()
-        for t in res["data"]:
-            inst = t.get("instId", "")
-            if inst.endswith("-USDC") and inst not in EXCLUDED_SYMBOLS:
-                available_usdc.add(inst)
-                vol_ccy = safe_float(t.get("volCcy24h"), 0.0)
-                if vol_ccy >= 500000.0:
-                    candidates.append((vol_ccy, inst))
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        top = [inst for _, inst in candidates[:20]]
-        if "RENDER-USDC" in available_usdc and "RENDER-USDC" not in top:
-            if len(top) >= 20:
-                top[-1] = "RENDER-USDC"
-            else:
-                top.append("RENDER-USDC")
-        if len(top) >= 5:
-            TOP_LIQUID_SYMBOLS = top
-    except Exception as e:
-        log_event(f"Chyba pri aktualizacii top symbolov: {e}")
-
 def calc_ema_series(values, length):
     if not values:
         return []
@@ -764,6 +693,101 @@ def calc_wma_series(values, length):
             continue
         out[i] = sum(window[j] * weights[j] for j in range(length)) / w_sum
     return out
+
+def get_market_regime_and_sideways_sync(bar_tf: str = "15m") -> tuple[str, bool]:
+    try:
+        res = okx_public_request_sync(f"/api/v5/market/candles?instId=BTC-USDC&bar={bar_tf}&limit=50")
+        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 25:
+            return "BULL", False
+        candles = list(reversed(res["data"]))[:-1]
+        closes = [safe_float(c[4]) for c in candles if safe_float(c[4]) > 0]
+        highs = [safe_float(c[2]) for c in candles if safe_float(c[2]) > 0]
+        lows = [safe_float(c[3]) for c in candles if safe_float(c[3]) > 0]
+        if len(closes) < 20:
+            return "BULL", False
+
+        ema_fast = calc_ema_series(closes, 9)
+        ema_slow = calc_ema_series(closes, 21)
+        crosses = 0
+        for i in range(1, len(closes)):
+            prev_diff = ema_fast[i - 1] - ema_slow[i - 1]
+            curr_diff = ema_fast[i] - ema_slow[i]
+            if (prev_diff <= 0 < curr_diff) or (prev_diff >= 0 > curr_diff):
+                crosses += 1
+
+        recent_win = closes[-15:]
+        rng_pct = ((max(highs[-15:]) - min(lows[-15:])) / recent_win[0] * 100.0) if recent_win[0] > 0 else 0.0
+        is_sideways = (crosses >= 4) and (rng_pct < 2.2)
+        if is_sideways:
+            return "SIDEWAYS", True
+        regime = "BULL" if ema_fast[-1] >= ema_slow[-1] else "BEAR"
+        return regime, False
+    except Exception:
+        return "BULL", False
+
+async def get_market_regime_and_sideways(bar_tf: str = "15m") -> tuple[str, bool]:
+    return await asyncio.to_thread(get_market_regime_and_sideways_sync, bar_tf)
+
+def is_bull_market_on_tf_sync(bar_tf: str | None = None) -> tuple[bool, str]:
+    tf_clean = (bar_tf or CURRENT_TIMEFRAME).lower().strip()
+    regime, sideways = get_market_regime_and_sideways_sync(tf_clean)
+    if sideways or str(regime).upper() == "SIDEWAYS":
+        return False, f"Bocny trh (SIDEWAYS) na TF {tf_clean.upper()}"
+    if str(regime).upper() != "BULL":
+        return False, f"Medvedi trh ({regime}) na TF {tf_clean.upper()}"
+    return True, "BULL"
+
+async def is_bull_market_on_tf(bar_tf: str | None = None) -> tuple[bool, str]:
+    return await asyncio.to_thread(is_bull_market_on_tf_sync, bar_tf)
+
+def check_btc_health_sync() -> bool:
+    if not SETTINGS.get("use_btc_filter", False):
+        return True
+    try:
+        res = okx_public_request_sync("/api/v5/market/candles?instId=BTC-USDC&bar=15m&limit=30")
+        if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 20:
+            return True
+        closes = [safe_float(c[4]) for c in reversed(res["data"]) if safe_float(c[4]) > 0]
+        if len(closes) < 15:
+            return True
+        ema20 = calc_ema_series(closes, 20)[-1]
+        return closes[-1] >= ema20 * 0.992
+    except Exception:
+        return True
+
+async def check_btc_health() -> bool:
+    return await asyncio.to_thread(check_btc_health_sync)
+
+def update_top_liquid_symbols_sync():
+    global TOP_LIQUID_SYMBOLS
+    try:
+        res = okx_public_request_sync("/api/v5/market/tickers?instType=SPOT")
+        if res.get("code") != "0" or not res.get("data"):
+            log_event(f"Nepodarilo sa nacitat tickery pre 20 symbolov: {res.get('msg')}")
+            return
+        candidates = []
+        available_usdc = set()
+        for t in res["data"]:
+            inst = t.get("instId", "")
+            if inst.endswith("-USDC") and inst not in EXCLUDED_SYMBOLS:
+                available_usdc.add(inst)
+                vol_ccy = safe_float(t.get("volCcy24h"), 0.0)
+                if vol_ccy >= 500000.0:
+                    candidates.append((vol_ccy, inst))
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        top = [inst for _, inst in candidates[:20]]
+        if "RENDER-USDC" in available_usdc and "RENDER-USDC" not in top:
+            if len(top) >= 20:
+                top[-1] = "RENDER-USDC"
+            else:
+                top.append("RENDER-USDC")
+        if len(top) >= 5:
+            TOP_LIQUID_SYMBOLS = top
+    except Exception as e:
+        log_event(f"Chyba pri aktualizacii top symbolov: {e}")
+
+async def update_top_liquid_symbols():
+    await asyncio.to_thread(update_top_liquid_symbols_sync)
 
 def _sigmoid(x: float) -> float:
     if x >= 0:
@@ -901,9 +925,9 @@ def _build_series_and_signals(candles_raw, mode_choice: str):
         "mode_choice": mode_choice,
     }
 
-def get_current_ai_features_for_symbol(symbol: str, bar_tf: str = "15m") -> list[float] | None:
+def get_current_ai_features_for_symbol_sync(symbol: str, bar_tf: str = "15m") -> list[float] | None:
     try:
-        res = okx_public_request(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=90")
+        res = okx_public_request_sync(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=90")
         if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 30:
             return None
         mode_choice = str(SETTINGS.get("mode_choice", "FIB")).upper()
@@ -927,8 +951,11 @@ def get_current_ai_features_for_symbol(symbol: str, bar_tf: str = "15m") -> list
     except Exception:
         return None
 
-def _collect_symbol_training_samples(symbol: str, bar_tf: str, target_gain_pct: float, stop_loss_pct: float, mode_choice: str) -> list[tuple[list[float], int, float]]:
-    res = okx_public_request(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=250")
+async def get_current_ai_features_for_symbol(symbol: str, bar_tf: str = "15m") -> list[float] | None:
+    return await asyncio.to_thread(get_current_ai_features_for_symbol_sync, symbol, bar_tf)
+
+def _collect_symbol_training_samples_sync(symbol: str, bar_tf: str, target_gain_pct: float, stop_loss_pct: float, mode_choice: str) -> list[tuple[list[float], int, float]]:
+    res = okx_public_request_sync(f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=250")
     if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 60:
         return []
     pack = _build_series_and_signals(res["data"], mode_choice)
@@ -998,7 +1025,7 @@ def _collect_symbol_training_samples(symbol: str, bar_tf: str, target_gain_pct: 
         samples.append((feats, label, weight))
     return samples
 
-def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = False) -> dict:
+def train_ai_model_from_candles_sync(symbol: str, bar_tf: str = "15m", force: bool = False) -> dict:
     global AI_STATE
     now_ts = time.time()
     if not force and (now_ts - AI_STATE.get("_last_train_ts", 0.0)) < 1800 and AI_STATE.get("samples_count", 0) >= 15:
@@ -1022,7 +1049,7 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
         dataset: list[tuple[list[float], int, float]] = []
         used_symbols: list[str] = []
         for sym in train_symbols:
-            sym_samples = _collect_symbol_training_samples(sym, bar_tf, target_gain_pct, stop_loss_pct, mode_choice)
+            sym_samples = _collect_symbol_training_samples_sync(sym, bar_tf, target_gain_pct, stop_loss_pct, mode_choice)
             if sym_samples:
                 dataset.extend(sym_samples)
                 used_symbols.append(sym.split("-")[0])
@@ -1112,6 +1139,9 @@ def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = 
     except Exception as e:
         return {"ok": False, "msg": str(e)}
 
+async def train_ai_model_from_candles(symbol: str, bar_tf: str = "15m", force: bool = False) -> dict:
+    return await asyncio.to_thread(train_ai_model_from_candles_sync, symbol, bar_tf, force)
+
 def predict_ai_probability(feats: list[float] | None) -> float | None:
     if AI_STATE.get("samples_count", 0) < 10:
         return None
@@ -1164,13 +1194,13 @@ def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade
         persist=True,
     )
 
-def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: tuple[bool, str] | None = None, exit_only_for_active: bool = False):
+def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_override: tuple[bool, str] | None = None, exit_only_for_active: bool = False):
     global MARKET_SCANNER_CACHE, ACTIVE_TRADES, AI_STATE
     coin_key = symbol.split("-")[0]
 
     try:
         url = f"/api/v5/market/candles?instId={symbol}&bar={bar_tf}&limit=120"
-        res = okx_public_request(url)
+        res = okx_public_request_sync(url)
         if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 30:
             MARKET_SCANNER_CACHE[coin_key] = {
                 "symbol": symbol, "price": 0.0, "oscillator": 0.0,
@@ -1502,7 +1532,7 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: t
 
             if final_buy and bool(SETTINGS.get("use_ai_filter", False)):
                 if AI_STATE.get("samples_count", 0) < 10:
-                    train_ai_model_from_candles(symbol, bar_tf=bar_tf, force=False)
+                    train_ai_model_from_candles_sync(symbol, bar_tf=bar_tf, force=False)
                     feats = extract_ai_features(
                         n - 1,
                         ha_closes,
@@ -1603,7 +1633,10 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: t
             "be_status": "VYPNUTY", "ttp_status": "VYPNUTY", "ts_status": "VYPNUTY",
             "ai_score": "--", "ai_factors": "--", "exec_signal": "CAKAJ", "signal": "VYNIMKA", "is_green": False
         }
-        return {"buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "ai_factors": "--", "block_reason": "", "features": None, "ha_is_green": False}
+        return {"buy": False, "raw_buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "ai_factors": "--", "block_reason": "", "features": None, "last_closed_price": 0.0, "ha_is_green": False}
+
+async def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: tuple[bool, str] | None = None, exit_only_for_active: bool = False):
+    return await asyncio.to_thread(evaluate_pine_strategy_sync, symbol, bar_tf, bull_ok_override, exit_only_for_active)
 
 async def autonomous_scanner_loop():
     global IS_SIDEWAYS_MARKET, MARKET_REGIME, LAST_SIDEWAYS_ALERT_TS
@@ -1615,10 +1648,10 @@ async def autonomous_scanner_loop():
             tf_str = CURRENT_TIMEFRAME.lower()
             max_allowed = SETTINGS.get("max_parallel", 1)
 
-            regime_now, sideways_now = get_market_regime_and_sideways(tf_str)
+            regime_now, sideways_now = await get_market_regime_and_sideways(tf_str)
             MARKET_REGIME = regime_now
             IS_SIDEWAYS_MARKET = sideways_now
-            bull_ok, bull_reason = is_bull_market_on_tf(tf_str)
+            bull_ok, bull_reason = await is_bull_market_on_tf(tf_str)
 
             now_ts = time.time()
             if sideways_now and (now_ts - LAST_SIDEWAYS_ALERT_TS >= SIDEWAYS_ALERT_COOLDOWN_SEC):
@@ -1635,7 +1668,7 @@ async def autonomous_scanner_loop():
                     continue
                 trade = ACTIVE_TRADES[coin_name]
                 symbol = trade["market_pair"]
-                sig = evaluate_pine_strategy(symbol, bar_tf=tf_str, bull_ok_override=(bull_ok, bull_reason), exit_only_for_active=True)
+                sig = await evaluate_pine_strategy(symbol, bar_tf=tf_str, bull_ok_override=(bull_ok, bull_reason), exit_only_for_active=True)
                 if sig["sell"]:
                     log_event(f"STRATEGIA 'SELL' SIGNAL PRE {symbol} ({sig['sell_reason']}) -> OKAMZITY PREDAJ!")
                     await close_trade_position(coin_name, sig["sell_reason"])
@@ -1644,7 +1677,7 @@ async def autonomous_scanner_loop():
             if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
                 if bool(SETTINGS.get("require_bull_tf_buy", True)) and not bull_ok:
                     log_block_throttled("TRH", f"Nakupy pozastavene: {bull_reason} (vyzaduje sa BULL).", cooldown_sec=60.0)
-                elif check_btc_health():
+                elif await check_btc_health():
                     for symbol in list(TOP_LIQUID_SYMBOLS):
                         if not IS_BOT_ACTIVE or len(ACTIVE_TRADES) >= SETTINGS.get("max_parallel", 1):
                             break
@@ -1660,7 +1693,7 @@ async def autonomous_scanner_loop():
                         if coin_name in ACTIVE_TRADES:
                             continue
 
-                        sig = evaluate_pine_strategy(symbol, bar_tf=tf_str, bull_ok_override=(bull_ok, bull_reason))
+                        sig = await evaluate_pine_strategy(symbol, bar_tf=tf_str, bull_ok_override=(bull_ok, bull_reason))
 
                         if WAIT_FOR_SIGNAL_RESET.get(coin_name, False):
                             if not sig.get("raw_buy", False):
@@ -1680,6 +1713,7 @@ async def autonomous_scanner_loop():
                                 ai_factors=sig.get("ai_factors", "--"),
                                 entry_features=sig.get("features"),
                                 signal_close_price=sig.get("last_closed_price", 0.0),
+                                ha_is_green=sig.get("ha_is_green", False),
                             )
                         elif sig.get("block_reason"):
                             log_block_throttled(symbol, sig["block_reason"], cooldown_sec=60.0)
@@ -1692,12 +1726,12 @@ async def autonomous_scanner_loop():
 async def top_symbols_updater_loop():
     while True:
         try:
-            update_top_liquid_symbols()
+            await update_top_liquid_symbols()
         except Exception as e:
             log_event(f"Chyba v slucke top symbolov: {e}")
         await asyncio.sleep(3600)
 
-async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, ai_factors: str = "--", entry_features: list[float] | None = None, signal_close_price: float = 0.0):
+async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, ai_factors: str = "--", entry_features: list[float] | None = None, signal_close_price: float = 0.0, ha_is_green: bool = False):
     global ACTIVE_TRADES, LAST_TRADE_TIME
     async with trade_lock:
         coin_name = okx_symbol.split("-")[0]
@@ -1708,13 +1742,13 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             return
 
         if bool(SETTINGS.get("require_bull_tf_buy", True)):
-            bull_ok, bull_reason = is_bull_market_on_tf(CURRENT_TIMEFRAME.lower())
+            bull_ok, bull_reason = await is_bull_market_on_tf(CURRENT_TIMEFRAME.lower())
             if not bull_ok:
                 log_event(f"Nakup {okx_symbol} zablokovany: {bull_reason} (povoleny len BYCI trh BULL).")
                 return
 
-        if bool(SETTINGS.get("require_green_ha_buy", True)):
-            chk = evaluate_pine_strategy(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
+        if bool(SETTINGS.get("require_green_ha_buy", True)) and not ha_is_green:
+            chk = await evaluate_pine_strategy(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
             if not chk.get("ha_is_green", False):
                 log_event(f"Nakup {okx_symbol} zablokovany: posledna uzavreta HA sviecka nie je zelena.")
                 return
@@ -1722,7 +1756,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
         LAST_TRADE_TIME[coin_name] = now_ts
         stable_ccy = "USDC"
 
-        free_capital = fetch_account_capital(stable_ccy)
+        free_capital = await fetch_account_capital(stable_ccy)
         budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
         allocated_capital_base = free_capital / max_allowed
 
@@ -1735,7 +1769,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             log_event(f"Nedostatok prostriedkov na ucte: {free_capital:.2f} {ACTIVE_BALANCE_CCY}")
             return
 
-        ticker_res = okx_public_request(f"/api/v5/market/ticker?instId={okx_symbol}")
+        ticker_res = await okx_public_request(f"/api/v5/market/ticker?instId={okx_symbol}")
         if ticker_res.get("code") != "0" or not ticker_res.get("data"):
             log_event(f"Nepodarilo sa ziskat cenu pre {okx_symbol}")
             return
@@ -1750,7 +1784,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
                 return
         raw_amount = safe_budget / current_price
 
-        lot_sz, min_sz = get_instrument_rules(okx_symbol)
+        lot_sz, min_sz = await get_instrument_rules(okx_symbol)
         formatted_sz = format_amount(raw_amount, lot_sz, min_sz)
 
         if not formatted_sz:
@@ -1762,7 +1796,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             "ordType": "market", "sz": formatted_sz
         })
 
-        order_res = okx_request("POST", "/api/v5/trade/order", order_body)
+        order_res = await okx_request("POST", "/api/v5/trade/order", order_body)
         if order_res.get("code") != "0":
             err_msg = order_res.get("msg", "Neznama chyba OKX")
             DEMO_REJECTED_COOLDOWN[okx_symbol] = time.time() + DEMO_REJECTED_COOLDOWN_SEC
@@ -1770,7 +1804,7 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             return
 
         if entry_features is None:
-            entry_features = get_current_ai_features_for_symbol(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
+            entry_features = await get_current_ai_features_for_symbol(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
         if entry_features is not None and (not ai_factors or ai_factors == "--"):
             ai_factors = describe_ai_factors(entry_features)
         if ai_prob is None and entry_features is not None:
@@ -1837,9 +1871,9 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
             reply_markup=inline_keyboard
         )
 
-def fetch_coin_available_balance(coin_ccy: str) -> float | None:
+async def fetch_coin_available_balance(coin_ccy: str) -> float | None:
     try:
-        res = okx_request("GET", f"/api/v5/account/balance?ccy={coin_ccy.upper()}")
+        res = await okx_request("GET", f"/api/v5/account/balance?ccy={coin_ccy.upper()}")
         if res.get("code") == "0":
             for acc in res.get("data", []):
                 for item in acc.get("details", []):
@@ -1863,14 +1897,14 @@ async def close_trade_position(coin: str, reason: str):
         symbol = trade["market_pair"]
         sell_ok = False
         try:
-            ticker_res = okx_public_request(f"/api/v5/market/ticker?instId={symbol}")
+            ticker_res = await okx_public_request(f"/api/v5/market/ticker?instId={symbol}")
             curr_p = safe_float(ticker_res["data"][0]["last"]) if ticker_res.get("code") == "0" and ticker_res.get("data") else trade.get("current_price", trade["entry_price"])
 
             lot_sz = trade.get("lot_sz", 0.01)
             min_sz = trade.get("min_sz", 0.01)
             sell_amount = safe_float(trade["amount"], 0.0)
 
-            real_avail = fetch_coin_available_balance(coin)
+            real_avail = await fetch_coin_available_balance(coin)
             if real_avail is not None:
                 if real_avail < min_sz:
                     log_event(f"Pozicia {symbol} uz nema predajny zostatok na OKX ({real_avail} < {min_sz}) - uvolnujem zo zoznamu.", persist=True)
@@ -1888,7 +1922,7 @@ async def close_trade_position(coin: str, reason: str):
                 "instId": symbol, "tdMode": "cash", "side": "sell",
                 "ordType": "market", "sz": fmt_sz
             })
-            sell_res = okx_request("POST", "/api/v5/trade/order", order_body)
+            sell_res = await okx_request("POST", "/api/v5/trade/order", order_body)
             if sell_res.get("code") != "0":
                 fail_cnt = int(trade.get("sell_fail_count", 0)) + 1
                 trade["sell_fail_count"] = fail_cnt
@@ -1909,7 +1943,7 @@ async def close_trade_position(coin: str, reason: str):
 
             feats = trade.get("entry_features")
             if not feats:
-                feats = get_current_ai_features_for_symbol(symbol, bar_tf=str(trade.get("tf", CURRENT_TIMEFRAME)).lower())
+                feats = await get_current_ai_features_for_symbol(symbol, bar_tf=str(trade.get("tf", CURRENT_TIMEFRAME)).lower())
 
             t_style = classify_trade_style(trade.get("tf", CURRENT_TIMEFRAME), trade.get("source", "AUTO"))
             record_closed_trade(symbol, pnl_pct, pnl_usdc, reason, feats, trade_style=t_style)
@@ -1959,7 +1993,7 @@ async def fixed_stoploss_monitor_loop():
                 trade = ACTIVE_TRADES[coin]
                 symbol = trade["market_pair"]
 
-                ticker_res = okx_public_request(f"/api/v5/market/ticker?instId={symbol}")
+                ticker_res = await okx_public_request(f"/api/v5/market/ticker?instId={symbol}")
                 if ticker_res.get("code") == "0" and ticker_res.get("data"):
                     current_price = safe_float(ticker_res["data"][0]["last"])
                 else:
@@ -2041,13 +2075,13 @@ async def lifespan(app: FastAPI):
     load_persistent_data()
     if ACTIVE_TRADES:
         log_event(f"Obnovenych {len(ACTIVE_TRADES)} otvorenych pozicii z pamate: {', '.join(ACTIVE_TRADES.keys())}", persist=True)
-    update_top_liquid_symbols()
-    regime_now, sideways_now = get_market_regime_and_sideways(CURRENT_TIMEFRAME.lower())
+    await update_top_liquid_symbols()
+    regime_now, sideways_now = await get_market_regime_and_sideways(CURRENT_TIMEFRAME.lower())
     MARKET_REGIME = regime_now
     IS_SIDEWAYS_MARKET = sideways_now
     if SETTINGS.get("use_ai_filter", False) and AI_STATE.get("samples_count", 0) < 10:
         seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
-        train_ai_model_from_candles(seed_sym, bar_tf=CURRENT_TIMEFRAME.lower(), force=True)
+        await train_ai_model_from_candles(seed_sym, bar_tf=CURRENT_TIMEFRAME.lower(), force=True)
     else:
         save_ai_memory()
     log_event(
@@ -2181,12 +2215,12 @@ async def set_tf(tf_val: str):
     if tf_lower in ALLOWED_TIMEFRAMES:
         CURRENT_TIMEFRAME = tf_val.upper()
         MARKET_SCANNER_CACHE.clear()
-        regime_now, sideways_now = get_market_regime_and_sideways(tf_lower)
+        regime_now, sideways_now = await get_market_regime_and_sideways(tf_lower)
         MARKET_REGIME = regime_now
         IS_SIDEWAYS_MARKET = sideways_now
         if SETTINGS.get("use_ai_filter", False):
             seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
-            train_ai_model_from_candles(seed_sym, bar_tf=tf_lower, force=True)
+            await train_ai_model_from_candles(seed_sym, bar_tf=tf_lower, force=True)
         log_event(f"Casovy ramec (TF) zmeneny na: {CURRENT_TIMEFRAME} (Rezim: {regime_now})", persist=True)
         return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME, "market_regime": regime_now})
     return JSONResponse({"status": "error", "message": "Neplatny casovy ramec."})
@@ -2194,7 +2228,7 @@ async def set_tf(tf_val: str):
 @app.post("/api/train-ai")
 async def api_train_ai():
     seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
-    res = train_ai_model_from_candles(seed_sym, bar_tf=CURRENT_TIMEFRAME.lower(), force=True)
+    res = await train_ai_model_from_candles(seed_sym, bar_tf=CURRENT_TIMEFRAME.lower(), force=True)
     if res.get("ok"):
         MARKET_SCANNER_CACHE.clear()
         return JSONResponse({"status": "success", "ai_state": AI_STATE, "details": res})
@@ -2292,7 +2326,7 @@ async def manual_buy(coin: str):
                 return JSONResponse({"status": "error", "message": f"Par {okx_symbol} je na zozname vylucenych parov."})
 
             stable_ccy = "USDC"
-            free_capital = fetch_account_capital(stable_ccy)
+            free_capital = await fetch_account_capital(stable_ccy)
             budget_cap = SETTINGS.get("max_budget_cap", 1000.0)
             allocated_capital_base = free_capital / max_allowed
 
@@ -2304,14 +2338,14 @@ async def manual_buy(coin: str):
             if safe_budget < 5.0:
                 return JSONResponse({"status": "error", "message": "Nedostatok prostriedkov."})
 
-            ticker_res = okx_public_request(f"/api/v5/market/ticker?instId={okx_symbol}")
+            ticker_res = await okx_public_request(f"/api/v5/market/ticker?instId={okx_symbol}")
             if ticker_res.get("code") != "0" or not ticker_res.get("data"):
                 return JSONResponse({"status": "error", "message": f"Nepodarilo sa ziskat cenu pre {okx_symbol}"})
 
             current_price = safe_float(ticker_res["data"][0]["last"])
             raw_amount = safe_budget / current_price
 
-            lot_sz, min_sz = get_instrument_rules(okx_symbol)
+            lot_sz, min_sz = await get_instrument_rules(okx_symbol)
             formatted_sz = format_amount(raw_amount, lot_sz, min_sz)
             if not formatted_sz:
                 return JSONResponse({"status": "error", "message": f"Mnozstvo pod minimom minSz ({min_sz})"})
@@ -2321,12 +2355,12 @@ async def manual_buy(coin: str):
                 "ordType": "market", "sz": formatted_sz
             })
 
-            order_res = okx_request("POST", "/api/v5/trade/order", order_body)
+            order_res = await okx_request("POST", "/api/v5/trade/order", order_body)
             if order_res.get("code") != "0":
                 err_msg = order_res.get("msg", "Neznama chyba OKX")
                 return JSONResponse({"status": "error", "message": f"OKX odmietlo prikaz ({err_msg})"})
 
-            entry_features = get_current_ai_features_for_symbol(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
+            entry_features = await get_current_ai_features_for_symbol(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
             ai_factors = describe_ai_factors(entry_features) if entry_features is not None else "--"
             ai_prob = predict_ai_probability(entry_features) if entry_features is not None else None
 
@@ -2859,7 +2893,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         }
 
         async function clearLogsNow() {
-            if (!confirm("Vycarovat aktualne 2h exekucne logy? (24h register ostane zachovany na export)")) return;
+            if (!confirm("Vycistit aktualne 2h exekucne logy? (24h register ostane zachovany na export)")) return;
             await fetch('/api/clear-logs', {method: 'POST'});
             updateState();
         }
@@ -3348,7 +3382,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             }
         }
 
-        setInterval(updateState, 2000);
+        setInterval(updateState, 4000);
         updateState();
     </script>
 </body>
@@ -3357,7 +3391,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    balance = fetch_account_capital("USDC")
+    balance = await fetch_account_capital("USDC")
     t = Template(HTML_TEMPLATE_CONTENT)
     return t.render(
         SETTINGS=SETTINGS,
@@ -3370,7 +3404,7 @@ async def dashboard():
 @app.get("/api/state")
 async def get_state():
     _prune_old_logs()
-    balance = fetch_account_capital("USDC")
+    balance = await fetch_account_capital("USDC")
     stats = calculate_stats()
     ai_public = {k: v for k, v in AI_STATE.items() if not k.startswith("_")}
     return JSONResponse({
