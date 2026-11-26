@@ -1674,51 +1674,55 @@ async def autonomous_scanner_loop():
                     await close_trade_position(coin_name, sig["sell_reason"])
                 await asyncio.sleep(0.25)
 
-            if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed:
-                if bool(SETTINGS.get("require_bull_tf_buy", True)) and not bull_ok:
-                    log_block_throttled("TRH", f"Nakupy pozastavene: {bull_reason} (vyzaduje sa BULL).", cooldown_sec=60.0)
-                elif await check_btc_health():
-                    for symbol in list(TOP_LIQUID_SYMBOLS):
-                        if not IS_BOT_ACTIVE or len(ACTIVE_TRADES) >= SETTINGS.get("max_parallel", 1):
-                            break
+            can_buy_now = (
+                IS_BOT_ACTIVE
+                and len(ACTIVE_TRADES) < max_allowed
+                and (not bool(SETTINGS.get("require_bull_tf_buy", True)) or bull_ok)
+                and await check_btc_health()
+            )
 
-                        if symbol in EXCLUDED_SYMBOLS:
-                            continue
+            if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed and bool(SETTINGS.get("require_bull_tf_buy", True)) and not bull_ok:
+                log_block_throttled("TRH", f"Nakupy pozastavene: {bull_reason} (vyzaduje sa BULL).", cooldown_sec=60.0)
 
-                        coin_name = symbol.split("-")[0]
-                        now_ts = time.time()
-                        if now_ts < DEMO_REJECTED_COOLDOWN.get(symbol, 0.0):
-                            continue
+            for symbol in list(TOP_LIQUID_SYMBOLS):
+                if symbol in EXCLUDED_SYMBOLS:
+                    continue
 
-                        if coin_name in ACTIVE_TRADES:
-                            continue
+                coin_name = symbol.split("-")[0]
+                now_ts = time.time()
+                if now_ts < DEMO_REJECTED_COOLDOWN.get(symbol, 0.0):
+                    continue
 
-                        sig = await evaluate_pine_strategy(symbol, bar_tf=tf_str, bull_ok_override=(bull_ok, bull_reason))
+                sig = await evaluate_pine_strategy(symbol, bar_tf=tf_str, bull_ok_override=(bull_ok, bull_reason))
 
-                        if WAIT_FOR_SIGNAL_RESET.get(coin_name, False):
-                            if not sig.get("raw_buy", False):
-                                WAIT_FOR_SIGNAL_RESET[coin_name] = False
-                            else:
-                                continue
+                if not can_buy_now or len(ACTIVE_TRADES) >= SETTINGS.get("max_parallel", 1) or coin_name in ACTIVE_TRADES:
+                    await asyncio.sleep(0.15)
+                    continue
 
-                        if coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"]):
-                            continue
+                if WAIT_FOR_SIGNAL_RESET.get(coin_name, False):
+                    if not sig.get("raw_buy", False):
+                        WAIT_FOR_SIGNAL_RESET[coin_name] = False
+                    else:
+                        continue
 
-                        if sig["buy"]:
-                            prob_txt = f" (AI: {sig['ai_prob']*100:.1f}% [{sig.get('ai_factors', '--')}])" if sig.get("ai_prob") is not None else ""
-                            log_event(f"STRATEGIA 'BUY' SIGNAL PRE {symbol} [BYCI TRH BULL + FIB + ZELENA HA]{prob_txt}!")
-                            await execute_autonomous_buy(
-                                symbol,
-                                ai_prob=sig.get("ai_prob"),
-                                ai_factors=sig.get("ai_factors", "--"),
-                                entry_features=sig.get("features"),
-                                signal_close_price=sig.get("last_closed_price", 0.0),
-                                ha_is_green=sig.get("ha_is_green", False),
-                            )
-                        elif sig.get("block_reason"):
-                            log_block_throttled(symbol, sig["block_reason"], cooldown_sec=60.0)
+                if coin_name in LAST_TRADE_TIME and (now_ts - LAST_TRADE_TIME[coin_name] < SETTINGS["reentry_cooldown_sec"]):
+                    continue
 
-                        await asyncio.sleep(0.3)
+                if sig["buy"]:
+                    prob_txt = f" (AI: {sig['ai_prob']*100:.1f}% [{sig.get('ai_factors', '--')}])" if sig.get("ai_prob") is not None else ""
+                    log_event(f"STRATEGIA 'BUY' SIGNAL PRE {symbol} [BYCI TRH BULL + FIB + ZELENA HA]{prob_txt}!")
+                    await execute_autonomous_buy(
+                        symbol,
+                        ai_prob=sig.get("ai_prob"),
+                        ai_factors=sig.get("ai_factors", "--"),
+                        entry_features=sig.get("features"),
+                        signal_close_price=sig.get("last_closed_price", 0.0),
+                        ha_is_green=sig.get("ha_is_green", False),
+                    )
+                elif sig.get("block_reason"):
+                    log_block_throttled(symbol, sig["block_reason"], cooldown_sec=60.0)
+
+                await asyncio.sleep(0.3)
         except Exception as e:
             log_event(f"Chyba v autonomnom skeneri: {e}")
         await asyncio.sleep(10)
