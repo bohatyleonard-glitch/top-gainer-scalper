@@ -104,7 +104,6 @@ SYSTEM_LOG_24H_ENTRIES: list[dict] = []
 SYSTEM_LOGS: list[str] = []
 trade_lock = asyncio.Lock()
 
-# Predvolene parametre nastavene na FIB (Korekcia Fibonacci Touch) + zakaz nakupu na cervenej HA sviecke
 SETTINGS = {
     "max_parallel": 4,
     "max_budget_cap": 1000.0,
@@ -161,8 +160,6 @@ AI_STATE = {
     "passed_count": 0,
     "_last_train_ts": 0.0,
 }
-
-# --- POMOCNE FUNKCIE, LOGOVANIE, TELEGRAM & OKX API ---
 
 def safe_float(val, default: float = 0.0) -> float:
     try:
@@ -287,7 +284,6 @@ def _http_get_json(url: str, headers: dict | None = None) -> dict:
         return {"code": "-1", "msg": str(e), "data": []}
 
 def okx_public_request(path_and_query: str) -> dict:
-    """Cita verejne trhove data (grafy/sviecky, tickery, instrumenty) z Live OKX."""
     for base in [OKX_PUBLIC_URL, "https://www.okx.com", "https://aws.okx.com"]:
         base_clean = base.strip().rstrip("/")
         if not base_clean:
@@ -320,7 +316,6 @@ def _build_okx_auth_headers(method: str, request_path: str, body: str = "") -> d
     return headers
 
 def okx_request(method: str, request_path: str, body: str = "") -> dict:
-    """Posiela sukromne poziadavky (zostatok, nakup, predaj) na OKX Demo endpoint."""
     if not OKX_API_KEY or not OKX_SECRET or not OKX_PASSPHRASE:
         return {"code": "-1", "msg": "Chybaju OKX API kluce", "data": []}
     try:
@@ -726,8 +721,6 @@ def update_top_liquid_symbols():
     except Exception as e:
         log_event(f"Chyba pri aktualizacii top symbolov: {e}")
 
-# --- PINE SCRIPT MATEMATIKA ---
-
 def calc_ema_series(values, length):
     if not values:
         return []
@@ -771,8 +764,6 @@ def calc_wma_series(values, length):
             continue
         out[i] = sum(window[j] * weights[j] for j in range(length)) / w_sum
     return out
-
-# --- AI MODEL PRE HODNOTENIE KVALITY BUY SIGNALOV (9 ZNAKOV + MULTI-COIN + VAZENE UCENIE) ---
 
 def _sigmoid(x: float) -> float:
     if x >= 0:
@@ -1173,8 +1164,6 @@ def learn_from_closed_trade(features: list[float] | None, pnl_usdc: float, trade
         persist=True,
     )
 
-# --- VYHODNOCOVANIE STRATEGIE PODLA INDIKATORA (REZIM FIB + ZAKAZ CERVENEJ HA SVIECKY + LEN BYCI TRH) ---
-
 def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: tuple[bool, str] | None = None, exit_only_for_active: bool = False):
     global MARKET_SCANNER_CACHE, ACTIVE_TRADES, AI_STATE
     coin_key = symbol.split("-")[0]
@@ -1402,9 +1391,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: t
         curr_osc = oscillator[-1]
         is_in_trade = coin_key in ACTIVE_TRADES
 
-        # Zjednotenie vystupu otvorenej pozicie:
-        # SL / BE / TTP / TS sleduje na zivej cene fixed_stoploss_monitor_loop.
-        # V skeneri vyhodnocujeme len signalove vystupy (HA Exit / Obrat oscilatora) bez duplicitnej simulacie.
         live_exit_now = False
         live_exit_reason = ""
         if is_in_trade:
@@ -1541,7 +1527,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: t
                 else:
                     AI_STATE["passed_count"] = AI_STATE.get("passed_count", 0) + 1
 
-        # Zabrani prepisovaniu AI_STATE["last_prob"] / last_factors pri kazdom neaktivnom coine v cykle
         if ai_prob is not None and (final_buy or bool(SETTINGS.get("use_ai_filter", False))):
             AI_STATE["last_prob"] = ai_prob
             AI_STATE["last_factors"] = ai_factors_txt
@@ -1619,8 +1604,6 @@ def evaluate_pine_strategy(symbol: str, bar_tf: str = "15m", bull_ok_override: t
             "ai_score": "--", "ai_factors": "--", "exec_signal": "CAKAJ", "signal": "VYNIMKA", "is_green": False
         }
         return {"buy": False, "sell": False, "sell_reason": "", "ai_prob": None, "ai_factors": "--", "block_reason": "", "features": None, "ha_is_green": False}
-
-# --- AUTONOMNA SKENOVACIA SLUCKA ---
 
 async def autonomous_scanner_loop():
     global IS_SIDEWAYS_MARKET, MARKET_REGIME, LAST_SIDEWAYS_ALERT_TS
@@ -1724,14 +1707,12 @@ async def execute_autonomous_buy(okx_symbol: str, ai_prob: float | None = None, 
         if coin_name in ACTIVE_TRADES or len(ACTIVE_TRADES) >= max_allowed:
             return
 
-        # Poistka pred zadanym prikazom: trh na zvolenom TF musi byt BYCI (BULL)
         if bool(SETTINGS.get("require_bull_tf_buy", True)):
             bull_ok, bull_reason = is_bull_market_on_tf(CURRENT_TIMEFRAME.lower())
             if not bull_ok:
                 log_event(f"Nakup {okx_symbol} zablokovany: {bull_reason} (povoleny len BYCI trh BULL).")
                 return
 
-        # Posledna poistka pred zadanym prikazom: HA sviecka musi byt zelena
         if bool(SETTINGS.get("require_green_ha_buy", True)):
             chk = evaluate_pine_strategy(okx_symbol, bar_tf=CURRENT_TIMEFRAME.lower())
             if not chk.get("ha_is_green", False):
@@ -1944,8 +1925,6 @@ async def close_trade_position(coin: str, reason: str):
             if sell_ok and coin in ACTIVE_TRADES:
                 del ACTIVE_TRADES[coin]
                 save_persistent_data()
-
-# --- MONITOR RIZIK ---
 
 async def fixed_stoploss_monitor_loop():
     global ACTIVE_TRADES, CURRENT_STAGE
@@ -2478,7 +2457,6 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: #050608; }
         .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
 
-        /* Jednoduchsia a prehladna struktura nastaveni */
         .pine-panel { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
         .quick-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
         @media (max-width: 1180px) { .quick-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -2890,7 +2868,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
             const rows = (latestLogs24h && latestLogs24h.length > 0)
                 ? latestLogs24h.map(item => typeof item === 'string' ? item : (item.line || `[${item.time}] [${item.category}] ${item.symbol}: ${item.message}`))
                 : Array.from(document.querySelectorAll('#logs-container .log-line')).map(el => el.innerText);
-            const blob = new Blob([rows.join("\n")], {type: "text/plain;charset=utf-8"});
+            const blob = new Blob([rows.join("\\n")], {type: "text/plain;charset=utf-8"});
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
@@ -2902,7 +2880,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
         function syncSlUi(slVal) {
             const numVal = parseFloat(slVal);
             if (isNaN(numVal)) return;
-            document.getElementById('header-sl').innerText = `-${numVal}%`;
+            const hSl = document.getElementById('header-sl');
+            if (hSl) hSl.innerText = `-${numVal}%`;
             const pineSlInput = document.getElementById('pine-fixed-sl-pct');
             if (pineSlInput) {
                 pineSlInput.value = numVal;
@@ -3165,22 +3144,29 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
         async function updateState() {
             try {
-                let res = await fetch('/api/state');
+                let res = await fetch('/api/state', {cache: 'no-store'});
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
                 let data = await res.json();
+                if (!data || typeof data !== 'object') {
+                    throw new Error("Neplatna JSON odpoved z /api/state");
+                }
 
                 const nowStr = new Date().toLocaleTimeString('sk-SK', {hour12: false});
                 const updTag = document.getElementById('last-update-tag');
                 if (updTag) updTag.innerText = `Aktualizacia: ${nowStr}`;
 
                 const ccy = data.balance_ccy || "USDC";
-                document.getElementById('header-balance').innerText = data.balance.toFixed(2) + " " + ccy;
-                document.getElementById('current-stage').innerText = data.current_stage;
-                document.getElementById('header-tf').innerText = data.current_tf;
-                document.getElementById('header-sl').innerText = `-${data.fixed_sl_pct}%`;
+                const balNum = Number(data.balance || 0);
+                document.getElementById('header-balance').innerText = (isNaN(balNum) ? "0.00" : balNum.toFixed(2)) + " " + ccy;
+                document.getElementById('current-stage').innerText = data.current_stage || "STAV: Aktivny";
+                document.getElementById('header-tf').innerText = data.current_tf || "15M";
+                document.getElementById('header-sl').innerText = `-${data.fixed_sl_pct ?? 1.5}%`;
 
                 if (data.pine_settings) {
                     syncFibUi(data.pine_settings.fib_choice);
-                    document.getElementById('pine-active-badge').innerText = `REZIM: ${data.pine_settings.mode_choice} · FIB ${data.pine_settings.fib_choice}`;
+                    document.getElementById('pine-active-badge').innerText = `REZIM: ${data.pine_settings.mode_choice || 'FIB'} · FIB ${data.pine_settings.fib_choice || '0.786'}`;
                 }
 
                 if (data.ai_state) {
@@ -3199,49 +3185,63 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                 let regimeBadge = document.getElementById('market-regime-badge');
                 if (regimeBadge) {
                     const regime = data.market_regime || (data.is_sideways_market ? "SIDEWAYS" : "BULL");
+                    const tfLabel = data.current_tf || "15M";
                     regimeBadge.classList.remove('regime-bull', 'regime-bear', 'regime-sideways');
                     if (regime === "SIDEWAYS") {
                         regimeBadge.classList.add('regime-sideways');
-                        regimeBadge.innerText = `BOCNY TRH (${data.current_tf}) - STOP BUY`;
+                        regimeBadge.innerText = `BOCNY TRH (${tfLabel}) - STOP BUY`;
                     } else if (regime === "BEAR") {
                         regimeBadge.classList.add('regime-bear');
-                        regimeBadge.innerText = `MEDVEDI TRH (${data.current_tf}) - STOP BUY`;
+                        regimeBadge.innerText = `MEDVEDI TRH (${tfLabel}) - STOP BUY`;
                     } else {
                         regimeBadge.classList.add('regime-bull');
-                        regimeBadge.innerText = `BYCI TRH (${data.current_tf}) - BUY OK`;
+                        regimeBadge.innerText = `BYCI TRH (${tfLabel}) - BUY OK`;
                     }
                 }
 
-                let stats = data.stats;
-                document.getElementById('stat-winrate').innerText = stats.win_rate.toFixed(1) + "%";
-                document.getElementById('stat-trades').innerText = stats.total_trades;
-                document.getElementById('stat-winloss').innerText = stats.wins + "W / " + stats.losses + "L";
+                let stats = data.stats || {};
+                const winRateNum = Number(stats.win_rate || 0);
+                const totalTradesNum = Number(stats.total_trades || 0);
+                const winsNum = Number(stats.wins || 0);
+                const lossesNum = Number(stats.losses || 0);
+                const totalPnlNum = Number(stats.total_pnl || 0);
+                document.getElementById('stat-winrate').innerText = winRateNum.toFixed(1) + "%";
+                document.getElementById('stat-trades').innerText = totalTradesNum;
+                document.getElementById('stat-winloss').innerText = winsNum + "W / " + lossesNum + "L";
                 let pnlEl = document.getElementById('stat-pnl');
-                pnlEl.innerText = (stats.total_pnl >= 0 ? "+" : "") + stats.total_pnl.toFixed(2) + " $";
-                pnlEl.className = "stat-value " + (stats.total_pnl >= 0 ? "text-green" : "text-red");
+                pnlEl.innerText = (totalPnlNum >= 0 ? "+" : "") + totalPnlNum.toFixed(2) + " $";
+                pnlEl.className = "stat-value " + (totalPnlNum >= 0 ? "text-green" : "text-red");
 
                 let activeTbody = document.getElementById('active-position-tbody');
                 let sellBtn = document.getElementById('sell-btn');
-                if (Object.keys(data.active_trades).length > 0) {
+                let activeTradesObj = data.active_trades || {};
+                if (Object.keys(activeTradesObj).length > 0) {
                     let html = "";
-                    for (let [coin, t] of Object.entries(data.active_trades)) {
-                        let pnlClass = t.live_pnl_pct >= 0 ? "text-green" : "text-red";
+                    for (let [coin, t] of Object.entries(activeTradesObj)) {
+                        const pnlPct = Number(t.live_pnl_pct || 0);
+                        const pnlUsd = Number(t.live_pnl_usdc || 0);
+                        const entryP = Number(t.entry_price || 0);
+                        const currP = Number(t.current_price || entryP);
+                        const fixedSlP = Number(t.fixed_sl_price || 0);
+                        const fixedSlPct = Number(t.fixed_sl_pct || 1.5);
+                        const investedUsd = Number(t.invested_usdc || 0);
+                        let pnlClass = pnlPct >= 0 ? "text-green" : "text-red";
                         let tpCell = "";
                         if (t.ttp_active && t.ttp_stop_price) {
-                            tpCell = `<span class="text-green">TTP AKTIVNY (stop ${t.ttp_stop_price.toFixed(4)})</span>`;
+                            tpCell = `<span class="text-green">TTP AKTIVNY (stop ${Number(t.ttp_stop_price).toFixed(4)})</span>`;
                         } else if (t.use_fixed_tp && t.fixed_tp_price) {
-                            tpCell = `<span class="text-yellow">${t.fixed_tp_price.toFixed(4)} (+${t.fixed_tp_pct}% -> TTP)</span>`;
+                            tpCell = `<span class="text-yellow">${Number(t.fixed_tp_price).toFixed(4)} (+${Number(t.fixed_tp_pct || 1.2)}% -> TTP)</span>`;
                         } else {
                             tpCell = `<span style="color:var(--text-muted);">VYPNUTY</span>`;
                         }
                         html += `<tr>
-                            <td><b>${t.market_pair}</b><br><span style="font-size:0.6rem; color:var(--text-muted);">TF: ${t.tf}</span></td>
-                            <td>${t.entry_price.toFixed(4)}</td>
-                            <td>${t.current_price.toFixed(4)}</td>
+                            <td><b>${t.market_pair || coin}</b><br><span style="font-size:0.6rem; color:var(--text-muted);">TF: ${t.tf || '15M'}</span></td>
+                            <td>${entryP.toFixed(4)}</td>
+                            <td>${currP.toFixed(4)}</td>
                             <td>${tpCell}</td>
-                            <td class="text-red">${t.fixed_sl_price.toFixed(4)} (-${t.fixed_sl_pct}%)</td>
-                            <td>${t.invested_usdc.toFixed(2)} ${ccy}</td>
-                            <td class="${pnlClass}">${t.live_pnl_pct >= 0 ? "+" : ""}${t.live_pnl_pct.toFixed(2)}% (${t.live_pnl_usdc >= 0 ? "+" : ""}${t.live_pnl_usdc.toFixed(2)} $)</td>
+                            <td class="text-red">${fixedSlP.toFixed(4)} (-${fixedSlPct}%)</td>
+                            <td>${investedUsd.toFixed(2)} ${ccy}</td>
+                            <td class="${pnlClass}">${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% (${pnlUsd >= 0 ? "+" : ""}${pnlUsd.toFixed(2)} $)</td>
                             <td><button class="btn btn-sell" style="padding:3px 7px; font-size:0.62rem;" onclick="sellSingleCoin('${coin}')">SELL</button></td>
                         </tr>`;
                     }
@@ -3291,20 +3291,22 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                         if (currentScannerFilter === "BLOK" && !(info.exec_signal || "").includes("BLOK")) continue;
                         if (currentScannerFilter === "IN_TRADE" && !isInTr) continue;
 
+                        const priceNum = Number(info.price || 0);
                         let momClass = info.momentum === "SILNE" ? "text-green" : "text-red";
-                        let impClass = info.impulse.includes("AKTIVNY") ? "text-green" : "text-yellow";
-                        let execClass = info.exec_signal.includes("NAKUPIT") ? "text-green" : (info.exec_signal.includes("PREDAT") || info.exec_signal.includes("BLOK") ? "text-red" : "text-yellow");
+                        let impClass = (info.impulse || "").includes("AKTIVNY") ? "text-green" : "text-yellow";
+                        let execSig = info.exec_signal || "CAKAJ";
+                        let execClass = execSig.includes("NAKUPIT") ? "text-green" : (execSig.includes("PREDAT") || execSig.includes("BLOK") ? "text-red" : "text-yellow");
                         let factorTitle = info.ai_factors && info.ai_factors !== "--" ? ` title="Faktory: ${info.ai_factors}"` : "";
 
                         sHtml += `<tr>
-                            <td><b>${info.symbol}</b></td>
-                            <td>${info.price ? info.price.toFixed(4) : '--'}</td>
-                            <td class="${momClass}">${info.momentum}</td>
-                            <td class="${impClass}">${info.impulse}</td>
-                            <td class="text-yellow">${info.trade_status}</td>
+                            <td><b>${info.symbol || coin}</b></td>
+                            <td>${priceNum > 0 ? priceNum.toFixed(4) : '--'}</td>
+                            <td class="${momClass}">${info.momentum || 'SLABE'}</td>
+                            <td class="${impClass}">${info.impulse || 'CAKA'}</td>
+                            <td class="text-yellow">${info.trade_status || '---'}</td>
                             <td${factorTitle}>${info.ai_score || '--'}${info.ai_factors && info.ai_factors !== "--" ? `<br><span style="font-size:0.58rem; color:var(--text-muted);">${info.ai_factors}</span>` : ""}</td>
-                            <td>${info.ts_status}</td>
-                            <td class="${execClass}">${info.exec_signal}</td>
+                            <td>${info.ts_status || '--'}</td>
+                            <td class="${execClass}">${execSig}</td>
                         </tr>`;
                     }
                     scannerTbody.innerHTML = sHtml || `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Ziadne pary nezodpovedaju filtru.</td></tr>`;
@@ -3326,7 +3328,7 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
                     for (let item of logEntries) {
                         const cat = item.category || "INFO";
                         if (currentLogCategory !== "ALL" && cat !== currentLogCategory) continue;
-                        const lineStr = item.line || `[${item.time}] ${item.message}`;
+                        const lineStr = item.line || `[${item.time || '--'}] ${item.message || ''}`;
                         if (logSearch && !lineStr.toUpperCase().includes(logSearch) && !(item.symbol || "").toUpperCase().includes(logSearch)) continue;
                         const catClass = cat === "ERROR" ? "text-red" : (cat === "TRADE" ? "text-green" : (cat === "FILTER" ? "text-yellow" : ""));
                         lHtml += `<div class="log-line ${catClass}">${lineStr}</div>`;
@@ -3341,6 +3343,8 @@ HTML_TEMPLATE_CONTENT = """<!DOCTYPE html>
 
             } catch (err) {
                 console.error("Chyba pri obnove stavu:", err);
+                const updTag = document.getElementById('last-update-tag');
+                if (updTag) updTag.innerText = `Chyba aktualizacie (${err.message || 'API'})`;
             }
         }
 
