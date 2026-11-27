@@ -248,11 +248,20 @@ def log_event(msg: str, persist: bool = False):
         del SYSTEM_LOG_24H_ENTRIES[1500:]
     _prune_old_logs(now_ts)
     print(line, flush=True)
+    record_trade_pattern_experience(
+        symbol=symbol,
+        pnl_pct=pnl_pct,
+        pnl_usdc=pnl_usdc,
+        exit_reason=reason,
+        features=entry_features,
+        tf_str=CURRENT_TIMEFRAME,
+        mode_str=SETTINGS.get("mode_choice", "FIB"),
+    )
     if persist:
         save_persistent_data()
 
 
-def log_block_throttled(symbol: str, reason: str, cooldown_sec: float = 60.0):
+def log_block_throttled(symbol: str, reason: str, cooldown_sec: float = 180.0):
     key = f"{symbol}:{reason}"
     now_ts = time.time()
     last_ts = LAST_BLOCK_LOG_TS.get(key, 0.0)
@@ -582,6 +591,152 @@ def calculate_stats() -> dict:
     }
 
 
+
+PATTERN_MEMORY: dict[str, dict] = {}
+LEARNING_READINESS_TARGET_PCT = 80.0
+READINESS_FULL_TRADES_BENCHMARK = 200
+MIN_MATURE_TRADES_FOR_AI = 30
+MIN_MATURE_ACC_FOR_AI = 55.0
+_LAST_PERIODIC_TRAIN_TS = 0.0
+
+
+def _pattern_context_key(tf_str: str | None = None, mode_str: str | None = None) -> str:
+    tf_part = str(tf_str or CURRENT_TIMEFRAME or "15M").upper().strip()
+    mode_part = str(mode_str or SETTINGS.get("mode_choice", "FIB") or "FIB").upper().strip()
+    return f"{tf_part}_{mode_part}"
+
+
+def _ensure_context_pattern_bucket(ctx_key: str) -> dict:
+    if ctx_key not in PATTERN_MEMORY or not isinstance(PATTERN_MEMORY[ctx_key], dict):
+        PATTERN_MEMORY[ctx_key] = {
+            "buy_patterns": {},
+            "sell_patterns": {},
+            "total_records": 0,
+            "wins": 0,
+            "losses": 0,
+        }
+    bucket = PATTERN_MEMORY[ctx_key]
+    bucket.setdefault("buy_patterns", {})
+    bucket.setdefault("sell_patterns", {})
+    bucket["total_records"] = int(bucket.get("total_records", 0))
+    bucket["wins"] = int(bucket.get("wins", 0))
+    bucket["losses"] = int(bucket.get("losses", 0))
+    return bucket
+
+
+def _build_entry_pattern_signature(features: list[float] | None, tf_str: str, mode_str: str) -> str:
+    regime_lbl = "SIDEWAYS" if IS_SIDEWAYS_MARKET else str(MARKET_REGIME).upper()
+    if not features or len(features) < 6:
+        return f"{str(tf_str).upper()}|{str(mode_str).upper()}|{regime_lbl}"
+    mom_dir = "UP" if safe_float(features[2]) >= 0 else "DN"
+    vol_dir = "HI" if safe_float(features[1]) >= 0 else "LO"
+    ha_dir = "GRN" if safe_float(features[5]) >= 0 else "RED"
+    return f"{str(tf_str).upper()}|{str(mode_str).upper()}|{regime_lbl}|OSC:{mom_dir}|VOL:{vol_dir}|HA:{ha_dir}"
+
+
+def _build_exit_pattern_signature(reason: str, tf_str: str, mode_str: str) -> str:
+    r_clean = str(reason or "EXIT").strip()
+    return f"{str(tf_str).upper()}|{str(mode_str).upper()}|EXIT:{r_clean}"
+
+
+def record_trade_pattern_experience(
+    symbol: str,
+    pnl_pct: float,
+    pnl_usdc: float,
+    exit_reason: str,
+    features: list[float] | None,
+    tf_str: str | None = None,
+    mode_str: str | None = None,
+):
+    tf_use = str(tf_str or CURRENT_TIMEFRAME).upper().strip()
+    mode_use = str(mode_str or SETTINGS.get("mode_choice", "FIB")).upper().strip()
+    ctx_key = _pattern_context_key(tf_use, mode_use)
+    bucket = _ensure_context_pattern_bucket(ctx_key)
+
+    buy_sig = _build_entry_pattern_signature(features, tf_use, mode_use)
+    sell_sig = _build_exit_pattern_signature(exit_reason, tf_use, mode_use)
+    is_win = safe_float(pnl_usdc) > 0
+    pnl_v = safe_float(pnl_usdc)
+    pct_v = safe_float(pnl_pct)
+
+    b_rec = bucket["buy_patterns"].setdefault(buy_sig, {"count": 0, "wins": 0, "losses": 0, "sum_pnl": 0.0, "sum_pct": 0.0})
+    b_rec["count"] = int(b_rec.get("count", 0)) + 1
+    b_rec["wins"] = int(b_rec.get("wins", 0)) + (1 if is_win else 0)
+    b_rec["losses"] = int(b_rec.get("losses", 0)) + (0 if is_win else 1)
+    b_rec["sum_pnl"] = round(safe_float(b_rec.get("sum_pnl")) + pnl_v, 4)
+    b_rec["sum_pct"] = round(safe_float(b_rec.get("sum_pct")) + pct_v, 4)
+
+    s_rec = bucket["sell_patterns"].setdefault(sell_sig, {"count": 0, "wins": 0, "losses": 0, "sum_pnl": 0.0, "sum_pct": 0.0})
+    s_rec["count"] = int(s_rec.get("count", 0)) + 1
+    s_rec["wins"] = int(s_rec.get("wins", 0)) + (1 if is_win else 0)
+    s_rec["losses"] = int(s_rec.get("losses", 0)) + (0 if is_win else 1)
+    s_rec["sum_pnl"] = round(safe_float(s_rec.get("sum_pnl")) + pnl_v, 4)
+    s_rec["sum_pct"] = round(safe_float(s_rec.get("sum_pct")) + pct_v, 4)
+
+    bucket["total_records"] = int(bucket.get("total_records", 0)) + 1
+    if is_win:
+        bucket["wins"] = int(bucket.get("wins", 0)) + 1
+    else:
+        bucket["losses"] = int(bucket.get("losses", 0)) + 1
+
+
+def compute_ai_readiness_info() -> dict:
+    ctx_key = _pattern_context_key(CURRENT_TIMEFRAME, SETTINGS.get("mode_choice", "FIB"))
+    bucket = _ensure_context_pattern_bucket(ctx_key)
+    ctx_trades = int(bucket.get("total_records", 0))
+    total_learned = max(int(AI_STATE.get("live_learned_count", 0)), len(AI_LEARNED_TRADES), len(CLOSED_TRADES_HISTORY))
+    effective_trades = max(ctx_trades, total_learned)
+
+    # Progress toward 80% learning readiness target based on saved trade patterns & samples
+    sample_progress = min(1.0, effective_trades / float(READINESS_FULL_TRADES_BENCHMARK))
+    model_samples = int(AI_STATE.get("samples_count", 0))
+    sample_depth_bonus = min(0.15, model_samples / 2000.0)
+    raw_readiness_pct = min(100.0, (sample_progress * 0.85 + sample_depth_bonus) * 100.0)
+    readiness_pct = round(raw_readiness_pct, 1)
+
+    target_trades_for_80 = int(math.ceil(READINESS_FULL_TRADES_BENCHMARK * (LEARNING_READINESS_TARGET_PCT / 100.0)))
+    remaining_trades_to_80 = max(0, target_trades_for_80 - effective_trades)
+
+    is_ready_80 = readiness_pct >= LEARNING_READINESS_TARGET_PCT
+    is_mature_for_filter = (effective_trades >= MIN_MATURE_TRADES_FOR_AI) and (safe_float(AI_STATE.get("accuracy_train"), 0.0) >= MIN_MATURE_ACC_FOR_AI)
+
+    if is_ready_80 and is_mature_for_filter:
+        advisor_mode = "AKTIVNY PORADCA"
+    elif readiness_pct >= 40.0:
+        advisor_mode = "DOUCUJE SA (ORIENTACNY TIP)"
+    else:
+        advisor_mode = "ZBIERA VZORY (LEN POZOROVATEL)"
+
+    top_buy_patterns = []
+    for sig_k, rec in sorted(bucket.get("buy_patterns", {}).items(), key=lambda item: int(item[1].get("count", 0)), reverse=True)[:3]:
+        cnt = int(rec.get("count", 0))
+        w_cnt = int(rec.get("wins", 0))
+        wr = round((w_cnt / cnt) * 100.0, 1) if cnt > 0 else 0.0
+        top_buy_patterns.append({"pattern": sig_k, "count": cnt, "win_rate": wr, "pnl": round(safe_float(rec.get("sum_pnl")), 2)})
+
+    top_sell_patterns = []
+    for sig_k, rec in sorted(bucket.get("sell_patterns", {}).items(), key=lambda item: int(item[1].get("count", 0)), reverse=True)[:3]:
+        cnt = int(rec.get("count", 0))
+        w_cnt = int(rec.get("wins", 0))
+        wr = round((w_cnt / cnt) * 100.0, 1) if cnt > 0 else 0.0
+        top_sell_patterns.append({"pattern": sig_k, "count": cnt, "win_rate": wr, "pnl": round(safe_float(rec.get("sum_pnl")), 2)})
+
+    return {
+        "context_key": ctx_key,
+        "readiness_pct": readiness_pct,
+        "target_pct": LEARNING_READINESS_TARGET_PCT,
+        "is_ready_80": is_ready_80,
+        "is_mature_for_filter": is_mature_for_filter,
+        "advisor_mode": advisor_mode,
+        "effective_trades": effective_trades,
+        "context_trades": ctx_trades,
+        "target_trades_for_80": target_trades_for_80,
+        "remaining_trades_to_80": remaining_trades_to_80,
+        "top_buy_patterns": top_buy_patterns,
+        "top_sell_patterns": top_sell_patterns,
+    }
+
+
 def _ensure_parent_dir(file_path: str):
     parent = os.path.dirname(file_path)
     if parent:
@@ -609,6 +764,7 @@ def save_ai_memory():
             "saved_at": get_sk_time_str(),
             "ai_state": ai_clean,
             "learned_trades": learned_items,
+            "pattern_memory": PATTERN_MEMORY,
         }
         tmp_path = f"{AI_MEMORY_FILE}.tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -646,6 +802,11 @@ def load_ai_memory():
                 )
                 if not CLOSED_TRADES_HISTORY:
                     CLOSED_TRADES_HISTORY = list(AI_LEARNED_TRADES[:100])
+        if isinstance(data.get("pattern_memory"), dict):
+            PATTERN_MEMORY.clear()
+            for k, v in data["pattern_memory"].items():
+                if isinstance(v, dict):
+                    PATTERN_MEMORY[str(k)] = v
     except Exception:
         pass
 
@@ -1725,8 +1886,11 @@ def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_overri
                     ai_factors_txt = describe_ai_factors(feats)
                     ai_prob = predict_ai_probability(feats)
 
+                readiness_info = compute_ai_readiness_info()
                 min_prob = float(SETTINGS.get("ai_min_prob", 0.38))
-                if ai_prob is not None and ai_prob < min_prob:
+                if not readiness_info.get("is_mature_for_filter", False):
+                    AI_STATE["passed_count"] = AI_STATE.get("passed_count", 0) + 1
+                elif ai_prob is not None and ai_prob < min_prob:
                     final_buy = False
                     block_reason = f"AI skore {ai_prob*100:.1f}% < {min_prob*100:.1f}% [{ai_factors_txt}]"
                     AI_STATE["blocked_count"] = AI_STATE.get("blocked_count", 0) + 1
@@ -1870,7 +2034,7 @@ async def autonomous_scanner_loop():
             )
 
             if IS_BOT_ACTIVE and len(ACTIVE_TRADES) < max_allowed and bool(SETTINGS.get("require_bull_tf_buy", False)) and not bull_ok:
-                log_block_throttled("TRH", f"Nakupy pozastavene: {bull_reason}.", cooldown_sec=60.0)
+                log_block_throttled("TRH", f"Nakupy pozastavene: {bull_reason}.", cooldown_sec=180.0)
 
             for symbol in list(TOP_LIQUID_SYMBOLS):
                 if symbol in EXCLUDED_SYMBOLS:
@@ -1908,9 +2072,14 @@ async def autonomous_scanner_loop():
                         ha_is_green=sig.get("ha_is_green", False),
                     )
                 elif sig.get("block_reason"):
-                    log_block_throttled(symbol, sig["block_reason"], cooldown_sec=60.0)
+                    log_block_throttled(symbol, sig["block_reason"], cooldown_sec=180.0)
 
                 await asyncio.sleep(0.3)
+            global _LAST_PERIODIC_TRAIN_TS
+            if IS_BOT_ACTIVE and (time.time() - _LAST_PERIODIC_TRAIN_TS >= 1800.0):
+                _LAST_PERIODIC_TRAIN_TS = time.time()
+                seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
+                await train_ai_model_from_candles(seed_sym, bar_tf=tf_str, force=False)
         except Exception as e:
             log_event(f"Chyba v autonomnom skeneri: {e}")
         await asyncio.sleep(10)
@@ -2521,6 +2690,35 @@ async def api_train_ai():
     return JSONResponse({"status": "error", "message": res.get("msg", "Chyba trenovania AI.")})
 
 
+@app.post("/api/clean-reset-learning")
+async def api_clean_reset_learning():
+    global CLOSED_TRADES_HISTORY, AI_LEARNED_TRADES, PATTERN_MEMORY, AI_STATE
+    CLOSED_TRADES_HISTORY.clear()
+    AI_LEARNED_TRADES.clear()
+    PATTERN_MEMORY.clear()
+    AI_STATE = {
+        "weights": [0.0] * AI_FEATURE_COUNT,
+        "bias": 0.0,
+        "samples_count": 0,
+        "live_learned_count": 0,
+        "live_wins_count": 0,
+        "win_rate_train": 0.0,
+        "accuracy_train": 0.0,
+        "trained_at": "--",
+        "last_symbol": "--",
+        "last_prob": None,
+        "last_factors": "--",
+        "blocked_count": 0,
+        "passed_count": 0,
+        "_last_train_ts": 0.0,
+    }
+    save_persistent_data()
+    seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
+    await train_ai_model_from_candles(seed_sym, bar_tf=CURRENT_TIMEFRAME.lower(), force=True)
+    log_event("Cisty reset AI pamate a historie obchodov vykonany pre novy zber vzoriek.", persist=True)
+    return JSONResponse({"status": "success", "ai_readiness": compute_ai_readiness_info()})
+
+
 @app.post("/api/clear-logs")
 async def api_clear_logs():
     global LAST_LOG_PRUNE_STR
@@ -3084,10 +3282,10 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 <div class="pine-footer">
                     <div style="display:flex; flex-direction:column; gap:3px;">
                         <span id="pine-save-status" class="pine-save-status">Platia presne nastavenia zvolene v APEX rozhrani (Fixny SL sa uplatnuje iba ked je zapnuty).</span>
-                        <span id="ai-learned-summary" style="font-size:0.68rem; color:var(--yellow); font-weight:600;">AI nastudovane a ulozene obchody: 0 (0W / 0L)</span>
+                        <span id="ai-learned-summary" style="font-size:0.68rem; color:var(--yellow); font-weight:600;">AI naucenie: 0.0% / ciel 80% (chyba ~160 obchodov) | Ulozene obchody: 0 (0W / 0L) | Pravdepodobnost: --</span>
                     </div>
                     <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                        <button class="btn btn-yellow" onclick="trainAiNow()">TRENOVAT AI MODEL</button>
+                        
                         <button class="btn" onclick="resetPineDefaults()">OBNOVIT ZAKLAD (PINE)</button>
                         <button class="btn btn-on" onclick="savePineSettings()">ULOZIT NASTAVENIA</button>
                     </div>
@@ -3545,15 +3743,19 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
 
                 if (data.ai_state) {
                     const sc = data.ai_state.samples_count || 0;
-                    const wr = data.ai_state.win_rate_train || 0;
                     const lc = data.ai_state.live_learned_count || 0;
                     const lw = data.ai_state.live_wins_count || 0;
                     const ll = Math.max(0, lc - lw);
-                    document.getElementById('header-ai').innerText = sc > 0 ? `${sc} vz. (${wr}%) | Ulozene: ${lc}` : "CAKA";
+                    const rd = data.ai_readiness || {};
+                    const rPct = Number(rd.readiness_pct || 0).toFixed(1);
+                    const remTr = Number(rd.remaining_trades_to_80 ?? 160);
+                    const advMode = rd.advisor_mode || "ZBIERA VZORY";
+                    const lastProbNum = data.ai_state.last_prob !== null && data.ai_state.last_prob !== undefined ? (Number(data.ai_state.last_prob) * 100).toFixed(1) + "%" : "--";
+                    document.getElementById('header-ai').innerText = `Naucenie: ${rPct}% / 80% (${advMode})`;
                     const hLearned = document.getElementById('header-ai-learned');
-                    if (hLearned) hLearned.innerText = `${lc} obchodov (${lw}W / ${ll}L)`;
+                    if (hLearned) hLearned.innerText = `${lc} obchodov (${lw}W / ${ll}L) | P: ${lastProbNum}`;
                     const sumEl = document.getElementById('ai-learned-summary');
-                    if (sumEl) sumEl.innerText = `AI nastudovane a ulozene obchody: ${lc} (${lw}W / ${ll}L) | Celkovo vzoriek v pamati: ${sc}`;
+                    if (sumEl) sumEl.innerText = `AI naucenie: ${rPct}% / ciel 80% (chyba ~${remTr} obchodov) | Ulozene obchody: ${lc} (${lw}W / ${ll}L) | Pravdepodobnost: ${lastProbNum} | Vzorky: ${sc}`;
                 }
 
                 let regimeBadge = document.getElementById('market-regime-badge');
@@ -3783,6 +3985,7 @@ async def get_state():
         "fixed_sl_pct": SETTINGS.get("fixed_sl_pct", 1.5),
         "pine_settings": get_pine_settings_dict(),
         "ai_state": ai_public,
+        "ai_readiness": compute_ai_readiness_info(),
         "stats": stats,
         "active_trades": ACTIVE_TRADES,
         "scanner_cache": MARKET_SCANNER_CACHE,
