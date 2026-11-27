@@ -20,15 +20,15 @@ import uvicorn
 
 # --- OKX KLUCE & BEZPECNOST ---
 
-OKX_API_KEY = os.getenv("OKX_API_KEY", "").strip()
-OKX_SECRET = os.getenv("OKX_SECRET", "").strip()
-OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "").strip()
+OKX_API_KEY = os.getenv("54ebe9fe-1fd0-443d-8f76-0cd1a3439ddb", "").strip()
+OKX_SECRET = os.getenv("FBD5C8332D88E3ED5662470CA9C3E813", "").strip()
+OKX_PASSPHRASE = os.getenv("Novyzeland111/", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 
 # --- TELEGRAM NOTIFIKACIE & INTERAKTIVNY BOT ---
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("9130979784", "").strip()
 
 # Sukromne poziadavky (zostatok, nakup, predaj) -> OKX Demo EEA
 _env_demo_url = os.getenv("OKX_DEMO_BASE_URL", os.getenv("OKX_BASE_URL", "https://eea.okx.com")).strip().rstrip("/")
