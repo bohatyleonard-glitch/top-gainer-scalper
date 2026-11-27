@@ -20,16 +20,18 @@ import uvicorn
 
 # --- OKX KLUCE & BEZPECNOST ---
 
-OKX_API_KEY = "54ebe9fe-1fd0-443d-8f76-0cd1a3439ddb"
-OKX_SECRET = "FBD5C8332D88E3ED5662470CA9C3E813"
-OKX_PASSPHRASE = "Novyzeland111/"
-TELEGRAM_BOT_TOKEN = "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI"
-TELEGRAM_CHAT_ID = "9130979784"
+OKX_API_KEY = os.getenv("OKX_API_KEY", "54ebe9fe-1fd0-443d-8f76-0cd1a3439ddb").strip()
+OKX_SECRET = os.getenv("OKX_SECRET", "FBD5C8332D88E3ED5662470CA9C3E813").strip()
+OKX_PASSPHRASE = os.getenv("OKX_PASSPHRASE", "Novyzeland111/").strip()
+
+_DEFAULT_TG_TOKEN = "9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI"
+_DEFAULT_TG_CHAT_ID = "9130979784"
 
 # --- TELEGRAM NOTIFIKACIE & INTERAKTIVNY BOT ---
 
-TELEGRAM_BOT_TOKEN = os.getenv("9158932827:AAHvZT_gQrVH6dk54BRx8_mxTFtkBud0tUI", "").strip()
-TELEGRAM_CHAT_ID = os.getenv("9130979784", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", _DEFAULT_TG_TOKEN).strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", _DEFAULT_TG_CHAT_ID).strip()
+WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
 
 # Sukromne poziadavky (zostatok, nakup, predaj) -> OKX Demo EEA
 _env_demo_url = os.getenv("OKX_DEMO_BASE_URL", os.getenv("OKX_BASE_URL", "https://eea.okx.com")).strip().rstrip("/")
@@ -124,7 +126,6 @@ SETTINGS = {
     "pred_look": 3,
     "pivot_len": 2,
     "fib_choice": "0.786",
-    # Fixny Stop-Loss je teraz riaditelny prepinacom use_fixed_sl
     "use_fixed_sl": False,
     "fixed_sl_pct": 1.5,
     "use_fixed_tp": False,
@@ -1453,7 +1454,6 @@ def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_overri
             ema9_i = close_ema_9[i]
             ha_is_green = ha_closes[i] > ha_opens[i]
 
-            # Podmienka nakupneho signalu podla indikatora 22,11 script buy sell super
             cond_volume_bullish = (osc_i > 0.0) and (osc_i > sig_i) and (pred_i > osc_i)
             cond_volume_crossover = (i > 0) and (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
             cond_ema9 = cl_i > ema9_i
@@ -2197,6 +2197,9 @@ async def fixed_stoploss_monitor_loop():
                 else:
                     current_price = trade["entry_price"]
 
+                if coin not in ACTIVE_TRADES:
+                    continue
+
                 if current_price > 0:
                     trade["current_price"] = current_price
                     if current_price > trade["highest_price"]:
@@ -2236,12 +2239,10 @@ async def fixed_stoploss_monitor_loop():
                     tp_stage = f" | Fixny TP: +{fixed_tp_pct}%" if use_fixed_tp else ""
                     CURRENT_STAGE = f"STAV: Pozicii: {len(ACTIVE_TRADES)} | {symbol} ({pnl_pct:+.2f}%){sl_stage}{tp_stage}"
 
-                    # 1. Fixny Stop-Loss bezi iba ak je v nastaveniach zapnuty
                     if use_fixed_sl_now and current_price <= fixed_sl_price_now:
                         await close_trade_position(coin, f"Fixny Stop-Loss (-{fixed_sl_pct_now}%)")
                         continue
 
-                    # 2. Fixny Take-Profit (uzamkne ciel a pri zapnutom TTP necha dalej tahat zisk)
                     if use_fixed_tp and current_price >= fixed_tp_price:
                         if not trade.get("tp_goal_reached", False):
                             trade["tp_goal_reached"] = True
@@ -2256,7 +2257,6 @@ async def fixed_stoploss_monitor_loop():
                                 await close_trade_position(coin, f"Fixny Take-Profit (+{fixed_tp_pct}%)")
                                 continue
 
-                    # 3. Break-Even
                     if use_be and not trade.get("be_active", False):
                         if current_price >= entry_p * (1.0 + (be_trig / 100.0)):
                             trade["be_active"] = True
@@ -2266,7 +2266,6 @@ async def fixed_stoploss_monitor_loop():
                         await close_trade_position(coin, "Break-Even Exit (0.00% / ochrana vstupu)")
                         continue
 
-                    # 4. Trailing Take-Profit
                     if use_ttp:
                         if not trade.get("ttp_active", False) and current_price >= entry_p * (1.0 + (ttp_trig / 100.0)):
                             trade["ttp_active"] = True
@@ -2284,7 +2283,6 @@ async def fixed_stoploss_monitor_loop():
                                 await close_trade_position(coin, ttp_reason)
                                 continue
 
-                    # 5. Trailing Stop
                     if use_ts and highest_p > entry_p:
                         ts_stop = highest_p * (1.0 - (ts_pct / 100.0))
                         if use_be and trade.get("be_active", False):
@@ -2323,11 +2321,13 @@ async def lifespan(app: FastAPI):
     scanner_task = asyncio.create_task(autonomous_scanner_loop())
     updater_task = asyncio.create_task(top_symbols_updater_loop())
     send_telegram_msg(f"APEX BOT ({len(TOP_LIQUID_SYMBOLS)} symbolov · Rezim: {SETTINGS.get('mode_choice')}) pripraveny!")
-    yield
-    save_persistent_data()
-    monitor_task.cancel()
-    scanner_task.cancel()
-    updater_task.cancel()
+    try:
+        yield
+    finally:
+        save_persistent_data()
+        for task in (monitor_task, scanner_task, updater_task):
+            task.cancel()
+        await asyncio.gather(monitor_task, scanner_task, updater_task, return_exceptions=True)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -2698,6 +2698,8 @@ async def sell_now():
         return JSONResponse({"status": "error", "message": "Ziadna aktivna pozicia na predaj."})
     sold = []
     for coin in list(ACTIVE_TRADES.keys()):
+        if coin not in ACTIVE_TRADES:
+            continue
         symbol = ACTIVE_TRADES[coin]["market_pair"]
         await close_trade_position(coin, "Rucny okamzity predaj (Emergency)")
         sold.append(symbol)
@@ -3762,3 +3764,4 @@ async def get_state():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
+.
