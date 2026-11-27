@@ -1070,23 +1070,54 @@ def _collect_symbol_training_samples_sync(symbol: str, bar_tf: str, target_gain_
     close_ema_50 = pack["close_ema_50"]
     predicted_next = pack["predicted_next"]
 
+    pivot_len = max(1, min(10, int(SETTINGS.get("pivot_len", 2))))
+    fib_choice = str(SETTINGS.get("fib_choice", "0.786"))
+    last_high = None
+    last_low = None
+
     horizon = 12
     samples = []
     for i in range(25, n - horizon):
+        if i >= 2 * pivot_len:
+            p_idx = i - pivot_len
+            left_h = ha_highs[p_idx - pivot_len: p_idx]
+            right_h = ha_highs[p_idx + 1: p_idx + pivot_len + 1]
+            cand_h = ha_highs[p_idx]
+            if all(cand_h > x for x in left_h) and all(cand_h >= x for x in right_h):
+                last_high = cand_h
+
+            left_l = ha_lows[p_idx - pivot_len: p_idx]
+            right_l = ha_lows[p_idx + 1: p_idx + pivot_len + 1]
+            cand_l = ha_lows[p_idx]
+            if all(cand_l < x for x in left_l) and all(cand_l <= x for x in right_l):
+                last_low = cand_l
+
+        fib_target = None
+        if last_high is not None and last_low is not None:
+            rng = last_high - last_low
+            if fib_choice == "0.50":
+                fib_target = last_high - rng * 0.50
+            elif fib_choice == "0.618":
+                fib_target = last_high - rng * 0.618
+            else:
+                fib_target = last_high - rng * 0.786
+
         osc_i = oscillator[i]
         sig_i = signal_line[i]
+        pred_i = predicted_next[i]
         cl_i = ha_closes[i]
         ema9_i = close_ema_9[i]
 
-        cond_vol_bull = (osc_i > 0.0) and (osc_i > sig_i)
+        cond_vol_bull = (osc_i > 0.0) and (osc_i > sig_i) and (pred_i > osc_i)
         cond_vol_cross = (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
-        ema9_cross = (close_ema_9[i - 1] <= ha_closes[i - 1]) and (cl_i > ema9_i)
+        cond_ema9 = cl_i > ema9_i
+        fib_touch = (fib_target is not None) and (cl_i > fib_target)
         if mode_choice == "BREAKOUT":
-            is_sig = cond_vol_cross or (cond_vol_bull and ema9_cross)
+            is_sig = cond_vol_cross or (cond_vol_bull and cond_ema9)
         elif mode_choice == "FIB":
-            is_sig = cond_vol_bull and (ha_lows[i] <= cl_i)
+            is_sig = cond_vol_bull and fib_touch
         else:
-            is_sig = cond_vol_bull and (cond_vol_cross or ema9_cross)
+            is_sig = cond_vol_bull and (cond_vol_cross or cond_ema9)
 
         if not is_sig or cl_i <= 0:
             continue
@@ -1416,20 +1447,20 @@ def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_overri
 
             osc_i = oscillator[i]
             sig_i = signal_line[i]
+            pred_i = predicted_next[i]
             cl_i = ha_closes[i]
-            lo_i = ha_lows[i]
             ema9_i = close_ema_9[i]
             ha_is_green = ha_closes[i] > ha_opens[i]
 
-            # Logika blizka Pine Scriptu: r_low <= fib_target a crossover EMA9
-            cond_volume_bullish = (osc_i > 0.0) and (osc_i > sig_i)
+            # Podmienka nakupneho signalu podla indikatora 22,11 script buy sell super
+            cond_volume_bullish = (osc_i > 0.0) and (osc_i > sig_i) and (pred_i > osc_i)
             cond_volume_crossover = (i > 0) and (oscillator[i - 1] <= signal_line[i - 1]) and (osc_i > sig_i) and (osc_i > 0.0)
-            ema9_crossover = (i > 0) and (ha_closes[i - 1] <= close_ema_9[i - 1]) and (cl_i > ema9_i)
-            fib_touch = (fib_target is not None) and (lo_i <= fib_target)
+            cond_ema9 = cl_i > ema9_i
+            fib_touch = (fib_target is not None) and (cl_i > fib_target)
 
-            breakout_trigger = cond_volume_crossover or (cond_volume_bullish and ema9_crossover)
+            breakout_trigger = cond_volume_crossover or (cond_volume_bullish and cond_ema9)
             fib_trigger_cond = cond_volume_bullish and fib_touch
-            all_green_condition = cond_volume_bullish and (cond_volume_crossover or ema9_crossover)
+            all_green_condition = cond_volume_bullish and (cond_volume_crossover or cond_ema9)
 
             if mode_choice == "BREAKOUT":
                 base_trigger = breakout_trigger
