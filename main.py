@@ -79,7 +79,7 @@ AI_FEATURE_COUNT = 9
 # --- GLOBALNY STAV BOTA ---
 IS_BOT_ACTIVE = True
 CURRENT_TIMEFRAME = "15M"
-CURRENT_STAGE = "STAV: Inicializujem bota (Pine logika + nastavenia z APEX panela)..."
+CURRENT_STAGE = "STAV: Cisty start bota (Pine logika + nastavenia z APEX panela)..."
 MARKET_REGIME = "BULL"
 IS_SIDEWAYS_MARKET = False
 LAST_SIDEWAYS_ALERT_TS = 0.0
@@ -591,7 +591,6 @@ def calculate_stats() -> dict:
     }
 
 
-
 PATTERN_MEMORY: dict[str, dict] = {}
 LEARNING_READINESS_TARGET_PCT = 80.0
 READINESS_FULL_TRADES_BENCHMARK = 200
@@ -687,7 +686,6 @@ def compute_ai_readiness_info() -> dict:
     total_learned = max(int(AI_STATE.get("live_learned_count", 0)), len(AI_LEARNED_TRADES), len(CLOSED_TRADES_HISTORY))
     effective_trades = max(ctx_trades, total_learned)
 
-    # Progress toward 80% learning readiness target based on saved trade patterns & samples
     sample_progress = min(1.0, effective_trades / float(READINESS_FULL_TRADES_BENCHMARK))
     model_samples = int(AI_STATE.get("samples_count", 0))
     sample_depth_bonus = min(0.15, model_samples / 2000.0)
@@ -775,40 +773,8 @@ def save_ai_memory():
 
 
 def load_ai_memory():
-    global AI_LEARNED_TRADES, CLOSED_TRADES_HISTORY
-    if not os.path.exists(AI_MEMORY_FILE):
-        return
-    try:
-        with open(AI_MEMORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data.get("ai_state"), dict):
-            for k, v in data["ai_state"].items():
-                if not str(k).startswith("_"):
-                    AI_STATE[k] = v
-        w_list = list(AI_STATE.get("weights", []))
-        while len(w_list) < AI_FEATURE_COUNT:
-            w_list.append(0.0)
-        AI_STATE["weights"] = [round(safe_float(x), 5) for x in w_list[:AI_FEATURE_COUNT]]
-        if isinstance(data.get("learned_trades"), list):
-            AI_LEARNED_TRADES = [
-                t for t in data["learned_trades"][:200]
-                if isinstance(t, dict) and t.get("entry_features") and len(t.get("entry_features")) >= 6
-            ]
-            if AI_LEARNED_TRADES:
-                AI_STATE["live_learned_count"] = max(int(AI_STATE.get("live_learned_count", 0)), len(AI_LEARNED_TRADES))
-                AI_STATE["live_wins_count"] = max(
-                    int(AI_STATE.get("live_wins_count", 0)),
-                    sum(1 for t in AI_LEARNED_TRADES if safe_float(t.get("pnl_usdc")) > 0),
-                )
-                if not CLOSED_TRADES_HISTORY:
-                    CLOSED_TRADES_HISTORY = list(AI_LEARNED_TRADES[:100])
-        if isinstance(data.get("pattern_memory"), dict):
-            PATTERN_MEMORY.clear()
-            for k, v in data["pattern_memory"].items():
-                if isinstance(v, dict):
-                    PATTERN_MEMORY[str(k)] = v
-    except Exception:
-        pass
+    # Cisty start od nuly: nespustame nacitavanie starych zaznamov
+    return
 
 
 def save_ai_model():
@@ -840,85 +806,14 @@ def save_persistent_data():
 
 
 def load_persistent_data():
-    global CLOSED_TRADES_HISTORY, SYSTEM_LOGS, SYSTEM_LOG_ENTRIES, SYSTEM_LOG_24H_ENTRIES, AI_LEARNED_TRADES, ACTIVE_TRADES
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data.get("settings"), dict):
-                SETTINGS.update(data["settings"])
-            if isinstance(data.get("active_trades"), dict):
-                restored_trades: dict[str, dict] = {}
-                for coin_k, t_item in data["active_trades"].items():
-                    if isinstance(t_item, dict) and t_item.get("market_pair") and safe_float(t_item.get("entry_price"), 0.0) > 0:
-                        cleaned = dict(t_item)
-                        cleaned["sell_fail_count"] = 0
-                        cleaned["sell_retry_after"] = 0.0
-                        restored_trades[str(coin_k).upper()] = cleaned
-                ACTIVE_TRADES = restored_trades
-            if isinstance(data.get("ai_state"), dict):
-                for k, v in data["ai_state"].items():
-                    if not str(k).startswith("_"):
-                        AI_STATE[k] = v
-            if isinstance(data.get("history"), list):
-                CLOSED_TRADES_HISTORY = data["history"][:100]
-                real_with_feats = [t for t in CLOSED_TRADES_HISTORY if t.get("entry_features") and len(t.get("entry_features")) >= 6]
-                if real_with_feats and not AI_LEARNED_TRADES:
-                    AI_LEARNED_TRADES = list(real_with_feats[:200])
-                if real_with_feats:
-                    AI_STATE["live_learned_count"] = max(int(AI_STATE.get("live_learned_count", 0)), len(real_with_feats))
-                    AI_STATE["live_wins_count"] = max(
-                        int(AI_STATE.get("live_wins_count", 0)),
-                        sum(1 for t in real_with_feats if safe_float(t.get("pnl_usdc")) > 0),
-                    )
-            now_ts = time.time()
-            if isinstance(data.get("log_entries"), list):
-                loaded_entries = []
-                for item in data["log_entries"][:200]:
-                    if isinstance(item, dict) and item.get("line"):
-                        line_str = str(item["line"])
-                        msg_str = str(item.get("message") or line_str)
-                        cat_v, sym_v = _detect_log_category_and_symbol(msg_str)
-                        loaded_entries.append({
-                            "ts": safe_float(item.get("ts"), now_ts),
-                            "time": str(item.get("time") or get_sk_time_str()),
-                            "category": str(item.get("category") or cat_v),
-                            "symbol": str(item.get("symbol") or sym_v),
-                            "message": msg_str,
-                            "line": line_str,
-                        })
-                SYSTEM_LOG_ENTRIES[:] = loaded_entries
-            elif isinstance(data.get("logs"), list):
-                SYSTEM_LOG_ENTRIES[:] = [
-                    {
-                        "ts": now_ts,
-                        "time": get_sk_time_str(),
-                        "category": "INFO",
-                        "symbol": "SYS",
-                        "message": str(line),
-                        "line": str(line),
-                    }
-                    for line in data["logs"][:200]
-                ]
-            if isinstance(data.get("log_entries_24h"), list):
-                SYSTEM_LOG_24H_ENTRIES[:] = [
-                    {
-                        "ts": safe_float(item.get("ts"), now_ts),
-                        "time": str(item.get("time") or get_sk_time_str()),
-                        "category": str(item.get("category") or "INFO"),
-                        "symbol": str(item.get("symbol") or "SYS"),
-                        "message": str(item.get("message") or item.get("line") or ""),
-                        "line": str(item.get("line") or ""),
-                    }
-                    for item in data["log_entries_24h"][:500]
-                    if isinstance(item, dict) and item.get("line")
-                ]
-            else:
-                SYSTEM_LOG_24H_ENTRIES[:] = list(SYSTEM_LOG_ENTRIES)
-            _prune_old_logs(now_ts)
-        except Exception:
-            pass
-    load_ai_memory()
+    # Cisty start od nuly: vymazeme vsetky stare zaznamy a ulozime cisty zaklad
+    CLOSED_TRADES_HISTORY.clear()
+    AI_LEARNED_TRADES.clear()
+    PATTERN_MEMORY.clear()
+    SYSTEM_LOG_ENTRIES.clear()
+    SYSTEM_LOG_24H_ENTRIES.clear()
+    SYSTEM_LOGS.clear()
+    save_persistent_data()
 
 
 def calc_ema_series(values, length):
@@ -2692,10 +2587,13 @@ async def api_train_ai():
 
 @app.post("/api/clean-reset-learning")
 async def api_clean_reset_learning():
-    global CLOSED_TRADES_HISTORY, AI_LEARNED_TRADES, PATTERN_MEMORY, AI_STATE
+    global CLOSED_TRADES_HISTORY, AI_LEARNED_TRADES, PATTERN_MEMORY, AI_STATE, SYSTEM_LOG_ENTRIES, SYSTEM_LOG_24H_ENTRIES, SYSTEM_LOGS
     CLOSED_TRADES_HISTORY.clear()
     AI_LEARNED_TRADES.clear()
     PATTERN_MEMORY.clear()
+    SYSTEM_LOG_ENTRIES.clear()
+    SYSTEM_LOG_24H_ENTRIES.clear()
+    SYSTEM_LOGS.clear()
     AI_STATE = {
         "weights": [0.0] * AI_FEATURE_COUNT,
         "bias": 0.0,
@@ -2715,7 +2613,7 @@ async def api_clean_reset_learning():
     save_persistent_data()
     seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
     await train_ai_model_from_candles(seed_sym, bar_tf=CURRENT_TIMEFRAME.lower(), force=True)
-    log_event("Cisty reset AI pamate a historie obchodov vykonany pre novy zber vzoriek.", persist=True)
+    log_event("Cisty reset AI pamate, vzorov a historie obchodov vykonany pre novy zber vzoriek.", persist=True)
     return JSONResponse({"status": "success", "ai_readiness": compute_ai_readiness_info()})
 
 
@@ -3281,11 +3179,11 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
 
                 <div class="pine-footer">
                     <div style="display:flex; flex-direction:column; gap:3px;">
-                        <span id="pine-save-status" class="pine-save-status">Platia presne nastavenia zvolene v APEX rozhrani (Fixny SL sa uplatnuje iba ked je zapnuty).</span>
+                        <span id="pine-save-status" class="pine-save-status">Cisty start aktivny — ziadne stare zaznamy.</span>
                         <span id="ai-learned-summary" style="font-size:0.68rem; color:var(--yellow); font-weight:600;">AI naucenie: 0.0% / ciel 80% (chyba ~160 obchodov) | Ulozene obchody: 0 (0W / 0L) | Pravdepodobnost: --</span>
                     </div>
                     <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                        
+                        <button class="btn btn-off" onclick="cleanResetLearning()">CISTY RESET AI</button>
                         <button class="btn" onclick="resetPineDefaults()">OBNOVIT ZAKLAD (PINE)</button>
                         <button class="btn btn-on" onclick="savePineSettings()">ULOZIT NASTAVENIA</button>
                     </div>
@@ -3388,7 +3286,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 </div>
             </div>
             <div class="logs-box" id="logs-container">
-                <div class="log-line">[System Initialized] Pripraveny podla nastaveni v APEX.</div>
+                <div class="log-line">[System Initialized] Cisty start — ziadne stare zaznamy.</div>
             </div>
         </div>
     </div>
@@ -3532,25 +3430,6 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
             }
         }
 
-        async function trainAiNow() {
-            let statusEl = document.getElementById('pine-save-status');
-            statusEl.style.color = 'var(--yellow)';
-            statusEl.innerText = 'Trenujem AI model na historickych svieckach z OKX...';
-            let res = await fetch('/api/train-ai', {method: 'POST'});
-            let data = await res.json();
-            if (data.status === 'success') {
-                const lc = data.details.live_learned_count || 0;
-                const lw = data.details.live_wins_count || 0;
-                const ll = data.details.live_losses_count || 0;
-                statusEl.style.color = 'var(--green)';
-                statusEl.innerText = `AI natrenovane (${data.details.samples} vzoriek, presnost ${data.details.accuracy}%) | Nastudovane a ulozene obchody: ${lc} (${lw}W / ${ll}L).`;
-                updateState();
-            } else {
-                statusEl.style.color = 'var(--red)';
-                statusEl.innerText = 'AI chyba: ' + data.message;
-            }
-        }
-
         function applyPineFormValues(ps) {
             if (!ps) return;
             document.getElementById('pine-mode').value = ps.mode_choice;
@@ -3637,6 +3516,27 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
             } else {
                 statusEl.style.color = 'var(--red)';
                 statusEl.innerText = 'Chyba: ' + data.message;
+            }
+        }
+
+        async function cleanResetLearning() {
+            if (!confirm("Naozaj chces vykonat CISTY RESET AI pamate, vzorov a historie obchodov? Tento krok sa neda vratit.")) return;
+            const statusEl = document.getElementById('pine-save-status');
+            if (statusEl) {
+                statusEl.style.color = 'var(--yellow)';
+                statusEl.innerText = 'Vymazavam AI pamat, vzory a historiu obchodov a trenujem novy zaklad...';
+            }
+            const res = await fetch('/api/clean-reset-learning', {method: 'POST'});
+            const data = await res.json();
+            if (data.status === 'success') {
+                if (statusEl) {
+                    statusEl.style.color = 'var(--green)';
+                    statusEl.innerText = 'Cisty reset dokonceny! AI zacina zbierat nove vzory odznova.';
+                }
+                updateState();
+            } else if (statusEl) {
+                statusEl.style.color = 'var(--red)';
+                statusEl.innerText = 'Chyba pri cistom resete.';
             }
         }
 
