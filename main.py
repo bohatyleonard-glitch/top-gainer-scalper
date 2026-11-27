@@ -342,35 +342,59 @@ def _build_okx_auth_headers(method: str, request_path: str, body: str = "") -> d
     return headers
 
 
+_LAST_503_FALLBACK_LOG_TS = 0.0
+
+
+def _okx_single_base_request_sync(base_url: str, method: str, request_path: str, body: str = "") -> dict:
+    target_base = base_url.strip().rstrip("/")
+    data_bytes = body.encode("utf-8") if body else None
+    headers = _build_okx_auth_headers(method, request_path, body)
+    try:
+        req = urllib.request.Request(f"{target_base}{request_path}", data=data_bytes, headers=headers, method=method.upper())
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            parsed = json.loads(resp.read().decode("utf-8"))
+            if parsed.get("code") == "0":
+                return parsed
+            return {
+                "code": str(parsed.get("code", "-1")),
+                "msg": f"[{target_base}] {parsed.get('msg', 'Neznama chyba OKX')} (code={parsed.get('code')})",
+                "data": parsed.get("data", []),
+            }
+    except urllib.error.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="ignore")[:200]
+        except Exception:
+            pass
+        return {"code": str(e.code), "msg": f"[{target_base}] HTTP {e.code} {e.reason}: {err_body}", "data": []}
+    except Exception as e:
+        return {"code": "-1", "msg": f"[{target_base}] {e}", "data": []}
+
+
 def okx_request_sync(method: str, request_path: str, body: str = "") -> dict:
+    global _LAST_503_FALLBACK_LOG_TS
     if not OKX_API_KEY or not OKX_SECRET or not OKX_PASSPHRASE:
         return {"code": "-1", "msg": "Chybaju OKX API kluce", "data": []}
-    try:
-        target_base = OKX_DEMO_BASE_URL or "https://eea.okx.com"
-        data_bytes = body.encode("utf-8") if body else None
-        headers = _build_okx_auth_headers(method, request_path, body)
-        try:
-            req = urllib.request.Request(f"{target_base}{request_path}", data=data_bytes, headers=headers, method=method.upper())
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                parsed = json.loads(resp.read().decode("utf-8"))
-                if parsed.get("code") == "0":
-                    return parsed
-                return {
-                    "code": str(parsed.get("code", "-1")),
-                    "msg": f"[{target_base}] {parsed.get('msg', 'Neznama chyba OKX')} (code={parsed.get('code')})",
-                    "data": parsed.get("data", []),
-                }
-        except urllib.error.HTTPError as e:
-            err_body = ""
-            try:
-                err_body = e.read().decode("utf-8", errors="ignore")[:200]
-            except Exception:
-                pass
-            return {"code": str(e.code), "msg": f"[{target_base}] HTTP {e.code} {e.reason}: {err_body}", "data": []}
-        except Exception as e:
-            return {"code": "-1", "msg": f"[{target_base}] {e}", "data": []}
-    except Exception as e:
-        return {"code": "-1", "msg": str(e), "data": []}
+
+    primary_base = OKX_DEMO_BASE_URL or "https://eea.okx.com"
+    fallback_bases = [b for b in ["https://www.okx.com", "https://eea.okx.com"] if b.rstrip("/") != primary_base.rstrip("/")]
+
+    first_res = _okx_single_base_request_sync(primary_base, method, request_path, body)
+    if first_res.get("code") == "0":
+        return first_res
+
+    is_transient_503 = str(first_res.get("code")) in {"503", "-1"} or "503" in str(first_res.get("msg", ""))
+    if is_transient_503:
+        for fb in fallback_bases:
+            fb_res = _okx_single_base_request_sync(fb, method, request_path, body)
+            if fb_res.get("code") == "0":
+                now_ts = time.time()
+                if now_ts - _LAST_503_FALLBACK_LOG_TS >= 300:
+                    _LAST_503_FALLBACK_LOG_TS = now_ts
+                    log_event(f"OKX {primary_base} vratil 503 - automaticky prepnute na zalozny {fb} (Demo).")
+                return fb_res
+
+    return first_res
 
 
 async def okx_request(method: str, request_path: str, body: str = "") -> dict:
@@ -418,11 +442,20 @@ def fetch_account_capital_sync(ccy: str = "USDC", force_refresh: bool = False) -
             _BALANCE_CACHE[preferred] = (now_ts, 0.0, ACTIVE_BALANCE_CCY)
             return 0.0
 
-        if now_ts - LAST_BALANCE_ERROR_LOG_TS >= 60:
+        is_503 = str(res.get("code")) == "503" or "503" in str(res.get("msg", ""))
+        if is_503 and cached is not None:
+            _BALANCE_CACHE[preferred] = (now_ts - max(0.0, BALANCE_CACHE_TTL_SEC - 25.0), cached[1], cached[2])
+            ACTIVE_BALANCE_CCY = cached[2]
+            if now_ts - LAST_BALANCE_ERROR_LOG_TS >= 300:
+                LAST_BALANCE_ERROR_LOG_TS = now_ts
+                log_event(f"OKX zostatok docasne 503 (pouzivam posledny zostatok {cached[1]:.2f} {cached[2]}).")
+            return cached[1]
+
+        if now_ts - LAST_BALANCE_ERROR_LOG_TS >= 300:
             LAST_BALANCE_ERROR_LOG_TS = now_ts
             log_event(f"OKX zostatok chyba (code={res.get('code')}): {res.get('msg')}")
     except Exception as err:
-        if now_ts - LAST_BALANCE_ERROR_LOG_TS >= 60:
+        if now_ts - LAST_BALANCE_ERROR_LOG_TS >= 300:
             LAST_BALANCE_ERROR_LOG_TS = now_ts
             log_event(f"Chyba pri nacitani zostatku: {err}")
     return cached[1] if cached is not None else 0.0
@@ -3764,4 +3797,3 @@ async def get_state():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
-
