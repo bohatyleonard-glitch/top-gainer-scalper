@@ -248,15 +248,6 @@ def log_event(msg: str, persist: bool = False):
         del SYSTEM_LOG_24H_ENTRIES[1500:]
     _prune_old_logs(now_ts)
     print(line, flush=True)
-    record_trade_pattern_experience(
-        symbol=symbol,
-        pnl_pct=pnl_pct,
-        pnl_usdc=pnl_usdc,
-        exit_reason=reason,
-        features=entry_features,
-        tf_str=CURRENT_TIMEFRAME,
-        mode_str=SETTINGS.get("mode_choice", "FIB"),
-    )
     if persist:
         save_persistent_data()
 
@@ -568,6 +559,15 @@ def record_closed_trade(
         })
         if len(AI_LEARNED_TRADES) > 200:
             del AI_LEARNED_TRADES[200:]
+    record_trade_pattern_experience(
+        symbol=symbol,
+        pnl_pct=pnl_pct,
+        pnl_usdc=pnl_usdc,
+        exit_reason=reason,
+        features=entry_features,
+        tf_str=CURRENT_TIMEFRAME,
+        mode_str=SETTINGS.get("mode_choice", "FIB"),
+    )
     if persist:
         save_persistent_data()
 
