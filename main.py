@@ -3027,293 +3027,620 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>APEX MATRIX_SCALPER_v1_BOT + AI</title>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #000000;
-            --card-bg: #08090c;
-            --border-color: #1a1d24;
-            --border-hover: #2b303c;
-            --text-main: #f3f4f6;
-            --text-muted: #7b8598;
+            --bg-void: #030304;
+            --bg-panel: #08090c;
+            --bg-elevated: #0d0f14;
+            --bg-input: #050608;
+            --border-subtle: #181b22;
+            --border-strong: #272c38;
+            --text-primary: #f4f5f7;
+            --text-secondary: #8a93a6;
+            --text-muted: #5c6475;
             --accent-white: #ffffff;
-            --green: #10b981;
-            --red: #ef4444;
-            --yellow: #f59e0b;
+            --accent-emerald: #10b981;
+            --accent-emerald-dim: rgba(16, 185, 129, 0.12);
+            --accent-crimson: #ef4444;
+            --accent-crimson-dim: rgba(239, 68, 68, 0.12);
+            --accent-amber: #f59e0b;
+            --accent-amber-dim: rgba(245, 158, 11, 0.14);
+            --accent-cyan: #22d3ee;
+            --accent-cyan-dim: rgba(34, 211, 238, 0.12);
+            --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
         }
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; }
-        html, body { background-color: #000000; color: var(--text-main); padding: 16px; min-height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
-        .container { max-width: 1350px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; padding-bottom: 30px; }
-        .top-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 12px; flex-wrap: wrap; gap: 12px; }
-        .brand h1 { font-size: 1.05rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.5px; }
-        .brand p { font-size: 0.7rem; color: var(--text-muted); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.8px; display: flex; gap: 12px; flex-wrap: wrap; }
-        .balance-tag { color: var(--yellow); font-weight: 700; }
-        .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-        .btn { background: #050608; border: 1px solid var(--border-hover); color: var(--text-main); padding: 5px 10px; font-size: 0.7rem; font-weight: 600; cursor: pointer; border-radius: 4px; transition: all 0.15s ease; text-transform: uppercase; letter-spacing: 0.5px; }
-        .btn:hover { border-color: var(--text-muted); background: #0e1015; }
-        .btn-on { border-color: var(--green); color: var(--green); }
-        .btn-off { border-color: var(--text-muted); color: var(--text-muted); }
-        .btn-yellow { border-color: var(--yellow) !important; color: var(--yellow) !important; background: rgba(245, 158, 11, 0.12) !important; font-weight: 700 !important; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body {
+            background-color: var(--bg-void);
+            background-image:
+                radial-gradient(circle at 50% -10%, rgba(255, 255, 255, 0.045), transparent 55%),
+                linear-gradient(to right, rgba(255, 255, 255, 0.016) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255, 255, 255, 0.016) 1px, transparent 1px);
+            background-size: 100% 100%, 32px 32px, 32px 32px;
+            color: var(--text-primary);
+            font-family: var(--font-sans);
+            min-height: 100vh;
+            padding: 16px 20px 36px;
+            -webkit-font-smoothing: antialiased;
+        }
+        .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+        .container { max-width: 1420px; width: 100%; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+
+        .desk-header {
+            background: rgba(8, 9, 12, 0.9);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 14px 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .header-top { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px; }
+        .brand-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .grok-mark {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 3px 8px; border-radius: 4px;
+            background: rgba(255, 255, 255, 0.06); border: 1px solid var(--border-strong);
+            font-family: var(--font-mono); font-size: 0.65rem; font-weight: 700;
+            color: var(--accent-white); letter-spacing: 0.08em; text-transform: uppercase;
+        }
+        .grok-mark-dot {
+            width: 6px; height: 6px; border-radius: 50%;
+            background: var(--accent-cyan); box-shadow: 0 0 8px var(--accent-cyan);
+        }
+        .brand h1 { font-size: 1.12rem; font-weight: 700; color: var(--accent-white); letter-spacing: -0.02em; font-family: var(--font-mono); }
+        .telemetry-strip { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; font-size: 0.7rem; color: var(--text-secondary); font-family: var(--font-mono); }
+        .telemetry-item { display: inline-flex; align-items: center; gap: 5px; }
+        .telemetry-val { color: var(--accent-amber); font-weight: 600; }
+        .telemetry-val-cyan { color: var(--accent-cyan); font-weight: 600; }
+
+        .header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .btn {
+            background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text-primary);
+            padding: 6px 11px; font-size: 0.68rem; font-weight: 600; font-family: var(--font-mono);
+            cursor: pointer; border-radius: 5px; transition: all 0.14s ease;
+            text-transform: uppercase; letter-spacing: 0.04em; display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+        }
+        .btn:hover { border-color: #3d4557; background: var(--bg-elevated); color: var(--accent-white); }
+        .btn-on { border-color: rgba(16, 185, 129, 0.55); color: var(--accent-emerald); background: var(--accent-emerald-dim); }
+        .btn-on:hover { background: rgba(16, 185, 129, 0.18); border-color: var(--accent-emerald); }
+        .btn-off { border-color: var(--border-subtle); color: var(--text-muted); }
+        .btn-active-pill { border-color: var(--accent-amber) !important; color: var(--accent-amber) !important; background: var(--accent-amber-dim) !important; font-weight: 700 !important; }
         .btn-sell { background: var(--accent-white); color: #000000; font-weight: 700; border-color: var(--accent-white); }
         .btn-sell:hover { background: #e4e4e7; }
-        .btn-sell:disabled { opacity: 0.25; cursor: not-allowed; background: #050608; color: var(--text-muted); border-color: var(--border-color); }
-        .status-ticker { font-size: 0.75rem; color: var(--yellow); background: var(--card-bg); border: 1px solid var(--border-color); padding: 9px 14px; border-radius: 5px; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 600; flex-wrap: wrap; }
-        .status-left { display: flex; align-items: center; gap: 10px; }
-        .regime-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 4px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.4px; border: 1px solid var(--border-hover); }
-        .regime-bull { color: var(--green); background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.45); }
-        .regime-bear { color: var(--red); background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.45); }
-        .regime-sideways { color: var(--red); background: rgba(239, 68, 68, 0.18); border-color: rgba(239, 68, 68, 0.65); }
-        .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
-        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-        .stat-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; }
-        .stat-title { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.6px; }
-        .stat-value { font-size: 1.15rem; font-weight: 700; margin-top: 4px; color: var(--accent-white); }
-        .section-title { font-size: 0.72rem; text-transform: uppercase; color: var(--text-muted); letter-spacing: 1px; margin-top: 8px; margin-bottom: 5px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
-        .terminal-card { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; overflow: hidden; }
-        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.72rem; }
-        th { color: var(--text-muted); font-weight: 500; padding: 9px 10px; border-bottom: 1px solid var(--border-color); font-size: 0.62rem; text-transform: uppercase; background: var(--card-bg); position: sticky; top: 0; z-index: 2; }
-        td { padding: 9px 10px; border-bottom: 1px solid var(--border-color); color: var(--text-main); }
-        tr:last-child td { border-bottom: none; }
-        .scrollable-card { max-height: 220px; overflow-y: auto; }
-        .logs-box { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 10px 12px; height: 200px; max-height: 200px; overflow-y: auto; font-size: 0.7rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 6px; }
-        .log-line { white-space: pre-wrap; word-break: break-all; line-height: 1.4; border-bottom: 1px dashed rgba(255,255,255,0.03); padding-bottom: 4px; }
-        .text-green { color: var(--green); font-weight: 700; }
-        .text-red { color: var(--red); font-weight: 700; }
-        .text-yellow { color: var(--yellow); font-weight: 700; }
-        .custom-buy-box { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border-hover); padding: 2px 6px; border-radius: 4px; background: #050608; }
-        .custom-buy-input { background: transparent; border: none; color: var(--text-main); font-size: 0.7rem; width: 55px; outline: none; text-transform: uppercase; font-weight: 600; }
+        .btn-sell:disabled { opacity: 0.25; cursor: not-allowed; background: var(--bg-input); color: var(--text-muted); border-color: var(--border-subtle); }
 
-        .pine-panel { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 5px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+        .control-ribbon {
+            display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+            gap: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle);
+        }
+        .ribbon-group { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+        .ribbon-label {
+            font-size: 0.62rem; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.07em; color: var(--text-muted); margin-right: 4px; font-family: var(--font-mono);
+        }
+        .btn-mini { padding: 4px 8px; font-size: 0.65rem; }
+        .custom-buy-box {
+            display: inline-flex; align-items: center; gap: 4px;
+            border: 1px solid var(--border-strong); padding: 2px 4px 2px 8px;
+            border-radius: 5px; background: var(--bg-input);
+        }
+        .custom-buy-input {
+            background: transparent; border: none; color: var(--accent-white);
+            font-family: var(--font-mono); font-size: 0.68rem; font-weight: 600;
+            width: 58px; outline: none; text-transform: uppercase;
+        }
+        .custom-buy-input::placeholder { color: var(--text-muted); }
+
+        .status-bar {
+            background: var(--bg-panel); border: 1px solid var(--border-subtle);
+            border-radius: 7px; padding: 9px 14px;
+            display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+        }
+        .status-left { display: flex; align-items: center; gap: 10px; font-family: var(--font-mono); font-size: 0.74rem; font-weight: 600; color: var(--accent-amber); }
+        .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-emerald); box-shadow: 0 0 10px var(--accent-emerald); animation: pulseGlow 2s infinite; }
+        @keyframes pulseGlow { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.55; transform: scale(0.85); } }
+        .status-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .update-tag { font-family: var(--font-mono); font-size: 0.66rem; color: var(--text-muted); }
+        .regime-badge {
+            display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+            border-radius: 4px; font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700;
+            letter-spacing: 0.05em; border: 1px solid var(--border-strong);
+        }
+        .regime-bull { color: var(--accent-emerald); background: var(--accent-emerald-dim); border-color: rgba(16, 185, 129, 0.45); }
+        .regime-bear { color: var(--accent-crimson); background: var(--accent-crimson-dim); border-color: rgba(239, 68, 68, 0.45); }
+        .regime-sideways { color: var(--accent-crimson); background: rgba(239, 68, 68, 0.18); border-color: rgba(239, 68, 68, 0.65); }
+
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+        .stat-card {
+            background: var(--bg-panel); border: 1px solid var(--border-subtle);
+            border-radius: 7px; padding: 13px 16px; position: relative; overflow: hidden;
+        }
+        .stat-card::before {
+            content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.14), transparent);
+        }
+        .stat-label { font-size: 0.65rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.07em; }
+        .stat-value { font-family: var(--font-mono); font-size: 1.25rem; font-weight: 700; color: var(--accent-white); margin-top: 5px; }
+        .stat-sub { font-family: var(--font-mono); font-size: 0.64rem; color: var(--text-muted); margin-top: 4px; }
+
+        /* Visual Desk: Candlestick Chart + Sonar Scanner */
+        .visual-desk-grid { display: grid; grid-template-columns: 1.65fr 1fr; gap: 12px; }
+        .visual-card {
+            background: var(--bg-panel); border: 1px solid var(--border-subtle);
+            border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px;
+            position: relative; overflow: hidden;
+        }
+        .visual-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .visual-title {
+            font-family: var(--font-mono); font-size: 0.7rem; font-weight: 700;
+            color: var(--accent-white); text-transform: uppercase; letter-spacing: 0.06em;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .live-pill {
+            font-size: 0.6rem; padding: 2px 7px; border-radius: 999px;
+            background: var(--accent-emerald-dim); color: var(--accent-emerald);
+            border: 1px solid rgba(16, 185, 129, 0.35); font-weight: 700;
+        }
+        .cyan-pill {
+            font-size: 0.6rem; padding: 2px 7px; border-radius: 999px;
+            background: var(--accent-cyan-dim); color: var(--accent-cyan);
+            border: 1px solid rgba(34, 211, 238, 0.35); font-weight: 700;
+        }
+        .chart-canvas-wrap {
+            position: relative; width: 100%; height: 225px;
+            background: #040508; border: 1px solid var(--border-subtle); border-radius: 6px; overflow: hidden;
+        }
+        canvas.desk-canvas { width: 100%; height: 100%; display: block; }
+        .chart-legend {
+            display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
+            gap: 8px; font-family: var(--font-mono); font-size: 0.63rem; color: var(--text-secondary);
+        }
+        .legend-items { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+        .legend-dot { width: 7px; height: 7px; border-radius: 2px; display: inline-block; margin-right: 4px; }
+
+        .radar-body { display: grid; grid-template-columns: 170px 1fr; gap: 12px; align-items: center; min-height: 225px; }
+        .radar-stage {
+            position: relative; width: 170px; height: 170px; margin: 0 auto;
+            border-radius: 50%; background: radial-gradient(circle, rgba(34,211,238,0.11) 0%, rgba(16,185,129,0.03) 55%, #040508 75%);
+            border: 1px solid rgba(34, 211, 238, 0.28); overflow: hidden;
+        }
+        .radar-ring {
+            position: absolute; border: 1px dashed rgba(255, 255, 255, 0.09); border-radius: 50%;
+            top: 50%; left: 50%; transform: translate(-50%, -50%);
+        }
+        .radar-ring.r1 { width: 56px; height: 56px; }
+        .radar-ring.r2 { width: 112px; height: 112px; }
+        .radar-ring.r3 { width: 162px; height: 162px; }
+        .radar-cross-h { position: absolute; top: 50%; left: 0; right: 0; height: 1px; background: rgba(255,255,255,0.06); }
+        .radar-cross-v { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,0.06); }
+        .radar-sweep {
+            position: absolute; inset: 0; border-radius: 50%;
+            background: conic-gradient(from 0deg, rgba(34, 211, 238, 0.36) 0deg, rgba(34, 211, 238, 0.04) 65deg, transparent 110deg);
+            animation: radarSpin 3.6s linear infinite;
+        }
+        @keyframes radarSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .radar-blip {
+            position: absolute; width: 7px; height: 7px; border-radius: 50%;
+            transform: translate(-50%, -50%); animation: blipPulse 2.2s infinite ease-in-out;
+        }
+        .blip-buy { background: var(--accent-emerald); box-shadow: 0 0 10px var(--accent-emerald); }
+        .blip-scan { background: var(--accent-cyan); box-shadow: 0 0 8px var(--accent-cyan); }
+        .blip-warn { background: var(--accent-amber); box-shadow: 0 0 8px var(--accent-amber); }
+        @keyframes blipPulse {
+            0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.95; }
+            50% { transform: translate(-50%, -50%) scale(1.45); opacity: 0.5; }
+        }
+        .radar-feed { display: flex; flex-direction: column; gap: 6px; max-height: 225px; overflow-y: auto; }
+        .radar-row {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 6px 9px; border-radius: 5px; background: var(--bg-input);
+            border: 1px solid var(--border-subtle); font-family: var(--font-mono); font-size: 0.65rem;
+        }
+        .radar-bar-wrap { width: 54px; height: 5px; background: #141821; border-radius: 3px; overflow: hidden; margin-top: 3px; }
+        .radar-bar-fill { height: 100%; background: var(--accent-cyan); border-radius: 3px; transition: width 0.4s ease; }
+
+        .section-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+        .section-title { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); font-family: var(--font-mono); }
+
+        .settings-panel { background: var(--bg-panel); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+        .ai-readiness-box {
+            background: var(--bg-input); border: 1px solid var(--border-subtle);
+            border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px;
+        }
+        .ai-readiness-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; font-family: var(--font-mono); font-size: 0.68rem; }
+        .progress-track { width: 100%; height: 6px; background: #12151d; border-radius: 999px; overflow: hidden; }
+        .progress-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent-amber), var(--accent-emerald)); transition: width 0.35s ease; border-radius: 999px; }
+
         .quick-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-        @media (max-width: 1180px) { .quick-grid { grid-template-columns: repeat(2, 1fr); } }
-        @media (max-width: 1000px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
-        @media (max-width: 650px) { .quick-grid { grid-template-columns: 1fr; } .stats-grid { grid-template-columns: 1fr; } }
-        .pine-group { background: #040507; border: 1px solid var(--border-color); border-radius: 4px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-        .pine-group-title { font-size: 0.66rem; font-weight: 700; color: var(--yellow); text-transform: uppercase; letter-spacing: 0.6px; border-bottom: 1px solid var(--border-color); padding-bottom: 5px; }
-        .pine-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 0.68rem; color: var(--text-main); }
-        .pine-row label { color: var(--text-muted); flex: 1; }
-        .pine-input, .pine-select { background: #000000; border: 1px solid var(--border-hover); color: var(--text-main); border-radius: 3px; padding: 3px 6px; font-size: 0.68rem; outline: none; }
-        .pine-input { width: 72px; text-align: right; }
-        .pine-select { max-width: 155px; }
-        .pine-checkbox { width: 15px; height: 15px; accent-color: var(--green); cursor: pointer; }
-        details.adv-box { background: #040507; border: 1px solid var(--border-color); border-radius: 4px; padding: 8px 10px; }
-        details.adv-box > summary { cursor: pointer; font-size: 0.68rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; list-style: none; }
-        details.adv-box[open] > summary { color: var(--yellow); margin-bottom: 8px; }
+        .settings-group { background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 11px 12px; display: flex; flex-direction: column; gap: 8px; }
+        .settings-group-title { font-family: var(--font-mono); font-size: 0.66rem; font-weight: 700; color: var(--accent-amber); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--border-subtle); padding-bottom: 6px; }
+        .setting-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 0.72rem; color: var(--text-secondary); }
+        .setting-row label { flex: 1; cursor: pointer; }
+        .setting-input, .setting-select {
+            background: var(--bg-panel); border: 1px solid var(--border-strong); color: var(--text-primary);
+            font-family: var(--font-mono); border-radius: 4px; padding: 4px 7px; font-size: 0.68rem; outline: none;
+        }
+        .setting-input:focus, .setting-select:focus { border-color: var(--accent-white); }
+        .setting-input { width: 74px; text-align: right; }
+        .setting-select { max-width: 155px; }
+        .setting-checkbox { width: 15px; height: 15px; accent-color: var(--accent-emerald); cursor: pointer; }
+
+        details.adv-box { background: var(--bg-input); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 9px 12px; }
+        details.adv-box > summary { cursor: pointer; font-family: var(--font-mono); font-size: 0.68rem; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em; list-style: none; }
+        details.adv-box[open] > summary { color: var(--accent-amber); margin-bottom: 10px; }
         .adv-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-        @media (max-width: 1000px) { .adv-grid { grid-template-columns: 1fr; } }
-        .pine-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; border-top: 1px solid var(--border-color); padding-top: 10px; }
-        .pine-save-status { font-size: 0.68rem; color: var(--green); font-weight: 600; }
+
+        .settings-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; border-top: 1px solid var(--border-subtle); padding-top: 11px; }
+        .save-status { font-family: var(--font-mono); font-size: 0.68rem; color: var(--accent-emerald); font-weight: 600; }
+
+        .table-card { background: var(--bg-panel); border: 1px solid var(--border-subtle); border-radius: 8px; overflow: hidden; }
+        .table-scroll { max-height: 240px; overflow-y: auto; }
+        table { width: 100%; border-collapse: collapse; text-align: left; font-family: var(--font-mono); font-size: 0.7rem; }
+        th {
+            color: var(--text-muted); font-weight: 600; padding: 9px 11px;
+            border-bottom: 1px solid var(--border-subtle); font-size: 0.62rem;
+            text-transform: uppercase; letter-spacing: 0.05em;
+            background: var(--bg-elevated); position: sticky; top: 0; z-index: 2;
+        }
+        td { padding: 9px 11px; border-bottom: 1px solid var(--border-subtle); color: var(--text-primary); }
+        tr:hover td { background: rgba(255, 255, 255, 0.018); }
+        tr:last-child td { border-bottom: none; }
+
         .filter-bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-        .filter-input { background: #000000; border: 1px solid var(--border-hover); color: var(--text-main); border-radius: 4px; padding: 4px 8px; font-size: 0.68rem; outline: none; width: 120px; }
+        .filter-input {
+            background: var(--bg-input); border: 1px solid var(--border-strong); color: var(--text-primary);
+            font-family: var(--font-mono); border-radius: 5px; padding: 4px 9px; font-size: 0.68rem; outline: none; width: 130px;
+        }
+        .filter-input:focus { border-color: var(--accent-white); }
+        .logs-box {
+            background: var(--bg-panel); border: 1px solid var(--border-subtle); border-radius: 8px;
+            padding: 11px 14px; height: 210px; max-height: 210px; overflow-y: auto;
+            font-family: var(--font-mono); font-size: 0.69rem; color: var(--text-secondary);
+            display: flex; flex-direction: column; gap: 5px;
+        }
+        .log-line { white-space: pre-wrap; word-break: break-all; line-height: 1.45; border-bottom: 1px dashed rgba(255, 255, 255, 0.04); padding-bottom: 4px; }
+        .log-line:last-child { border-bottom: none; }
+
+        .text-green { color: var(--accent-emerald); font-weight: 700; }
+        .text-red { color: var(--accent-crimson); font-weight: 700; }
+        .text-yellow { color: var(--accent-amber); font-weight: 700; }
+        .text-cyan { color: var(--accent-cyan); font-weight: 700; }
+
+        .modal-backdrop {
+            position: fixed; inset: 0; background: rgba(0, 0, 0, 0.72);
+            backdrop-filter: blur(4px); display: none; align-items: center; justify-content: center; z-index: 999; padding: 16px;
+        }
+        .modal-backdrop.open { display: flex; }
+        .modal-card {
+            background: var(--bg-panel); border: 1px solid var(--border-strong); border-radius: 8px;
+            max-width: 420px; width: 100%; padding: 18px; display: flex; flex-direction: column; gap: 14px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.85);
+        }
+        .modal-title { font-family: var(--font-mono); font-size: 0.82rem; font-weight: 700; color: var(--accent-white); }
+        .modal-msg { font-size: 0.78rem; color: var(--text-secondary); line-height: 1.5; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+        .toast-container { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 1000; }
+        .toast {
+            background: var(--bg-elevated); border: 1px solid var(--border-strong); color: var(--text-primary);
+            font-family: var(--font-mono); font-size: 0.68rem; padding: 9px 13px; border-radius: 6px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.65); max-width: 340px;
+        }
+        .toast.toast-ok { border-color: rgba(16, 185, 129, 0.55); color: var(--accent-emerald); }
+        .toast.toast-err { border-color: rgba(239, 68, 68, 0.55); color: var(--accent-crimson); }
+
+        @media (max-width: 1180px) {
+            .quick-grid { grid-template-columns: repeat(2, 1fr); }
+            .visual-desk-grid { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 1000px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 680px) {
+            .quick-grid, .adv-grid, .stats-grid { grid-template-columns: 1fr; }
+            .radar-body { grid-template-columns: 1fr; }
+            body { padding: 10px; }
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="top-bar">
-            <div class="brand">
-                <h1>APEX MATRIX_SCALPER_v1_BOT + AI</h1>
-                <p>
-                    <span id="header-pair">Demo exekucia (Live OKX data)</span>
-                    <span>Zostatok: <span id="header-balance" class="balance-tag">-- USDC</span></span>
-                    <span>Aktivny TF: <span id="header-tf" class="balance-tag">{{ CURRENT_TIMEFRAME }}</span></span>
-                    <span>Fib: <span id="header-fib" class="balance-tag">{{ SETTINGS.fib_choice }}</span></span>
-                    <span>Fixny SL: <span id="header-sl" class="balance-tag">{% if SETTINGS.use_fixed_sl %}-{{ SETTINGS.fixed_sl_pct }}%{% else %}OFF{% endif %}</span></span>
-                    <span>AI Model: <span id="header-ai" class="balance-tag">Nacitavam...</span></span>
-                    <span>AI Pamat (ulozene): <span id="header-ai-learned" class="balance-tag">0 obchodov (0W / 0L)</span></span>
-                </p>
-            </div>
-            <div class="actions">
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '5M' %}btn-yellow{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '10M' %}btn-yellow{% endif %}" data-tf="10m" onclick="setTf('10m')">10M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '20M' %}btn-yellow{% endif %}" data-tf="20m" onclick="setTf('20m')">20M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '2H' %}btn-yellow{% endif %}" data-tf="2h" onclick="setTf('2h')">2H</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '4H' %}btn-yellow{% endif %}" data-tf="4h" onclick="setTf('4h')">4H</button>
-
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 3 %}btn-yellow{% endif %}" data-val="3" onclick="setParallel(3)">3x</button>
-                <button class="parallel-btn btn {% if SETTINGS.max_parallel == 4 %}btn-yellow{% endif %}" data-val="4" onclick="setParallel(4)">4x</button>
-
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap|int == 500 %}btn-yellow{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap|int == 1000 %}btn-yellow{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap|int == 2000 %}btn-yellow{% endif %}" data-val="2000" onclick="setBudget(2000)">2K</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap|int == 3000 %}btn-yellow{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap|int == 5000 %}btn-yellow{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
-                <button class="budget-btn btn {% if SETTINGS.max_budget_cap|int == 10000 %}btn-yellow{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
-
-                <div class="custom-buy-box">
-                    <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL">
-                    <button class="btn btn-on" style="padding: 2px 5px;" onclick="manualBuyCustom()">BUY</button>
+        <header class="desk-header">
+            <div class="header-top">
+                <div class="brand">
+                    <div class="brand-title-row">
+                        <span class="grok-mark"><span class="grok-mark-dot"></span>GROK TRADING DESK</span>
+                        <h1>APEX MATRIX_SCALPER_v1_BOT + AI</h1>
+                    </div>
+                    <div class="telemetry-strip">
+                        <span class="telemetry-item" id="header-pair">Demo exekucia (Live OKX data)</span>
+                        <span class="telemetry-item">Zostatok: <span id="header-balance" class="telemetry-val">-- USDC</span></span>
+                        <span class="telemetry-item">Aktivny TF: <span id="header-tf" class="telemetry-val">{{ CURRENT_TIMEFRAME }}</span></span>
+                        <span class="telemetry-item">Fib: <span id="header-fib" class="telemetry-val">{{ SETTINGS.fib_choice }}</span></span>
+                        <span class="telemetry-item">Fixny SL: <span id="header-sl" class="telemetry-val">{% if SETTINGS.use_fixed_sl %}-{{ SETTINGS.fixed_sl_pct }}%{% else %}OFF{% endif %}</span></span>
+                        <span class="telemetry-item">AI Model: <span id="header-ai" class="telemetry-val-cyan">Nacitavam...</span></span>
+                        <span class="telemetry-item">AI Pamat (ulozene): <span id="header-ai-learned" class="telemetry-val">0 obchodov (0W / 0L)</span></span>
+                    </div>
                 </div>
 
-                <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-yellow{% endif %}" onclick="toggleCompounding()">
-                    COMPOUND: {% if SETTINGS.compounding_enabled %}ON{% else %}OFF{% endif %}
-                </button>
-                <button id="btc-btn" class="btn {% if SETTINGS.use_btc_filter %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBtcFilter()">
-                    BTC: {% if SETTINGS.use_btc_filter %}ON{% else %}OFF{% endif %}
-                </button>
-                <button id="bot-btn" class="btn {% if IS_BOT_ACTIVE %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBot()">
-                    {% if IS_BOT_ACTIVE %}ACTIVE{% else %}PAUSED{% endif %}
-                </button>
-                <button id="sell-btn" class="btn btn-sell" onclick="sellNow()" disabled>SELL ALL</button>
+                <div class="header-actions">
+                    <div class="custom-buy-box">
+                        <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL">
+                        <button class="btn btn-on btn-mini" onclick="manualBuyCustom()">BUY</button>
+                    </div>
+                    <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-active-pill{% endif %}" onclick="toggleCompounding()">
+                        COMPOUND: {% if SETTINGS.compounding_enabled %}ON{% else %}OFF{% endif %}
+                    </button>
+                    <button id="btc-btn" class="btn {% if SETTINGS.use_btc_filter %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBtcFilter()">
+                        BTC: {% if SETTINGS.use_btc_filter %}ON{% else %}OFF{% endif %}
+                    </button>
+                    <button id="bot-btn" class="btn {% if IS_BOT_ACTIVE %}btn-on{% else %}btn-off{% endif %}" onclick="toggleBot()">
+                        {% if IS_BOT_ACTIVE %}ACTIVE{% else %}PAUSED{% endif %}
+                    </button>
+                    <button id="sell-btn" class="btn btn-sell" onclick="sellNow()" disabled>SELL ALL</button>
+                </div>
             </div>
-        </div>
 
-        <div class="status-ticker">
+            <div class="control-ribbon">
+                <div class="ribbon-group">
+                    <span class="ribbon-label">Timeframe</span>
+                    <button class="tf-btn btn btn-mini {% if CURRENT_TIMEFRAME|upper == '5M' %}btn-active-pill{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
+                    <button class="tf-btn btn btn-mini {% if CURRENT_TIMEFRAME|upper == '8M' %}btn-active-pill{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
+                    <button class="tf-btn btn btn-mini {% if CURRENT_TIMEFRAME|upper == '10M' %}btn-active-pill{% endif %}" data-tf="10m" onclick="setTf('10m')">10M</button>
+                    <button class="tf-btn btn btn-mini {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-active-pill{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
+                    <button class="tf-btn btn btn-mini {% if CURRENT_TIMEFRAME|upper == '20M' %}btn-active-pill{% endif %}" data-tf="20m" onclick="setTf('20m')">20M</button>
+                    <button class="tf-btn btn btn-mini {% if CURRENT_TIMEFRAME|upper == '30M' %}btn-active-pill{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
+                    <button class="tf-btn btn btn-mini {% if CURRENT_TIMEFRAME|upper == '45M' %}btn-active-pill{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
+                    <button class="tf-btn btn btn-mini {% if CURRENT_TIMEFRAME|upper == '2H' %}btn-active-pill{% endif %}" data-tf="2h" onclick="setTf('2h')">2H</button>
+                    <button class="tf-btn btn btn-mini {% if CURRENT_TIMEFRAME|upper == '4H' %}btn-active-pill{% endif %}" data-tf="4h" onclick="setTf('4h')">4H</button>
+                </div>
+
+                <div class="ribbon-group">
+                    <span class="ribbon-label">Paralelne</span>
+                    <button class="parallel-btn btn btn-mini {% if SETTINGS.max_parallel == 1 %}btn-active-pill{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
+                    <button class="parallel-btn btn btn-mini {% if SETTINGS.max_parallel == 2 %}btn-active-pill{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
+                    <button class="parallel-btn btn btn-mini {% if SETTINGS.max_parallel == 3 %}btn-active-pill{% endif %}" data-val="3" onclick="setParallel(3)">3x</button>
+                    <button class="parallel-btn btn btn-mini {% if SETTINGS.max_parallel == 4 %}btn-active-pill{% endif %}" data-val="4" onclick="setParallel(4)">4x</button>
+                </div>
+
+                <div class="ribbon-group">
+                    <span class="ribbon-label">Rozpocet</span>
+                    <button class="budget-btn btn btn-mini {% if SETTINGS.max_budget_cap|int == 500 %}btn-active-pill{% endif %}" data-val="500" onclick="setBudget(500)">500</button>
+                    <button class="budget-btn btn btn-mini {% if SETTINGS.max_budget_cap|int == 1000 %}btn-active-pill{% endif %}" data-val="1000" onclick="setBudget(1000)">1K</button>
+                    <button class="budget-btn btn btn-mini {% if SETTINGS.max_budget_cap|int == 2000 %}btn-active-pill{% endif %}" data-val="2000" onclick="setBudget(2000)">2K</button>
+                    <button class="budget-btn btn btn-mini {% if SETTINGS.max_budget_cap|int == 3000 %}btn-active-pill{% endif %}" data-val="3000" onclick="setBudget(3000)">3K</button>
+                    <button class="budget-btn btn btn-mini {% if SETTINGS.max_budget_cap|int == 5000 %}btn-active-pill{% endif %}" data-val="5000" onclick="setBudget(5000)">5K</button>
+                    <button class="budget-btn btn btn-mini {% if SETTINGS.max_budget_cap|int == 10000 %}btn-active-pill{% endif %}" data-val="10000" onclick="setBudget(10000)">10K</button>
+                </div>
+            </div>
+        </header>
+
+        <div class="status-bar">
             <div class="status-left">
-                <div class="status-dot"></div>
+                <div class="pulse-dot"></div>
                 <span id="current-stage">{{ CURRENT_STAGE }}</span>
             </div>
-            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                <span id="last-update-tag" style="font-size:0.66rem; color:var(--text-muted); font-weight:500;">Aktualizacia: --:--:--</span>
+            <div class="status-right">
+                <span id="last-update-tag" class="update-tag">Aktualizacia: --:--:--</span>
                 <span id="market-regime-badge" class="regime-badge regime-bull">BYCI TRH</span>
             </div>
         </div>
 
-        <div class="stats-grid">
+        <section class="stats-grid">
             <div class="stat-card">
-                <div class="stat-title">Win Rate</div>
+                <div class="stat-label">Win Rate</div>
                 <div class="stat-value" id="stat-winrate">0.0%</div>
+                <div class="stat-sub">Uspesnost uzavretych obchodov</div>
             </div>
             <div class="stat-card">
-                <div class="stat-title">Total Trades</div>
+                <div class="stat-label">Total Trades</div>
                 <div class="stat-value" id="stat-trades">0</div>
+                <div class="stat-sub">Dokoncene pozicie v historii</div>
             </div>
             <div class="stat-card">
-                <div class="stat-title">Win / Loss</div>
+                <div class="stat-label">Win / Loss</div>
                 <div class="stat-value" id="stat-winloss">0W / 0L</div>
+                <div class="stat-sub">Ziskove vs. stratove obchody</div>
             </div>
             <div class="stat-card">
-                <div class="stat-title">Net PnL (po poplatkoch)</div>
+                <div class="stat-label">Net PnL (po poplatkoch)</div>
                 <div class="stat-value" id="stat-pnl">+0.00 $</div>
-                <div id="stat-pnl-sub" style="font-size:0.62rem; color:var(--text-muted); margin-top:4px;">Hruby: +0.00 $ | Poplatky: -0.00 $</div>
+                <div class="stat-sub" id="stat-pnl-sub">Hruby: +0.00 $ | Poplatky: -0.00 $</div>
             </div>
-        </div>
+        </section>
 
-        <div>
-            <div class="section-title">
-                <span>Nastavenia bota (vsetky pravidla si riadite tu v APEX rozhrani)</span>
-                <span id="pine-active-badge" class="text-yellow">REZIM: {{ SETTINGS.mode_choice }} · FIB {{ SETTINGS.fib_choice }}</span>
+        <!-- Animovany Heikin-Ashi + FIB graf & Sonar Market Scanner -->
+        <section class="visual-desk-grid">
+            <div class="visual-card">
+                <div class="visual-header">
+                    <div class="visual-title">
+                        <span>Heikin-Ashi + FIB Pulse Chart</span>
+                        <span class="live-pill">LIVE STREAM</span>
+                    </div>
+                    <div class="ribbon-group" id="chart-coin-buttons">
+                        <button class="btn btn-mini btn-active-pill chart-coin-btn" data-coin="SOL" onclick="selectChartCoin('SOL')">SOL</button>
+                        <button class="btn btn-mini chart-coin-btn" data-coin="SUI" onclick="selectChartCoin('SUI')">SUI</button>
+                        <button class="btn btn-mini chart-coin-btn" data-coin="AVAX" onclick="selectChartCoin('AVAX')">AVAX</button>
+                        <button class="btn btn-mini chart-coin-btn" data-coin="LINK" onclick="selectChartCoin('LINK')">LINK</button>
+                    </div>
+                </div>
+                <div class="chart-canvas-wrap">
+                    <canvas id="haFibCanvas" class="desk-canvas"></canvas>
+                </div>
+                <div class="chart-legend">
+                    <div class="legend-items">
+                        <span><i class="legend-dot" style="background:#10b981;"></i>HA Bull</span>
+                        <span><i class="legend-dot" style="background:#ef4444;"></i>HA Bear</span>
+                        <span><i class="legend-dot" style="background:#22d3ee;"></i>EMA9</span>
+                        <span><i class="legend-dot" style="background:#f59e0b;"></i>Fib <span id="chart-fib-label">{{ SETTINGS.fib_choice }}</span></span>
+                    </div>
+                    <span id="chart-live-readout" class="text-cyan">SOL-USDC · --</span>
+                </div>
             </div>
-            <div class="pine-panel">
+
+            <div class="visual-card">
+                <div class="visual-header">
+                    <div class="visual-title">
+                        <span>Sonar Market Scanner</span>
+                        <span class="cyan-pill">RADAR SCAN</span>
+                    </div>
+                    <span id="radar-scan-count" class="update-tag">0 parov v skene</span>
+                </div>
+                <div class="radar-body">
+                    <div class="radar-stage" id="radar-stage">
+                        <div class="radar-ring r1"></div>
+                        <div class="radar-ring r2"></div>
+                        <div class="radar-ring r3"></div>
+                        <div class="radar-cross-h"></div>
+                        <div class="radar-cross-v"></div>
+                        <div class="radar-sweep"></div>
+                        <div class="radar-blip blip-buy" style="top: 28%; left: 66%;" title="BUY Signal"></div>
+                        <div class="radar-blip blip-scan" style="top: 64%; left: 32%;" title="Active Scan"></div>
+                        <div class="radar-blip blip-warn" style="top: 42%; left: 26%;" title="Filter / Block"></div>
+                        <div class="radar-blip blip-scan" style="top: 72%; left: 70%;" title="Momentum Check"></div>
+                    </div>
+                    <div class="radar-feed" id="radar-feed">
+                        <div class="radar-row">
+                            <span>Skenujem trhy...</span>
+                            <span class="text-cyan">RADAR</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <div class="section-header">
+                <span class="section-title">Nastavenia bota (vsetky pravidla si riadite tu v APEX rozhrani)</span>
+                <span id="pine-active-badge" class="text-yellow mono" style="font-size: 0.68rem;">REZIM: {{ SETTINGS.mode_choice }} · FIB {{ SETTINGS.fib_choice }}</span>
+            </div>
+            <div class="settings-panel">
+                <div class="ai-readiness-box">
+                    <div class="ai-readiness-top">
+                        <span id="ai-learned-summary" class="text-yellow">AI naucenie: 0.0% / ciel 80% (chyba ~160 obchodov) | Ulozene obchody: 0 (0W / 0L) | Pravdepodobnost: --</span>
+                        <button class="btn btn-mini btn-on" onclick="manualTrainAi()">DOTRENOVAT AI TERAZ</button>
+                    </div>
+                    <div class="progress-track">
+                        <div id="ai-readiness-bar" class="progress-fill"></div>
+                    </div>
+                </div>
+
                 <div class="quick-grid">
-                    <div class="pine-group">
-                        <div class="pine-group-title">1. Vstup, FIB a volitelne filtre</div>
-                        <div class="pine-row">
+                    <div class="settings-group">
+                        <div class="settings-group-title">1. Vstup, FIB a volitelne filtre</div>
+                        <div class="setting-row">
                             <label for="pine-mode">Rezim strategie</label>
-                            <select id="pine-mode" class="pine-select">
+                            <select id="pine-mode" class="setting-select">
                                 <option value="FIB" {% if SETTINGS.mode_choice == 'FIB' %}selected{% endif %}>Fibonacci Touch (FIB)</option>
                                 <option value="ALL_GREEN" {% if SETTINGS.mode_choice == 'ALL_GREEN' %}selected{% endif %}>All Green</option>
                                 <option value="BREAKOUT" {% if SETTINGS.mode_choice == 'BREAKOUT' %}selected{% endif %}>Breakout</option>
                             </select>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-fib-choice">Nakupna Fib hladina</label>
-                            <select id="pine-fib-choice" class="pine-select">
+                            <select id="pine-fib-choice" class="setting-select">
                                 <option value="0.50" {% if SETTINGS.fib_choice == '0.50' %}selected{% endif %}>0.50</option>
                                 <option value="0.618" {% if SETTINGS.fib_choice == '0.618' %}selected{% endif %}>0.618</option>
                                 <option value="0.786" {% if SETTINGS.fib_choice == '0.786' %}selected{% endif %}>0.786</option>
                             </select>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-green-ha">Vyzadovat zelenu HA sviecku</label>
-                            <input type="checkbox" id="pine-green-ha" class="pine-checkbox" {% if SETTINGS.require_green_ha_buy %}checked{% endif %}>
+                            <input type="checkbox" id="pine-green-ha" class="setting-checkbox" {% if SETTINGS.require_green_ha_buy %}checked{% endif %}>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-require-bull">Len BYCI trh (BULL) na TF</label>
-                            <input type="checkbox" id="pine-require-bull" class="pine-checkbox" {% if SETTINGS.require_bull_tf_buy %}checked{% endif %}>
+                            <input type="checkbox" id="pine-require-bull" class="setting-checkbox" {% if SETTINGS.require_bull_tf_buy %}checked{% endif %}>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-sell-before-rebuy">Dalsi BUY az po signale SELL</label>
-                            <input type="checkbox" id="pine-sell-before-rebuy" class="pine-checkbox" {% if SETTINGS.require_sell_before_rebuy %}checked{% endif %}>
+                            <input type="checkbox" id="pine-sell-before-rebuy" class="setting-checkbox" {% if SETTINGS.require_sell_before_rebuy %}checked{% endif %}>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-use-ai">Autonomny AI filter</label>
-                            <input type="checkbox" id="pine-use-ai" class="pine-checkbox" {% if SETTINGS.use_ai_filter %}checked{% endif %}>
+                            <input type="checkbox" id="pine-use-ai" class="setting-checkbox" {% if SETTINGS.use_ai_filter %}checked{% endif %}>
                         </div>
                     </div>
 
-                    <div class="pine-group">
-                        <div class="pine-group-title">2. Ciel (TP) a Stop-Loss (SL)</div>
-                        <div class="pine-row">
+                    <div class="settings-group">
+                        <div class="settings-group-title">2. Ciel (TP) a Stop-Loss (SL)</div>
+                        <div class="setting-row">
                             <label for="pine-use-fixed-sl">Fixny SL zapnuty</label>
-                            <input type="checkbox" id="pine-use-fixed-sl" class="pine-checkbox" {% if SETTINGS.use_fixed_sl %}checked{% endif %}>
+                            <input type="checkbox" id="pine-use-fixed-sl" class="setting-checkbox" {% if SETTINGS.use_fixed_sl %}checked{% endif %}>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-fixed-sl-pct">Fixny SL (%)</label>
-                            <input type="number" id="pine-fixed-sl-pct" class="pine-input" min="0.1" max="50.0" step="0.1" value="{{ SETTINGS.fixed_sl_pct }}">
+                            <input type="number" id="pine-fixed-sl-pct" class="setting-input" min="0.1" max="50.0" step="0.1" value="{{ SETTINGS.fixed_sl_pct }}">
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-use-fixed-tp">Fixny TP zapnuty</label>
-                            <input type="checkbox" id="pine-use-fixed-tp" class="pine-checkbox" {% if SETTINGS.use_fixed_tp %}checked{% endif %}>
+                            <input type="checkbox" id="pine-use-fixed-tp" class="setting-checkbox" {% if SETTINGS.use_fixed_tp %}checked{% endif %}>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-fixed-tp-pct">Fixny TP (%)</label>
-                            <input type="number" id="pine-fixed-tp-pct" class="pine-input" min="0.1" max="100.0" step="0.1" value="{{ SETTINGS.fixed_tp_pct }}">
+                            <input type="number" id="pine-fixed-tp-pct" class="setting-input" min="0.1" max="100.0" step="0.1" value="{{ SETTINGS.fixed_tp_pct }}">
                         </div>
                     </div>
 
-                    <div class="pine-group">
-                        <div class="pine-group-title">3. Rychly vystup & Simulacia poplatkov</div>
-                        <div class="pine-row">
+                    <div class="settings-group">
+                        <div class="settings-group-title">3. Rychly vystup & Simulacia poplatkov</div>
+                        <div class="setting-row">
                             <label for="pine-use-ha-exit">Exit pri otoceni HA</label>
-                            <input type="checkbox" id="pine-use-ha-exit" class="pine-checkbox" {% if SETTINGS.use_ha_exit %}checked{% endif %}>
+                            <input type="checkbox" id="pine-use-ha-exit" class="setting-checkbox" {% if SETTINGS.use_ha_exit %}checked{% endif %}>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-ha-consec">Cervene HA sviecky</label>
-                            <select id="pine-ha-consec" class="pine-select">
+                            <select id="pine-ha-consec" class="setting-select">
                                 <option value="1" {% if SETTINGS.ha_exit_consecutive == 1 %}selected{% endif %}>1</option>
                                 <option value="2" {% if SETTINGS.ha_exit_consecutive == 2 %}selected{% endif %}>2</option>
                                 <option value="3" {% if SETTINGS.ha_exit_consecutive == 3 %}selected{% endif %}>3</option>
                             </select>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-use-osc-sell">SELL pri obrate oscilatora</label>
-                            <input type="checkbox" id="pine-use-osc-sell" class="pine-checkbox" {% if SETTINGS.sell_on_osc_reversal %}checked{% endif %}>
+                            <input type="checkbox" id="pine-use-osc-sell" class="setting-checkbox" {% if SETTINGS.sell_on_osc_reversal %}checked{% endif %}>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-sim-fees">Simulovat OKX poplatky (BUY+SELL)</label>
-                            <input type="checkbox" id="pine-sim-fees" class="pine-checkbox" {% if SETTINGS.simulate_fees %}checked{% endif %}>
+                            <input type="checkbox" id="pine-sim-fees" class="setting-checkbox" {% if SETTINGS.simulate_fees %}checked{% endif %}>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-taker-fee">Poplatok za 1 stranu (%)</label>
-                            <input type="number" id="pine-taker-fee" class="pine-input" min="0.00" max="2.00" step="0.01" value="{{ SETTINGS.taker_fee_pct }}">
+                            <input type="number" id="pine-taker-fee" class="setting-input" min="0.00" max="2.00" step="0.01" value="{{ SETTINGS.taker_fee_pct }}">
                         </div>
                     </div>
 
-                    <div class="pine-group">
-                        <div class="pine-group-title">4. Ochrana TS / BE / TTP</div>
-                        <div class="pine-row">
+                    <div class="settings-group">
+                        <div class="settings-group-title">4. Ochrana TS / BE / TTP</div>
+                        <div class="setting-row">
                             <label for="pine-use-trailing">Trailing Stop zapnuty</label>
-                            <input type="checkbox" id="pine-use-trailing" class="pine-checkbox" {% if SETTINGS.use_trailing %}checked{% endif %}>
+                            <input type="checkbox" id="pine-use-trailing" class="setting-checkbox" {% if SETTINGS.use_trailing %}checked{% endif %}>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-trail-pct">Vzdialenost TS (%)</label>
-                            <input type="number" id="pine-trail-pct" class="pine-input" min="0.1" max="50.0" step="0.1" value="{{ SETTINGS.trail_pct }}">
+                            <input type="number" id="pine-trail-pct" class="setting-input" min="0.1" max="50.0" step="0.1" value="{{ SETTINGS.trail_pct }}">
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-use-be">Break-Even zapnuty</label>
-                            <input type="checkbox" id="pine-use-be" class="pine-checkbox" {% if SETTINGS.use_breakeven %}checked{% endif %}>
+                            <input type="checkbox" id="pine-use-be" class="setting-checkbox" {% if SETTINGS.use_breakeven %}checked{% endif %}>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-be-trigger">Zisk % pre Break-Even</label>
-                            <input type="number" id="pine-be-trigger" class="pine-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.be_trigger_pct }}">
+                            <input type="number" id="pine-be-trigger" class="setting-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.be_trigger_pct }}">
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-use-ttp">Trailing TP zapnuty</label>
-                            <input type="checkbox" id="pine-use-ttp" class="pine-checkbox" {% if SETTINGS.use_trailing_tp %}checked{% endif %}>
+                            <input type="checkbox" id="pine-use-ttp" class="setting-checkbox" {% if SETTINGS.use_trailing_tp %}checked{% endif %}>
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-ttp-trigger">Aktivacia TTP (%)</label>
-                            <input type="number" id="pine-ttp-trigger" class="pine-input" min="0.1" max="100.0" step="0.1" value="{{ SETTINGS.ttp_trigger_pct }}">
+                            <input type="number" id="pine-ttp-trigger" class="setting-input" min="0.1" max="100.0" step="0.1" value="{{ SETTINGS.ttp_trigger_pct }}">
                         </div>
-                        <div class="pine-row">
+                        <div class="setting-row">
                             <label for="pine-ttp-callback">Odstup TTP (%)</label>
-                            <input type="number" id="pine-ttp-callback" class="pine-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.ttp_callback_pct }}">
+                            <input type="number" id="pine-ttp-callback" class="setting-input" min="0.05" max="50.0" step="0.05" value="{{ SETTINGS.ttp_callback_pct }}">
                         </div>
                     </div>
                 </div>
@@ -3321,61 +3648,58 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 <details class="adv-box">
                     <summary>+ Rozsirene nastavenia (Oscilator, Pivot, Anti-Top)</summary>
                     <div class="adv-grid">
-                        <div class="pine-group">
-                            <div class="pine-group-title">Oscilator & Pivot</div>
-                            <div class="pine-row">
+                        <div class="settings-group">
+                            <div class="settings-group-title">Oscilator & Pivot</div>
+                            <div class="setting-row">
                                 <label for="pine-strict-buy">Prisnejsi filter BUY</label>
-                                <input type="checkbox" id="pine-strict-buy" class="pine-checkbox" {% if SETTINGS.strict_buy_filter %}checked{% endif %}>
+                                <input type="checkbox" id="pine-strict-buy" class="setting-checkbox" {% if SETTINGS.strict_buy_filter %}checked{% endif %}>
                             </div>
-                            <div class="pine-row">
+                            <div class="setting-row">
                                 <label for="pine-fast-len">Rychla dlzka (Vol)</label>
-                                <input type="number" id="pine-fast-len" class="pine-input" min="1" max="200" step="1" value="{{ SETTINGS.fast_len }}">
+                                <input type="number" id="pine-fast-len" class="setting-input" min="1" max="200" step="1" value="{{ SETTINGS.fast_len }}">
                             </div>
-                            <div class="pine-row">
+                            <div class="setting-row">
                                 <label for="pine-slow-len">Pomala dlzka (Vol)</label>
-                                <input type="number" id="pine-slow-len" class="pine-input" min="1" max="300" step="1" value="{{ SETTINGS.slow_len }}">
+                                <input type="number" id="pine-slow-len" class="setting-input" min="1" max="300" step="1" value="{{ SETTINGS.slow_len }}">
                             </div>
-                            <div class="pine-row">
+                            <div class="setting-row">
                                 <label for="pine-signal-len">Signalna ciara (MA)</label>
-                                <input type="number" id="pine-signal-len" class="pine-input" min="1" max="200" step="1" value="{{ SETTINGS.signal_len }}">
+                                <input type="number" id="pine-signal-len" class="setting-input" min="1" max="200" step="1" value="{{ SETTINGS.signal_len }}">
                             </div>
-                            <div class="pine-row">
+                            <div class="setting-row">
                                 <label for="pine-pred-look">Citlivost predikcie</label>
-                                <input type="number" id="pine-pred-look" class="pine-input" min="1" max="10" step="1" value="{{ SETTINGS.pred_look }}">
+                                <input type="number" id="pine-pred-look" class="setting-input" min="1" max="10" step="1" value="{{ SETTINGS.pred_look }}">
                             </div>
-                            <div class="pine-row">
+                            <div class="setting-row">
                                 <label for="pine-pivot-len">Pivot dlzka (Fib)</label>
-                                <input type="number" id="pine-pivot-len" class="pine-input" min="1" max="10" step="1" value="{{ SETTINGS.pivot_len }}">
+                                <input type="number" id="pine-pivot-len" class="setting-input" min="1" max="10" step="1" value="{{ SETTINGS.pivot_len }}">
                             </div>
                         </div>
 
-                        <div class="pine-group">
-                            <div class="pine-group-title">Anti-Top (volitelne)</div>
-                            <div class="pine-row">
+                        <div class="settings-group">
+                            <div class="settings-group-title">Anti-Top (volitelne)</div>
+                            <div class="setting-row">
                                 <label for="pine-use-anti-top">Anti-Top filter zapnuty</label>
-                                <input type="checkbox" id="pine-use-anti-top" class="pine-checkbox" {% if SETTINGS.use_anti_chase %}checked{% endif %}>
+                                <input type="checkbox" id="pine-use-anti-top" class="setting-checkbox" {% if SETTINGS.use_anti_chase %}checked{% endif %}>
                             </div>
-                            <div class="pine-row">
+                            <div class="setting-row">
                                 <label for="pine-max-pump">Max rast sviecky (%)</label>
-                                <input type="number" id="pine-max-pump" class="pine-input" min="0.1" max="5.0" step="0.1" value="{{ SETTINGS.max_candle_pump_pct }}">
+                                <input type="number" id="pine-max-pump" class="setting-input" min="0.1" max="5.0" step="0.1" value="{{ SETTINGS.max_candle_pump_pct }}">
                             </div>
-                            <div class="pine-row">
+                            <div class="setting-row">
                                 <label for="pine-max-ema-dist">Max nad EMA9 (%)</label>
-                                <input type="number" id="pine-max-ema-dist" class="pine-input" min="0.1" max="5.0" step="0.1" value="{{ SETTINGS.max_ema9_dist_pct }}">
+                                <input type="number" id="pine-max-ema-dist" class="setting-input" min="0.1" max="5.0" step="0.1" value="{{ SETTINGS.max_ema9_dist_pct }}">
                             </div>
-                            <div class="pine-row">
+                            <div class="setting-row">
                                 <label for="pine-max-wick">Max horny knot (0.1-0.9)</label>
-                                <input type="number" id="pine-max-wick" class="pine-input" min="0.1" max="0.9" step="0.05" value="{{ SETTINGS.max_upper_wick_ratio }}">
+                                <input type="number" id="pine-max-wick" class="setting-input" min="0.1" max="0.9" step="0.05" value="{{ SETTINGS.max_upper_wick_ratio }}">
                             </div>
                         </div>
                     </div>
                 </details>
 
-                <div class="pine-footer">
-                    <div style="display:flex; flex-direction:column; gap:3px;">
-                        <span id="pine-save-status" class="pine-save-status">Trvala pamat aktivna — data sa pri restartoch nemazu.</span>
-                        <span id="ai-learned-summary" style="font-size:0.68rem; color:var(--yellow); font-weight:600;">AI naucenie: 0.0% / ciel 80% (chyba ~160 obchodov) | Ulozene obchody: 0 (0W / 0L) | Pravdepodobnost: --</span>
-                    </div>
+                <div class="settings-footer">
+                    <span id="pine-save-status" class="save-status">Trvala pamat aktivna — data sa pri restartoch nemazu.</span>
                     <div style="display: flex; gap: 6px; flex-wrap: wrap;">
                         <button class="btn btn-off" onclick="cleanResetLearning()">CISTY RESET AI</button>
                         <button class="btn" onclick="resetPineDefaults()">OBNOVIT ZAKLAD (PINE)</button>
@@ -3383,11 +3707,13 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     </div>
                 </div>
             </div>
-        </div>
+        </section>
 
-        <div>
-            <div class="section-title">Active Positions Matrix (TTP / Trailing Stop / Break-Even / Volitelny Fixny SL)</div>
-            <div class="terminal-card">
+        <section>
+            <div class="section-header">
+                <span class="section-title">Active Positions Matrix (TTP / Trailing Stop / Break-Even / Volitelny Fixny SL)</span>
+            </div>
+            <div class="table-card">
                 <table>
                     <thead>
                         <tr>
@@ -3406,14 +3732,14 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     </tbody>
                 </table>
             </div>
-        </div>
+        </section>
 
-        <div>
-            <div class="section-title">
-                <span>Closed Trades History (Posledne uzavrete obchody)</span>
-                <span id="closed-trades-count" style="font-size:0.64rem; color:var(--text-muted);">0 obchodov</span>
+        <section>
+            <div class="section-header">
+                <span class="section-title">Closed Trades History (Posledne uzavrete obchody)</span>
+                <span id="closed-trades-count" class="update-tag">0 obchodov</span>
             </div>
-            <div class="terminal-card scrollable-card" style="max-height: 200px;">
+            <div class="table-card table-scroll" style="max-height: 205px;">
                 <table>
                     <thead>
                         <tr>
@@ -3431,20 +3757,20 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     </tbody>
                 </table>
             </div>
-        </div>
+        </section>
 
-        <div>
-            <div class="section-title">
-                <span>Live Market Scanner Status (Podporovane USDC pary · FIB: <span id="scanner-fib-level" class="text-yellow">{{ SETTINGS.fib_choice }}</span>)</span>
+        <section>
+            <div class="section-header">
+                <span class="section-title">Live Market Scanner Status (Podporovane USDC pary · FIB: <span id="scanner-fib-level" class="text-yellow">{{ SETTINGS.fib_choice }}</span>)</span>
                 <div class="filter-bar">
-                    <button class="btn btn-yellow scanner-filter-btn" data-filter="ALL" onclick="setScannerFilter('ALL')">VSETKY</button>
-                    <button class="btn scanner-filter-btn" data-filter="BUY" onclick="setScannerFilter('BUY')">BUY</button>
-                    <button class="btn scanner-filter-btn" data-filter="BLOK" onclick="setScannerFilter('BLOK')">BLOK</button>
-                    <button class="btn scanner-filter-btn" data-filter="IN_TRADE" onclick="setScannerFilter('IN_TRADE')">V OBCHODE</button>
+                    <button class="btn btn-mini btn-active-pill scanner-filter-btn" data-filter="ALL" onclick="setScannerFilter('ALL')">VSETKY</button>
+                    <button class="btn btn-mini scanner-filter-btn" data-filter="BUY" onclick="setScannerFilter('BUY')">BUY</button>
+                    <button class="btn btn-mini scanner-filter-btn" data-filter="BLOK" onclick="setScannerFilter('BLOK')">BLOK</button>
+                    <button class="btn btn-mini scanner-filter-btn" data-filter="IN_TRADE" onclick="setScannerFilter('IN_TRADE')">V OBCHODE</button>
                     <input type="text" id="scanner-search" class="filter-input" placeholder="Hladat coin..." oninput="updateState()">
                 </div>
             </div>
-            <div class="terminal-card scrollable-card" style="max-height: 260px;">
+            <div class="table-card table-scroll" style="max-height: 265px;">
                 <table>
                     <thead>
                         <tr>
@@ -3463,37 +3789,304 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     </tbody>
                 </table>
             </div>
-        </div>
+        </section>
 
-        <div>
-            <div class="section-title">
-                <span>24h System Execution Logs (Auto-cistenie po 2h)</span>
+        <section>
+            <div class="section-header">
+                <span class="section-title">24h System Execution Logs (Auto-cistenie po 2h)</span>
                 <div class="filter-bar">
-                    <span id="log-prune-info" style="font-size:0.64rem; color:var(--text-muted);">Auto-cistenie: kazde 2h (posledne: --) · 24h register: 0</span>
-                    <button class="btn log-filter-btn btn-yellow" data-logcat="ALL" onclick="setLogFilter('ALL')">ALL</button>
-                    <button class="btn log-filter-btn" data-logcat="TRADE" onclick="setLogFilter('TRADE')">TRADE</button>
-                    <button class="btn log-filter-btn" data-logcat="FILTER" onclick="setLogFilter('FILTER')">FILTER</button>
-                    <button class="btn log-filter-btn" data-logcat="ERROR" onclick="setLogFilter('ERROR')">ERROR</button>
+                    <span id="log-prune-info" class="update-tag">Auto-cistenie: kazde 2h (posledne: --) · 24h register: 0</span>
+                    <button class="btn btn-mini log-filter-btn btn-active-pill" data-logcat="ALL" onclick="setLogFilter('ALL')">ALL</button>
+                    <button class="btn btn-mini log-filter-btn" data-logcat="TRADE" onclick="setLogFilter('TRADE')">TRADE</button>
+                    <button class="btn btn-mini log-filter-btn" data-logcat="FILTER" onclick="setLogFilter('FILTER')">FILTER</button>
+                    <button class="btn btn-mini log-filter-btn" data-logcat="ERROR" onclick="setLogFilter('ERROR')">ERROR</button>
                     <input type="text" id="log-search" class="filter-input" placeholder="Filter coin/text..." oninput="updateState()">
-                    <button class="btn" onclick="exportLogs24h()">EXPORT 24H</button>
-                    <button class="btn btn-off" onclick="clearLogsNow()">VYCISTIT 2H</button>
+                    <button class="btn btn-mini" onclick="exportLogs24h()">EXPORT 24H</button>
+                    <button class="btn btn-mini btn-off" onclick="clearLogsNow()">VYCISTIT 2H</button>
                 </div>
             </div>
             <div class="logs-box" id="logs-container">
                 <div class="log-line">[System Initialized] Cisty start — ziadne stare zaznamy.</div>
             </div>
+        </section>
+    </div>
+
+    <div id="confirm-modal" class="modal-backdrop" role="dialog" aria-modal="true">
+        <div class="modal-card">
+            <div class="modal-title" id="modal-title">Potvrdenie akcie</div>
+            <div class="modal-msg" id="modal-msg">Naozaj chcete pokracovat?</div>
+            <div class="modal-actions">
+                <button class="btn" id="modal-cancel-btn">Zrusit</button>
+                <button class="btn btn-on" id="modal-confirm-btn">Potvrdit</button>
+            </div>
         </div>
     </div>
+    <div id="toast-container" class="toast-container"></div>
 
     <script>
         let currentScannerFilter = "ALL";
         let currentLogCategory = "ALL";
         let latestLogs24h = [];
+        let selectedChartCoin = "SOL";
+        let currentFibLevel = parseFloat("{{ SETTINGS.fib_choice }}") || 0.786;
+
+        const COIN_BASE_PRICES = {
+            "SOL": 178.40,
+            "SUI": 3.42,
+            "AVAX": 34.80,
+            "LINK": 18.65
+        };
+
+        function generateHaSeries(coin) {
+            const base = COIN_BASE_PRICES[coin] || 100.0;
+            const volScale = base * 0.011;
+            const list = [];
+            let prevOpen = base * 0.985;
+            let prevClose = base * 0.99;
+            let rawClose = base * 0.99;
+
+            for (let i = 0; i < 42; i++) {
+                const wave = Math.sin(i * 0.34) * volScale * 1.4 + Math.cos(i * 0.17) * volScale * 0.9;
+                const drift = (i - 18) * (volScale * 0.045);
+                const o = rawClose;
+                const c = Math.max(base * 0.85, base + wave + drift);
+                const h = Math.max(o, c) + Math.abs(Math.sin(i * 0.7)) * volScale * 0.65;
+                const l = Math.min(o, c) - Math.abs(Math.cos(i * 0.5)) * volScale * 0.65;
+                rawClose = c;
+
+                const haClose = (o + h + l + c) / 4;
+                const haOpen = i === 0 ? (o + c) / 2 : (prevOpen + prevClose) / 2;
+                const haHigh = Math.max(h, haOpen, haClose);
+                const haLow = Math.min(l, haOpen, haClose);
+                prevOpen = haOpen;
+                prevClose = haClose;
+                list.push({ o: haOpen, h: haHigh, l: haLow, c: haClose });
+            }
+            return list;
+        }
+
+        let haSeries = generateHaSeries("SOL");
+        let liveTickPhase = 0;
+
+        function selectChartCoin(coin) {
+            selectedChartCoin = coin;
+            document.querySelectorAll('.chart-coin-btn').forEach(b => {
+                b.classList.toggle('btn-active-pill', b.getAttribute('data-coin') === coin);
+            });
+            haSeries = generateHaSeries(coin);
+        }
+
+        function renderHaFibChart() {
+            const canvas = document.getElementById('haFibCanvas');
+            if (!canvas) return;
+            const dpr = window.devicePixelRatio || 1;
+            const rect = canvas.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return;
+            if (canvas.width !== Math.floor(rect.width * dpr) || canvas.height !== Math.floor(rect.height * dpr)) {
+                canvas.width = Math.floor(rect.width * dpr);
+                canvas.height = Math.floor(rect.height * dpr);
+            }
+            const ctx = canvas.getContext('2d');
+            ctx.save();
+            ctx.scale(dpr, dpr);
+
+            const w = rect.width;
+            const h = rect.height;
+            ctx.clearRect(0, 0, w, h);
+
+            ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+            ctx.lineWidth = 1;
+            for (let gx = 40; gx < w - 16; gx += 54) {
+                ctx.beginPath(); ctx.moveTo(gx, 10); ctx.lineTo(gx, h - 22); ctx.stroke();
+            }
+            for (let gy = 20; gy < h - 22; gy += 36) {
+                ctx.beginPath(); ctx.moveTo(12, gy); ctx.lineTo(w - 58, gy); ctx.stroke();
+            }
+
+            liveTickPhase += 0.045;
+            const lastIdx = haSeries.length - 1;
+            const lastBar = haSeries[lastIdx];
+            const wiggle = Math.sin(liveTickPhase) * (lastBar.c * 0.0022);
+            const liveClose = Math.max(lastBar.l, lastBar.c + wiggle);
+            const liveHigh = Math.max(lastBar.h, liveClose);
+            const liveLow = Math.min(lastBar.l, liveClose);
+
+            const working = haSeries.map((b, idx) => idx === lastIdx ? { ...b, c: liveClose, h: liveHigh, l: liveLow } : b);
+
+            let minP = Infinity, maxP = -Infinity;
+            for (const b of working) {
+                if (b.l < minP) minP = b.l;
+                if (b.h > maxP) maxP = b.h;
+            }
+            const pad = Math.max((maxP - minP) * 0.14, lastBar.c * 0.003);
+            minP -= pad;
+            maxP += pad;
+            const priceSpan = Math.max(1e-6, maxP - minP);
+
+            const plotLeft = 14;
+            const plotRight = w - 62;
+            const plotTop = 14;
+            const plotBottom = h - 22;
+            const plotH = Math.max(20, plotBottom - plotTop);
+            const plotW = Math.max(40, plotRight - plotLeft);
+
+            const priceToY = (p) => plotTop + (1 - (p - minP) / priceSpan) * plotH;
+
+            // Fibonacci hladina
+            const fibPrice = minP + priceSpan * (1 - Math.min(0.88, Math.max(0.15, currentFibLevel)));
+            const fibY = priceToY(fibPrice);
+            ctx.save();
+            ctx.setLineDash([5, 4]);
+            ctx.strokeStyle = 'rgba(245, 158, 11, 0.78)';
+            ctx.lineWidth = 1.2;
+            ctx.beginPath(); ctx.moveTo(plotLeft, fibY); ctx.lineTo(plotRight, fibY); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = '#f59e0b';
+            ctx.font = '600 10px "JetBrains Mono", monospace';
+            ctx.fillText(`FIB ${currentFibLevel.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}`, plotLeft + 6, Math.max(plotTop + 10, fibY - 4));
+            ctx.restore();
+
+            // EMA9 linia
+            const ema9 = [];
+            const kEma = 2 / (9 + 1);
+            for (let i = 0; i < working.length; i++) {
+                ema9.push(i === 0 ? working[i].c : working[i].c * kEma + ema9[i - 1] * (1 - kEma));
+            }
+            ctx.beginPath();
+            for (let i = 0; i < ema9.length; i++) {
+                const x = plotLeft + ((i + 0.5) / working.length) * plotW;
+                const y = priceToY(ema9[i]);
+                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+            }
+            ctx.strokeStyle = '#22d3ee';
+            ctx.lineWidth = 1.6;
+            ctx.stroke();
+
+            // Sviecky
+            const stepW = plotW / working.length;
+            const bodyW = Math.max(4, Math.min(11, stepW * 0.62));
+            for (let i = 0; i < working.length; i++) {
+                const b = working[i];
+                const isBull = b.c >= b.o;
+                const color = isBull ? '#10b981' : '#ef4444';
+                const cx = plotLeft + (i + 0.5) * stepW;
+                const yHigh = priceToY(b.h);
+                const yLow = priceToY(b.l);
+                const yOpen = priceToY(b.o);
+                const yClose = priceToY(b.c);
+
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1.2;
+                ctx.beginPath(); ctx.moveTo(cx, yHigh); ctx.lineTo(cx, yLow); ctx.stroke();
+
+                const topY = Math.min(yOpen, yClose);
+                const bH = Math.max(2, Math.abs(yClose - yOpen));
+                ctx.fillStyle = color;
+                ctx.fillRect(cx - bodyW / 2, topY, bodyW, bH);
+
+                if (i === 14 || i === 31) {
+                    ctx.fillStyle = '#10b981';
+                    ctx.font = '700 9px "JetBrains Mono", monospace';
+                    ctx.fillText('BUY', cx - 8, yLow + 11);
+                }
+            }
+
+            // Animovany skenovaci laser cez posledne sviecky
+            const scanX = plotLeft + ((0.5 + 0.5 * Math.sin(liveTickPhase * 0.8)) * 0.35 + 0.65) * plotW;
+            const grad = ctx.createLinearGradient(scanX - 18, 0, scanX + 18, 0);
+            grad.addColorStop(0, 'rgba(34, 211, 238, 0)');
+            grad.addColorStop(0.5, 'rgba(34, 211, 238, 0.35)');
+            grad.addColorStop(1, 'rgba(34, 211, 238, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(scanX - 18, plotTop, 36, plotH);
+
+            // Pravá cenova os
+            const lastY = priceToY(liveClose);
+            ctx.fillStyle = liveClose >= lastBar.o ? '#10b981' : '#ef4444';
+            ctx.fillRect(plotRight + 4, lastY - 9, 54, 18);
+            ctx.fillStyle = '#030304';
+            ctx.font = '700 10px "JetBrains Mono", monospace';
+            ctx.fillText(liveClose.toFixed(2), plotRight + 8, lastY + 3);
+
+            const readout = document.getElementById('chart-live-readout');
+            if (readout) {
+                const diffPct = ((liveClose - working[0].o) / working[0].o) * 100;
+                readout.innerText = `${selectedChartCoin}-USDC · ${liveClose.toFixed(4)} (${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(2)}%)`;
+            }
+
+            ctx.restore();
+        }
+
+        function updateRadarFeed(scannerData) {
+            const feed = document.getElementById('radar-feed');
+            const countEl = document.getElementById('radar-scan-count');
+            if (!feed) return;
+            const entries = Object.entries(scannerData || {});
+            if (countEl) countEl.innerText = `${entries.length} parov v skene`;
+            if (!entries.length) {
+                feed.innerHTML = `<div class="radar-row"><span>Cakam na data zo skenera...</span><span class="text-cyan">SCAN</span></div>`;
+                return;
+            }
+            const topRows = entries.slice(0, 6);
+            let html = "";
+            for (const [coin, info] of topRows) {
+                const sym = info.symbol || `${coin}-USDC`;
+                const exec = info.exec_signal || "CAKAJ";
+                const isBuy = exec.includes("NAKUPIT");
+                const isBlk = exec.includes("BLOK");
+                const cls = isBuy ? "text-green" : (isBlk ? "text-red" : "text-cyan");
+                const momPct = info.momentum === "SILNE" ? 86 : 42;
+                html += `<div class="radar-row">
+                    <div>
+                        <b>${sym}</b>
+                        <div class="radar-bar-wrap"><div class="radar-bar-fill" style="width:${momPct}%;"></div></div>
+                    </div>
+                    <span class="${cls}">${isBuy ? "BUY" : (isBlk ? "BLOK" : "SCAN")}</span>
+                </div>`;
+            }
+            feed.innerHTML = html;
+        }
+
+        function showToast(msg, type = "info") {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            const el = document.createElement('div');
+            el.className = `toast ${type === "ok" ? "toast-ok" : (type === "err" ? "toast-err" : "")}`;
+            el.innerText = msg;
+            container.appendChild(el);
+            setTimeout(() => { el.remove(); }, 3400);
+        }
+
+        function askConfirm(title, message) {
+            return new Promise((resolve) => {
+                const modal = document.getElementById('confirm-modal');
+                const titleEl = document.getElementById('modal-title');
+                const msgEl = document.getElementById('modal-msg');
+                const okBtn = document.getElementById('modal-confirm-btn');
+                const cancelBtn = document.getElementById('modal-cancel-btn');
+                if (!modal || !okBtn || !cancelBtn) { resolve(true); return; }
+
+                titleEl.innerText = title;
+                msgEl.innerText = message;
+                modal.classList.add('open');
+
+                const cleanup = (result) => {
+                    modal.classList.remove('open');
+                    okBtn.removeEventListener('click', onOk);
+                    cancelBtn.removeEventListener('click', onCancel);
+                    resolve(result);
+                };
+                const onOk = () => cleanup(true);
+                const onCancel = () => cleanup(false);
+                okBtn.addEventListener('click', onOk);
+                cancelBtn.addEventListener('click', onCancel);
+            });
+        }
 
         function setScannerFilter(flt) {
             currentScannerFilter = flt;
             document.querySelectorAll('.scanner-filter-btn').forEach(b => {
-                b.classList.toggle('btn-yellow', b.getAttribute('data-filter') === flt);
+                b.classList.toggle('btn-active-pill', b.getAttribute('data-filter') === flt);
             });
             updateState();
         }
@@ -3501,14 +4094,16 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
         function setLogFilter(cat) {
             currentLogCategory = cat;
             document.querySelectorAll('.log-filter-btn').forEach(b => {
-                b.classList.toggle('btn-yellow', b.getAttribute('data-logcat') === cat);
+                b.classList.toggle('btn-active-pill', b.getAttribute('data-logcat') === cat);
             });
             updateState();
         }
 
         async function clearLogsNow() {
-            if (!confirm("Vycistit aktualne 2h exekucne logy? (24h register ostane zachovany na export)")) return;
+            const ok = await askConfirm("Vycistit 2h logy", "Vycistit aktualne 2h exekucne logy? (24h register ostane zachovany na export)");
+            if (!ok) return;
             await fetch('/api/clear-logs', {method: 'POST'});
+            showToast("2h logy boli precistene.", "ok");
             updateState();
         }
 
@@ -3523,104 +4118,110 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
             a.download = `apex_logs_24h_${new Date().toISOString().slice(0, 10)}.txt`;
             a.click();
             URL.revokeObjectURL(url);
+            showToast("24h logy exportovane.", "ok");
         }
 
         function syncSlUi(slVal, slEnabled) {
             const numVal = parseFloat(slVal);
             const hSl = document.getElementById('header-sl');
             if (hSl) {
-                if (slEnabled && !isNaN(numVal)) {
-                    hSl.innerText = `-${numVal}%`;
-                } else {
-                    hSl.innerText = "OFF";
-                }
+                hSl.innerText = (slEnabled && !isNaN(numVal)) ? `-${numVal}%` : "OFF";
             }
             const pineSlInput = document.getElementById('pine-fixed-sl-pct');
-            if (pineSlInput && !isNaN(numVal)) {
-                pineSlInput.value = numVal;
-            }
+            if (pineSlInput && !isNaN(numVal)) pineSlInput.value = numVal;
             const pineSlCheck = document.getElementById('pine-use-fixed-sl');
-            if (pineSlCheck && slEnabled !== undefined) {
-                pineSlCheck.checked = !!slEnabled;
-            }
+            if (pineSlCheck && slEnabled !== undefined) pineSlCheck.checked = !!slEnabled;
         }
 
         function syncFibUi(fibVal) {
             if (!fibVal) return;
+            const parsed = parseFloat(fibVal);
+            if (!isNaN(parsed)) currentFibLevel = parsed;
             const hFib = document.getElementById('header-fib');
             if (hFib) hFib.innerText = fibVal;
             const sFib = document.getElementById('scanner-fib-level');
             if (sFib) sFib.innerText = fibVal;
+            const cFib = document.getElementById('chart-fib-label');
+            if (cFib) cFib.innerText = fibVal;
         }
 
         async function toggleBot() {
-            let res = await fetch('/api/toggle-bot', {method: 'POST'});
-            let data = await res.json();
-            let btn = document.getElementById('bot-btn');
+            const res = await fetch('/api/toggle-bot', {method: 'POST'});
+            const data = await res.json();
+            const btn = document.getElementById('bot-btn');
             btn.className = data.is_bot_active ? "btn btn-on" : "btn btn-off";
             btn.innerText = data.is_bot_active ? "ACTIVE" : "PAUSED";
+            showToast(`Bot je ${data.is_bot_active ? "AKTIVNY" : "POZASTAVENY"}.`, "ok");
             updateState();
         }
 
         async function toggleBtcFilter() {
-            let res = await fetch('/api/toggle-btc-filter', {method: 'POST'});
-            let data = await res.json();
-            let btn = document.getElementById('btc-btn');
+            const res = await fetch('/api/toggle-btc-filter', {method: 'POST'});
+            const data = await res.json();
+            const btn = document.getElementById('btc-btn');
             btn.className = data.use_btc_filter ? "btn btn-on" : "btn btn-off";
             btn.innerText = data.use_btc_filter ? "BTC: ON" : "BTC: OFF";
+            showToast(`BTC filter: ${data.use_btc_filter ? "ON" : "OFF"}`, "ok");
         }
 
         async function toggleCompounding() {
-            let res = await fetch('/api/toggle-compounding', {method: 'POST'});
-            let data = await res.json();
-            let btn = document.getElementById('compounding-btn');
+            const res = await fetch('/api/toggle-compounding', {method: 'POST'});
+            const data = await res.json();
+            const btn = document.getElementById('compounding-btn');
             if (data.compounding_enabled) {
-                btn.className = "btn btn-yellow";
+                btn.className = "btn btn-active-pill";
                 btn.innerText = "COMPOUND: ON";
             } else {
                 btn.className = "btn";
                 btn.innerText = "COMPOUND: OFF";
             }
+            showToast(`Auto-Compounding: ${data.compounding_enabled ? "ON" : "OFF"}`, "ok");
         }
 
         async function setBudget(amount) {
-            let res = await fetch(`/api/set-budget/${amount}`, {method: 'POST'});
-            let data = await res.json();
+            const res = await fetch(`/api/set-budget/${amount}`, {method: 'POST'});
+            const data = await res.json();
             if (data.status === 'success') {
                 document.querySelectorAll('.budget-btn').forEach(b => {
-                    b.classList.remove('btn-yellow');
-                    if (parseInt(b.getAttribute('data-val')) === amount) {
-                        b.classList.add('btn-yellow');
-                    }
+                    b.classList.toggle('btn-active-pill', parseInt(b.getAttribute('data-val')) === amount);
                 });
+                showToast(`Rozpoctovy strop: ${amount}`, "ok");
             }
         }
 
         async function setParallel(count) {
-            let res = await fetch(`/api/set-parallel/${count}`, {method: 'POST'});
-            let data = await res.json();
+            const res = await fetch(`/api/set-parallel/${count}`, {method: 'POST'});
+            const data = await res.json();
             if (data.status === 'success') {
                 document.querySelectorAll('.parallel-btn').forEach(b => {
-                    b.classList.remove('btn-yellow');
-                    if (parseInt(b.getAttribute('data-val')) === count) {
-                        b.classList.add('btn-yellow');
-                    }
+                    b.classList.toggle('btn-active-pill', parseInt(b.getAttribute('data-val')) === count);
                 });
+                showToast(`Max paralelnych obchodov: ${count}x`, "ok");
             }
         }
 
         async function setTf(tfVal) {
-            let res = await fetch(`/api/set-tf/${tfVal}`, {method: 'POST'});
-            let data = await res.json();
+            const res = await fetch(`/api/set-tf/${tfVal}`, {method: 'POST'});
+            const data = await res.json();
             if (data.status === 'success') {
                 document.querySelectorAll('.tf-btn').forEach(b => {
-                    b.classList.remove('btn-yellow');
-                    if (b.getAttribute('data-tf').toLowerCase() === tfVal.toLowerCase()) {
-                        b.classList.add('btn-yellow');
-                    }
+                    b.classList.toggle('btn-active-pill', b.getAttribute('data-tf').toLowerCase() === tfVal.toLowerCase());
                 });
                 document.getElementById('header-tf').innerText = data.tf;
+                showToast(`Timeframe prepnuty na ${data.tf}`, "ok");
                 updateState();
+            }
+        }
+
+        async function manualTrainAi() {
+            showToast("Trenujem AI model na aktualnych datach...", "info");
+            const res = await fetch('/api/train-ai', {method: 'POST'});
+            const data = await res.json();
+            if (data.status === 'success') {
+                showToast("AI model bol dotrenovany.", "ok");
+                updateState();
+            } else {
+                showToast(data.message || "Chyba pri trenovani AI.", "err");
             }
         }
 
@@ -3697,41 +4298,45 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 taker_fee_pct: parseFloat(document.getElementById('pine-taker-fee').value)
             };
 
-            let res = await fetch('/api/update-pine-settings', {
+            const res = await fetch('/api/update-pine-settings', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(payload)
             });
-            let data = await res.json();
-            let statusEl = document.getElementById('pine-save-status');
+            const data = await res.json();
+            const statusEl = document.getElementById('pine-save-status');
             if (data.status === 'success') {
                 applyPineFormValues(data.pine_settings);
-                statusEl.style.color = 'var(--green)';
+                statusEl.style.color = 'var(--accent-emerald)';
                 statusEl.innerText = 'Ulozene! Nastavenia boli aplikovane.';
+                showToast("Nastavenia ulozene.", "ok");
                 updateState();
             } else {
-                statusEl.style.color = 'var(--red)';
+                statusEl.style.color = 'var(--accent-crimson)';
                 statusEl.innerText = 'Chyba: ' + data.message;
+                showToast('Chyba: ' + data.message, "err");
             }
         }
 
         async function cleanResetLearning() {
-            if (!confirm("Naozaj chces vykonat CISTY RESET AI pamate, vzorov a historie obchodov? Tento krok sa neda vratit.")) return;
+            const ok = await askConfirm("Cisty reset AI", "Naozaj chces vykonat CISTY RESET AI pamate, vzorov a historie obchodov? Tento krok sa neda vratit.");
+            if (!ok) return;
             const statusEl = document.getElementById('pine-save-status');
             if (statusEl) {
-                statusEl.style.color = 'var(--yellow)';
+                statusEl.style.color = 'var(--accent-amber)';
                 statusEl.innerText = 'Vymazavam AI pamat, vzory a historiu obchodov a trenujem novy zaklad...';
             }
             const res = await fetch('/api/clean-reset-learning', {method: 'POST'});
             const data = await res.json();
             if (data.status === 'success') {
                 if (statusEl) {
-                    statusEl.style.color = 'var(--green)';
+                    statusEl.style.color = 'var(--accent-emerald)';
                     statusEl.innerText = 'Cisty reset dokonceny! AI zacina zbierat nove vzory odznova.';
                 }
+                showToast("Cisty reset AI dokonceny.", "ok");
                 updateState();
             } else if (statusEl) {
-                statusEl.style.color = 'var(--red)';
+                statusEl.style.color = 'var(--accent-crimson)';
                 statusEl.innerText = 'Chyba pri cistom resete.';
             }
         }
@@ -3780,43 +4385,45 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
         }
 
         async function manualBuyCustom() {
-            let coinInput = document.getElementById('custom-coin');
-            let coin = coinInput.value.trim().toUpperCase();
-            if (!coin) { alert("Zadajte skratku tokenu (napr. SOL, SUI)!"); return; }
-            if (!confirm(`Naozaj vykonat manualny nakup ${coin}-USDC?`)) return;
+            const coinInput = document.getElementById('custom-coin');
+            const coin = coinInput.value.trim().toUpperCase();
+            if (!coin) { showToast("Zadajte skratku tokenu (napr. SOL, SUI)!", "err"); return; }
+            const ok = await askConfirm("Manualny nakup", `Naozaj vykonat manualny nakup ${coin}-USDC?`);
+            if (!ok) return;
 
-            let res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
-            let data = await res.json();
+            const res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
+            const data = await res.json();
             if (data.status === 'success') {
                 coinInput.value = "";
+                showToast(`Nakup ${data.symbol} odoslany.`, "ok");
                 updateState();
             } else {
-                alert("Chyba: " + data.message);
+                showToast("Chyba: " + data.message, "err");
             }
         }
 
         async function sellSingleCoin(coin) {
-            if (!confirm(`Naozaj nudzovo predat ${coin}-USDC?`)) return;
+            const ok = await askConfirm("Nudzovy predaj", `Naozaj nudzovo predat ${coin}-USDC?`);
+            if (!ok) return;
             await fetch(`/api/sell-coin/${coin}`, {method: 'POST'});
+            showToast(`Predaj ${coin}-USDC spracovany.`, "ok");
             updateState();
         }
 
         async function sellNow() {
-            if (!confirm("Naozaj nudzovo zatvorit vsetky pozicie?")) return;
+            const ok = await askConfirm("Zatvorit vsetko", "Naozaj nudzovo zatvorit vsetky pozicie?");
+            if (!ok) return;
             await fetch('/api/sell-now', {method: 'POST'});
+            showToast("Vsetky pozicie boli odoslane na predaj.", "ok");
             updateState();
         }
 
         async function updateState() {
             try {
-                let res = await fetch('/api/state', {cache: 'no-store'});
-                if (!res.ok) {
-                    throw new Error(`HTTP ${res.status}`);
-                }
-                let data = await res.json();
-                if (!data || typeof data !== 'object') {
-                    throw new Error("Neplatna JSON odpoved z /api/state");
-                }
+                const res = await fetch('/api/state', {cache: 'no-store'});
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                if (!data || typeof data !== 'object') throw new Error("Neplatna JSON odpoved z /api/state");
 
                 const nowStr = new Date().toLocaleTimeString('sk-SK', {hour12: false});
                 const updTag = document.getElementById('last-update-tag');
@@ -3833,9 +4440,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 const slPct = data.fixed_sl_pct ?? ps.fixed_sl_pct ?? 1.5;
                 document.getElementById('header-sl').innerText = slOn ? `-${slPct}%` : "OFF";
 
-                if (ps.fib_choice) {
-                    syncFibUi(ps.fib_choice);
-                }
+                if (ps.fib_choice) syncFibUi(ps.fib_choice);
                 document.getElementById('pine-active-badge').innerText = `REZIM: ${ps.mode_choice || 'FIB'} · FIB ${ps.fib_choice || '0.786'}`;
 
                 if (data.ai_state) {
@@ -3844,7 +4449,8 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     const lw = data.ai_state.live_wins_count || 0;
                     const ll = Math.max(0, lc - lw);
                     const rd = data.ai_readiness || {};
-                    const rPct = Number(rd.readiness_pct || 0).toFixed(1);
+                    const rPctNum = Number(rd.readiness_pct || 0);
+                    const rPct = rPctNum.toFixed(1);
                     const remTr = Number(rd.remaining_trades_to_80 ?? 160);
                     const advMode = rd.advisor_mode || "ZBIERA VZORY";
                     const lastProbNum = data.ai_state.last_prob !== null && data.ai_state.last_prob !== undefined ? (Number(data.ai_state.last_prob) * 100).toFixed(1) + "%" : "--";
@@ -3853,9 +4459,11 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     if (hLearned) hLearned.innerText = `${lc} obchodov (${lw}W / ${ll}L) | P: ${lastProbNum}`;
                     const sumEl = document.getElementById('ai-learned-summary');
                     if (sumEl) sumEl.innerText = `AI naucenie: ${rPct}% / ciel 80% (chyba ~${remTr} obchodov) | Ulozene obchody: ${lc} (${lw}W / ${ll}L) | Pravdepodobnost: ${lastProbNum} | Vzorky: ${sc}`;
+                    const barEl = document.getElementById('ai-readiness-bar');
+                    if (barEl) barEl.style.width = `${Math.max(0, Math.min(100, rPctNum))}%`;
                 }
 
-                let regimeBadge = document.getElementById('market-regime-badge');
+                const regimeBadge = document.getElementById('market-regime-badge');
                 if (regimeBadge) {
                     const regime = data.market_regime || (data.is_sideways_market ? "SIDEWAYS" : "BULL");
                     const tfLabel = data.current_tf || "15M";
@@ -3872,7 +4480,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     }
                 }
 
-                let stats = data.stats || {};
+                const stats = data.stats || {};
                 const winRateNum = Number(stats.win_rate || 0);
                 const totalTradesNum = Number(stats.total_trades || 0);
                 const winsNum = Number(stats.wins || 0);
@@ -3883,20 +4491,20 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 document.getElementById('stat-winrate').innerText = winRateNum.toFixed(1) + "%";
                 document.getElementById('stat-trades').innerText = totalTradesNum;
                 document.getElementById('stat-winloss').innerText = winsNum + "W / " + lossesNum + "L";
-                let pnlEl = document.getElementById('stat-pnl');
+                const pnlEl = document.getElementById('stat-pnl');
                 pnlEl.innerText = (totalPnlNum >= 0 ? "+" : "") + totalPnlNum.toFixed(2) + " $";
                 pnlEl.className = "stat-value " + (totalPnlNum >= 0 ? "text-green" : "text-red");
-                let pnlSubEl = document.getElementById('stat-pnl-sub');
+                const pnlSubEl = document.getElementById('stat-pnl-sub');
                 if (pnlSubEl) {
                     pnlSubEl.innerText = `Hruby: ${grossPnlNum >= 0 ? "+" : ""}${grossPnlNum.toFixed(2)} $ | Poplatky: -${totalFeesNum.toFixed(2)} $`;
                 }
 
-                let activeTbody = document.getElementById('active-position-tbody');
-                let sellBtn = document.getElementById('sell-btn');
-                let activeTradesObj = data.active_trades || {};
+                const activeTbody = document.getElementById('active-position-tbody');
+                const sellBtn = document.getElementById('sell-btn');
+                const activeTradesObj = data.active_trades || {};
                 if (Object.keys(activeTradesObj).length > 0) {
                     let html = "";
-                    for (let [coin, t] of Object.entries(activeTradesObj)) {
+                    for (const [coin, t] of Object.entries(activeTradesObj)) {
                         const pnlPct = Number(t.live_pnl_pct || 0);
                         const pnlUsd = Number(t.live_pnl_usdc || 0);
                         const grossUsd = Number(t.gross_pnl_usdc ?? pnlUsd);
@@ -3906,7 +4514,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                         const fixedSlP = Number(t.fixed_sl_price || 0);
                         const fixedSlPct = Number(t.fixed_sl_pct || 1.5);
                         const investedUsd = Number(t.invested_usdc || 0);
-                        let pnlClass = pnlPct >= 0 ? "text-green" : "text-red";
+                        const pnlClass = pnlPct >= 0 ? "text-green" : "text-red";
                         let tpCell = "";
                         if (t.ttp_active && t.ttp_stop_price) {
                             tpCell = `<span class="text-green">TTP AKTIVNY (stop ${Number(t.ttp_stop_price).toFixed(4)})</span>`;
@@ -3933,7 +4541,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                             <td>${slCell}</td>
                             <td>${investedUsd.toFixed(2)} ${ccy}</td>
                             <td class="${pnlClass}">${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% (${pnlUsd >= 0 ? "+" : ""}${pnlUsd.toFixed(2)} $)${estFeeUsd > 0 ? `<br><span style="font-size:0.58rem; color:var(--text-muted);">Hruby: ${grossUsd >= 0 ? "+" : ""}${grossUsd.toFixed(2)}$ | Fee: -${estFeeUsd.toFixed(2)}$</span>` : ""}</td>
-                            <td><button class="btn btn-sell" style="padding:3px 7px; font-size:0.62rem;" onclick="sellSingleCoin('${coin}')">SELL</button></td>
+                            <td><button class="btn btn-sell btn-mini" onclick="sellSingleCoin('${coin}')">SELL</button></td>
                         </tr>`;
                     }
                     activeTbody.innerHTML = html;
@@ -3943,14 +4551,14 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     sellBtn.disabled = true;
                 }
 
-                let closedTbody = document.getElementById('closed-trades-tbody');
-                let closedList = data.history || [];
+                const closedTbody = document.getElementById('closed-trades-tbody');
+                const closedList = data.history || [];
                 const closedCntEl = document.getElementById('closed-trades-count');
                 if (closedCntEl) closedCntEl.innerText = `${closedList.length} obchodov`;
                 if (closedTbody) {
                     if (closedList.length > 0) {
                         let cHtml = "";
-                        for (let tr of closedList) {
+                        for (const tr of closedList) {
                             const pctVal = parseFloat(tr.pnl_pct || 0);
                             const usdVal = parseFloat(tr.pnl_usdc || 0);
                             const grossVal = parseFloat(tr.gross_pnl_usdc ?? usdVal);
@@ -3973,12 +4581,13 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     }
                 }
 
-                let scannerTbody = document.getElementById('scanner-tbody');
-                let scannerData = data.scanner_cache || {};
+                const scannerTbody = document.getElementById('scanner-tbody');
+                const scannerData = data.scanner_cache || {};
+                updateRadarFeed(scannerData);
                 const searchVal = (document.getElementById('scanner-search')?.value || "").trim().toUpperCase();
                 if (Object.keys(scannerData).length > 0) {
                     let sHtml = "";
-                    for (let [coin, info] of Object.entries(scannerData)) {
+                    for (const [coin, info] of Object.entries(scannerData)) {
                         const symUpper = (info.symbol || coin).toUpperCase();
                         if (searchVal && !symUpper.includes(searchVal)) continue;
                         const isInTr = info.trade_status && info.trade_status !== "---";
@@ -3987,11 +4596,11 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                         if (currentScannerFilter === "IN_TRADE" && !isInTr) continue;
 
                         const priceNum = Number(info.price || 0);
-                        let momClass = info.momentum === "SILNE" ? "text-green" : "text-red";
-                        let impClass = (info.impulse || "").includes("AKTIVNY") ? "text-green" : "text-yellow";
-                        let execSig = info.exec_signal || "CAKAJ";
-                        let execClass = execSig.includes("NAKUPIT") ? "text-green" : (execSig.includes("PREDAT") || execSig.includes("BLOK") ? "text-red" : "text-yellow");
-                        let factorTitle = info.ai_factors && info.ai_factors !== "--" ? ` title="Faktory: ${info.ai_factors}"` : "";
+                        const momClass = info.momentum === "SILNE" ? "text-green" : "text-red";
+                        const impClass = (info.impulse || "").includes("AKTIVNY") ? "text-green" : "text-yellow";
+                        const execSig = info.exec_signal || "CAKAJ";
+                        const execClass = execSig.includes("NAKUPIT") ? "text-green" : (execSig.includes("PREDAT") || execSig.includes("BLOK") ? "text-red" : "text-yellow");
+                        const factorTitle = info.ai_factors && info.ai_factors !== "--" ? ` title="Faktory: ${info.ai_factors}"` : "";
 
                         sHtml += `<tr>
                             <td><b>${info.symbol || coin}</b></td>
@@ -4016,11 +4625,11 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     pruneInfoEl.innerText = `Auto-cistenie: kazde 2h (posledne: ${data.last_log_prune || '--'}) · 24h register: ${latestLogs24h.length}`;
                 }
 
-                let logsBox = document.getElementById('logs-container');
+                const logsBox = document.getElementById('logs-container');
                 let lHtml = "";
                 const logEntries = data.log_entries || [];
                 if (logEntries.length > 0) {
-                    for (let item of logEntries) {
+                    for (const item of logEntries) {
                         const cat = item.category || "INFO";
                         if (currentLogCategory !== "ALL" && cat !== currentLogCategory) continue;
                         const lineStr = item.line || `[${item.time || '--'}] ${item.message || ''}`;
@@ -4029,7 +4638,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                         lHtml += `<div class="log-line ${catClass}">${lineStr}</div>`;
                     }
                 } else {
-                    for (let log of (data.logs || [])) {
+                    for (const log of (data.logs || [])) {
                         if (logSearch && !String(log).toUpperCase().includes(logSearch)) continue;
                         lHtml += `<div class="log-line">${log}</div>`;
                     }
@@ -4043,13 +4652,14 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
             }
         }
 
+        setInterval(renderHaFibChart, 90);
         setInterval(updateState, 4000);
+        renderHaFibChart();
         updateState();
     </script>
 </body>
 </html>
 """
-
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
