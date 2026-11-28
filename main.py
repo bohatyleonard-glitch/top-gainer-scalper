@@ -3535,6 +3535,13 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     </div>
 
                     <div class="top24-panel-col">
+                        <div id="top5m-pick-banner" style="padding:7px 9px;border-radius:6px;background:rgba(34,211,238,0.08);border:1px solid rgba(34,211,238,0.35);font-family:var(--font-mono);font-size:0.63rem;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+                            <div>
+                                <b class="text-cyan" id="top5m-pick-headline">5M PORADCA: Vyhodnocujem USDC Top Gainerov...</b>
+                                <div style="color:var(--text-secondary);font-size:0.59rem;margin-top:2px;" id="top5m-pick-reason">Porovnavam 5m objem, EMA9 a prehriatie po 24h raste.</div>
+                            </div>
+                            <button class="btn btn-mini btn-on" id="top5m-focus-btn" style="display:none;" onclick="focusTop5mPick()">VYBRAT TOP 1</button>
+                        </div>
                         <div class="top24-toolbar">
                             <span class="update-tag" id="top24-count-lbl">Spot Top Gainers · USDC par (zoradene podla 24h %)</span>
                             <button class="btn btn-mini" onclick="refreshOkxTop24Volume(true)">OBNOVIT 24H</button>
@@ -3895,6 +3902,63 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
         );
 
         let top24Pairs = [...OKX_SPOT_USDC_GAINERS_SNAPSHOT];
+        let top5mAdvisory = null;
+
+        function focusTop5mPick() {
+            if (top5mAdvisory && top5mAdvisory.top_pick && top5mAdvisory.top_pick.coin) {
+                selectChartCoin(top5mAdvisory.top_pick.coin);
+                showToastMessage(`Zvoleny 5M favorit: ${top5mAdvisory.top_pick.instId}`, "ok");
+            }
+        }
+
+        function renderTop5mAdvisoryBanner() {
+            const headEl = document.getElementById('top5m-pick-headline');
+            const reasonEl = document.getElementById('top5m-pick-reason');
+            const bannerEl = document.getElementById('top5m-pick-banner');
+            const focusBtn = document.getElementById('top5m-focus-btn');
+            if (!headEl || !reasonEl || !bannerEl) return;
+
+            if (!top5mAdvisory) {
+                headEl.innerText = "5M PORADCA: Cakam na 5m vyhodnotenie USDC Top Gainerov...";
+                headEl.className = "text-cyan";
+                return;
+            }
+            const isPick = top5mAdvisory.status === "PICK" && top5mAdvisory.top_pick;
+            headEl.innerText = top5mAdvisory.headline || "5M PORADCA";
+            headEl.className = isPick ? "text-green" : "text-yellow";
+            reasonEl.innerText = top5mAdvisory.reason || "";
+            bannerEl.style.borderColor = isPick ? "rgba(16, 185, 129, 0.55)" : "rgba(245, 158, 11, 0.45)";
+            bannerEl.style.background = isPick ? "rgba(16, 185, 129, 0.09)" : "rgba(245, 158, 11, 0.08)";
+            if (focusBtn) {
+                focusBtn.style.display = isPick ? "inline-flex" : "none";
+            }
+        }
+
+        async function refresh5mTopPick() {
+            try {
+                const res = await fetch('/api/5m-top-pick');
+                const data = await res.json();
+                if (data.status === 'success' && data.advisory) {
+                    top5mAdvisory = data.advisory;
+                    const cands = Array.isArray(top5mAdvisory.candidates) ? top5mAdvisory.candidates : [];
+                    if (cands.length > 0) {
+                        const byCoin = new Map(cands.map(c => [String(c.coin || "").toUpperCase(), c]));
+                        top24Pairs = top24Pairs.map(p => {
+                            const hit = byCoin.get(String(p.coin || "").toUpperCase());
+                            if (!hit) return p;
+                            return {
+                                ...p,
+                                score5m: hit.score_5m,
+                                verdict5m: hit.verdict,
+                                reason5m: hit.reason
+                            };
+                        });
+                    }
+                    renderTop5mAdvisoryBanner();
+                    renderTop24VolumeList();
+                }
+            } catch (e) {}
+        }
         let hoverChartX = null;
         let hoverChartY = null;
 
@@ -4146,8 +4210,10 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 const chgStr = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
                 const meterPct = Math.min(100, Math.max(10, (Math.abs(chg) / maxGainer) * 100));
                 const isSel = item.coin === selectedChartCoin ? "selected-pair" : "";
-                const sigCls = item.signal === "BUY" ? "text-green" : "text-cyan";
-                const badgeText = item.signal === "BUY" ? `BUY #${idx + 1}` : `#${idx + 1} · ${item.signal}`;
+                const isTop5mPick = top5mAdvisory && top5mAdvisory.status === "PICK" && top5mAdvisory.top_pick && String(top5mAdvisory.top_pick.coin || "").toUpperCase() === String(item.coin || "").toUpperCase();
+                const sigCls = isTop5mPick ? "text-green" : (item.signal === "BUY" ? "text-green" : "text-cyan");
+                const scoreSuffix = (item.score5m !== undefined && item.score5m !== null) ? ` · ${Number(item.score5m).toFixed(0)}b` : "";
+                const badgeText = isTop5mPick ? `TOP 1 · 5M${scoreSuffix}` : (item.signal === "BUY" ? `BUY #${idx + 1}${scoreSuffix}` : `#${idx + 1} · ${item.signal}`);
                 return `
                     <div class="top24-row ${isSel}" data-coin="${item.coin}" onclick="selectChartCoin('${item.coin}')" title="${item.name} · 24h rozsah ${item.range24h} · Objem ${item.volBase}">
                         <div>
@@ -4633,6 +4699,322 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
 """
 
 
+
+
+# --- 5M TOP GAINERS (USDC) PORADCA / VYBER TOP 1 KANDIDATA ---
+TOP_5M_GAINERS_ADVISORY: dict = {
+    "status": "WAIT",
+    "headline": "Cakam na vyhodnotenie 5m USDC Top Gainerov...",
+    "reason": "Inicializacia 5m skenera.",
+    "updated_at": "--",
+    "top_pick": None,
+    "candidates": [],
+}
+
+
+def _evaluate_single_5m_gainer_candidate_sync(item: dict, rank_24h: int) -> dict:
+    coin = str(item.get("coin") or str(item.get("instId") or "").split("-")[0] or "").strip()
+    inst_id = str(item.get("instId") or f"{coin.upper()}-USDC").strip()
+    okx_inst = inst_id.replace("/", "-")
+    last_p = safe_float(item.get("last_price"), 0.0)
+    chg_24h = safe_float(item.get("chg_24h_pct"), 0.0)
+    vol_24h_m = safe_float(item.get("vol_24h_m"), 0.0)
+    range_24h = str(item.get("range_24h") or "--")
+
+    res = okx_public_request_sync(f"/api/v5/market/candles?instId={okx_inst}&bar=5m&limit=80")
+    if res.get("code") != "0" or not res.get("data") or len(res["data"]) < 25:
+        return {
+            "coin": coin,
+            "instId": inst_id,
+            "okxInstId": okx_inst,
+            "rank_24h": rank_24h,
+            "last_price": last_p,
+            "chg_24h_pct": round(chg_24h, 2),
+            "vol_24h_m": round(vol_24h_m, 2),
+            "range_24h": range_24h,
+            "score_5m": 0.0,
+            "verdict": "DATA_ERR",
+            "reason": "Nedostatok 5m sviecok na OKX",
+            "ai_prob_pct": None,
+        }
+
+    candles = list(reversed(res["data"]))
+    closed = candles[:-1] if len(candles) > 26 else candles
+    pack = _build_series_and_signals(list(reversed(closed)), str(SETTINGS.get("mode_choice", "FIB")).upper())
+    if not pack:
+        return {
+            "coin": coin,
+            "instId": inst_id,
+            "okxInstId": okx_inst,
+            "rank_24h": rank_24h,
+            "last_price": last_p,
+            "chg_24h_pct": round(chg_24h, 2),
+            "vol_24h_m": round(vol_24h_m, 2),
+            "range_24h": range_24h,
+            "score_5m": 0.0,
+            "verdict": "DATA_ERR",
+            "reason": "Neuplna 5m seria",
+            "ai_prob_pct": None,
+        }
+
+    n = pack["n"]
+    idx = n - 1
+    ha_closes = pack["ha_closes"]
+    ha_opens = pack["ha_opens"]
+    ha_highs = pack["ha_highs"]
+    ha_lows = pack["ha_lows"]
+    volumes = pack["volumes"]
+    osc = pack["oscillator"]
+    sig = pack["signal_line"]
+    ema9 = pack["close_ema_9"]
+    pred = pack["predicted_next"]
+    ema50 = pack["close_ema_50"]
+
+    cl_now = ha_closes[idx]
+    if last_p <= 0:
+        last_p = cl_now
+    ema9_now = ema9[idx] if (ema9 and ema9[idx] and ema9[idx] > 0) else cl_now
+    dist_ema9_pct = ((cl_now - ema9_now) / ema9_now * 100.0) if ema9_now > 0 else 0.0
+
+    last_raw = closed[-1]
+    raw_o = safe_float(last_raw[1], ha_opens[idx])
+    raw_h = safe_float(last_raw[2], ha_highs[idx])
+    raw_l = safe_float(last_raw[3], ha_lows[idx])
+    raw_c = safe_float(last_raw[4], cl_now)
+    candle_chg_pct = ((raw_c - raw_o) / raw_o * 100.0) if raw_o > 0 else 0.0
+    c_rng = max(1e-9, raw_h - raw_l)
+    upper_wick_ratio = max(0.0, raw_h - max(raw_o, raw_c)) / c_rng
+
+    vol_prev = volumes[max(0, idx - 14): idx]
+    avg_vol = (sum(vol_prev) / len(vol_prev)) if vol_prev else 1.0
+    rel_vol = (volumes[idx] / avg_vol) if avg_vol > 0 else 1.0
+
+    osc_bull = (osc[idx] > 0.0) and (osc[idx] > sig[idx]) and (pred[idx] > osc[idx])
+    osc_pos = osc[idx] > 0.0
+    ha_green = ha_closes[idx] > ha_opens[idx]
+    above_ema9 = cl_now > ema9_now
+
+    # Kontrola prehriatia po silnom 24h raste
+    overheated = (
+        dist_ema9_pct > 1.35
+        or candle_chg_pct > 1.80
+        or (upper_wick_ratio > 0.62 and dist_ema9_pct > 0.60)
+    )
+
+    feats = extract_ai_features(
+        idx, ha_closes, ha_opens, ha_highs, ha_lows, volumes, osc, sig, ema9, pred, ema50
+    )
+    ai_p = predict_ai_probability(feats)
+
+    score = 35.0
+    reasons: list[str] = []
+
+    if osc_bull:
+        score += 22.0
+        reasons.append("silny 5m objem. impulz")
+    elif osc_pos:
+        score += 11.0
+        reasons.append("pozitivny 5m impulz")
+    else:
+        score -= 10.0
+
+    if above_ema9:
+        score += 12.0
+        reasons.append("nad EMA9")
+    else:
+        score -= 8.0
+
+    if ha_green:
+        score += 8.0
+        reasons.append("zelena HA")
+
+    if 0.05 <= dist_ema9_pct <= 0.85:
+        score += 10.0
+        reasons.append(f"zdravy odstup EMA9 (+{dist_ema9_pct:.2f}%)")
+    elif dist_ema9_pct > 1.35:
+        score -= 22.0
+        reasons.append(f"prehriate nad EMA9 (+{dist_ema9_pct:.2f}%)")
+
+    if 0.85 <= rel_vol <= 3.5:
+        score += 8.0
+        reasons.append(f"objem {rel_vol:.1f}x")
+    elif rel_vol < 0.55:
+        score -= 8.0
+        reasons.append("slaby 5m objem")
+
+    if upper_wick_ratio > 0.62:
+        score -= 12.0
+        reasons.append(f"dlhy horny knot ({upper_wick_ratio*100:.0f}%)")
+
+    if chg_24h >= 28.0 and dist_ema9_pct > 0.80:
+        score -= 12.0
+        reasons.append("stary 24h rast + riziko vrcholu")
+
+    if ai_p is not None:
+        score += (ai_p - 0.5) * 20.0
+
+    score = round(max(0.0, min(99.0, score)), 1)
+
+    if overheated or score < 55.0:
+        verdict = "WAIT"
+        if overheated:
+            reason_txt = f"Prehriaty 5m pohyb ({', '.join(reasons[:2])})"
+        else:
+            reason_txt = f"Slabsi 5m setup ({', '.join(reasons[:2]) if reasons else 'caka na potvrdenie'})"
+    else:
+        verdict = "PICK"
+        reason_txt = ", ".join(reasons[:3]) if reasons else "Stabilny 5m pohyb"
+
+    return {
+        "coin": coin,
+        "instId": inst_id,
+        "okxInstId": okx_inst,
+        "rank_24h": rank_24h,
+        "last_price": last_p,
+        "chg_24h_pct": round(chg_24h, 2),
+        "vol_24h_m": round(vol_24h_m, 2),
+        "range_24h": range_24h,
+        "score_5m": score,
+        "verdict": verdict,
+        "reason": reason_txt,
+        "ai_prob_pct": round(ai_p * 100.0, 1) if ai_p is not None else None,
+    }
+
+
+def compute_5m_top_gainer_advisory_sync() -> dict:
+    global TOP_5M_GAINERS_ADVISORY
+    pairs_list, _ = _fetch_okx_usdc_gainers_raw_sync()
+    top_slice = pairs_list[:10]
+    evaluated: list[dict] = []
+    for idx, item in enumerate(top_slice, start=1):
+        evaluated.append(_evaluate_single_5m_gainer_candidate_sync(item, idx))
+
+    valid = [c for c in evaluated if c.get("verdict") != "DATA_ERR"]
+    valid.sort(key=lambda x: (safe_float(x.get("score_5m"), 0.0), safe_float(x.get("chg_24h_pct"), 0.0)), reverse=True)
+
+    best = valid[0] if valid else None
+    if best and best.get("verdict") == "PICK" and safe_float(best.get("score_5m"), 0.0) >= 60.0:
+        advisory = {
+            "status": "PICK",
+            "headline": f"TOP 1 (5M): {best['instId']} · Skore {best['score_5m']:.0f}/100",
+            "reason": best.get("reason", "Najlepsi 5m setup z USDC Top Gainerov"),
+            "updated_at": get_sk_time_str(),
+            "top_pick": best,
+            "candidates": evaluated,
+        }
+    else:
+        best_coin = best["instId"] if best else "USDC Top Gainerov"
+        best_r = best["reason"] if best else "vsetky pohyby su neiste alebo prehriate"
+        advisory = {
+            "status": "WAIT",
+            "headline": "Radsej pockat — ziadny cisty 5m setup na USDC Top Gainers",
+            "reason": f"Najvyssi kandidát {best_coin}: {best_r}",
+            "updated_at": get_sk_time_str(),
+            "top_pick": best,
+            "candidates": evaluated,
+        }
+
+    TOP_5M_GAINERS_ADVISORY = advisory
+    return advisory
+
+
+def _fetch_okx_usdc_gainers_raw_sync() -> tuple[list[dict], bool]:
+    res = okx_public_request_sync("/api/v5/market/tickers?instType=SPOT")
+    pairs_out = []
+    is_live = False
+    snap_by_coin = {item["coin"].upper(): item for item in [
+        {"coin": "NES", "name": "Nesa", "volBase": "89.90K NES", "signal": "BUY"},
+        {"coin": "ACE", "name": "ACE", "volBase": "454.07K ACE", "signal": "BUY"},
+        {"coin": "SKY", "name": "Sky", "volBase": "989.43K SKY", "signal": "BUY"},
+        {"coin": "SPACE", "name": "Spacecoin", "volBase": "2.54M SPACE", "signal": "BUY"},
+        {"coin": "NIGHT", "name": "Midnight", "volBase": "4.74M NIGHT", "signal": "BUY"},
+        {"coin": "SENT", "name": "Sentient", "volBase": "1.69M SENT", "signal": "SCAN"},
+        {"coin": "xANT", "name": "Anthropic", "volBase": "5.41K xANT", "signal": "SCAN"},
+        {"coin": "YB", "name": "Yield Basis", "volBase": "22.24K YB", "signal": "SCAN"},
+        {"coin": "xSNDK", "name": "SanDisk", "volBase": "444.92 xSNDK", "signal": "SCAN"},
+        {"coin": "CFG", "name": "Centrifuge", "volBase": "83.40K CFG", "signal": "SCAN"},
+        {"coin": "WIN", "name": "WINkLink", "volBase": "4.36M WIN", "signal": "SCAN"},
+        {"coin": "AUCTION", "name": "AUCTION", "volBase": "457.05 AUCTION", "signal": "SCAN"},
+        {"coin": "BABY", "name": "Babylon", "volBase": "108.29K BABY", "signal": "SCAN"},
+        {"coin": "LQTY", "name": "Liquity", "volBase": "1.43K LQTY", "signal": "SCAN"},
+        {"coin": "xTSLA", "name": "Tesla", "volBase": "128.36 xTSLA", "signal": "SCAN"},
+    ]}
+    if res.get("code") == "0" and res.get("data"):
+        is_live = True
+        rows = []
+        for t in res["data"]:
+            inst = str(t.get("instId", "")).strip()
+            if not inst.endswith("-USDC"):
+                continue
+            base_raw = inst[:-5]
+            last_p = safe_float(t.get("last"), 0.0)
+            open24 = safe_float(t.get("open24h"), 0.0)
+            high24 = safe_float(t.get("high24h"), 0.0)
+            low24 = safe_float(t.get("low24h"), 0.0)
+            vol_ccy = safe_float(t.get("volCcy24h"), 0.0)
+            if last_p <= 0 or open24 <= 0 or vol_ccy < 25000.0:
+                continue
+            chg_pct = ((last_p - open24) / open24) * 100.0
+            if chg_pct <= 0:
+                continue
+            rows.append((chg_pct, vol_ccy, inst, base_raw, last_p, high24, low24))
+
+        rows.sort(key=lambda x: x[0], reverse=True)
+        for idx, (chg_pct, vol_ccy, inst, base_raw, last_p, high24, low24) in enumerate(rows[:15]):
+            meta = snap_by_coin.get(base_raw.upper())
+            disp_coin = meta["coin"] if meta else base_raw
+            fmt_p = lambda v: f"{v:.8f}" if (0 < v < 0.001) else (f"{v:.6f}" if v < 0.05 else (f"{v:.4f}" if v < 2 else f"{v:.2f}"))
+            rng_txt = f"{fmt_p(low24)} - {fmt_p(high24)}" if (high24 > 0 and low24 > 0) else "--"
+            pairs_out.append({
+                "coin": disp_coin,
+                "instId": inst,
+                "last_price": last_p,
+                "chg_24h_pct": round(chg_pct, 2),
+                "range_24h": rng_txt,
+                "vol_24h_m": round(vol_ccy / 1e6, 2),
+                "vol_base": meta["volBase"] if meta else f"{vol_ccy/1e3:.1f}K {disp_coin}",
+                "signal": "BUY" if idx < 5 else "SCAN",
+            })
+
+    if not pairs_out:
+        is_live = False
+        fallback_items = [
+            ("NES", "NES-USDC", 0.2839, 19.24, "0.2256 - 0.2925", 84.73, "89.90K NES", "BUY"),
+            ("ACE", "ACE-USDC", 0.05298, 13.54, "0.04442 - 0.05655", 6.25, "454.07K ACE", "BUY"),
+            ("SKY", "SKY-USDC", 0.05161, 11.86, "0.04499 - 0.05458", 1210.0, "989.43K SKY", "BUY"),
+            ("SPACE", "SPACE-USDC", 0.004543, 11.79, "0.004064 - 0.004677", 29.55, "2.54M SPACE", "BUY"),
+            ("NIGHT", "NIGHT-USDC", 0.053966, 10.16, "0.047892 - 0.055380", 902.45, "4.74M NIGHT", "BUY"),
+            ("SENT", "SENT-USDC", 0.02486, 9.13, "0.02203 - 0.02511", 178.70, "1.69M SENT", "SCAN"),
+            ("xANT", "XANT-USDC", 91.36, 6.78, "84.33 - 93.13", 48.39, "5.41K xANT", "SCAN"),
+            ("YB", "YB-USDC", 0.06104, 6.36, "0.05739 - 0.06348", 18.48, "22.24K YB", "SCAN"),
+            ("xSNDK", "XSNDK-USDC", 85.52, 5.26, "77.33 - 86.26", 20.98, "444.92 xSNDK", "SCAN"),
+            ("CFG", "CFG-USDC", 0.05963, 3.90, "0.05528 - 0.07290", 9.60, "83.40K CFG", "SCAN"),
+            ("WIN", "WIN-USDC", 0.00005520, 3.86, "0.00005264 - 0.00005571", 51.21, "4.36M WIN", "SCAN"),
+            ("AUCTION", "AUCTION-USDC", 2.614, 3.16, "2.534 - 2.736", 19.05, "457.05 AUCTION", "SCAN"),
+            ("BABY", "BABY-USDC", 0.009644, 3.02, "0.009361 - 0.009781", 49.94, "108.29K BABY", "SCAN"),
+            ("LQTY", "LQTY-USDC", 0.1324, 2.87, "0.1287 - 0.1324", 13.15, "1.43K LQTY", "SCAN"),
+            ("xTSLA", "XTSLA-USDC", 399.14, 2.38, "383.57 - 401.46", 50.89, "128.36 xTSLA", "SCAN"),
+        ]
+        for coin, inst, last_p, chg_pct, rng_txt, vol_m, vol_b, sig in fallback_items:
+            pairs_out.append({
+                "coin": coin,
+                "instId": inst,
+                "last_price": last_p,
+                "chg_24h_pct": chg_pct,
+                "range_24h": rng_txt,
+                "vol_24h_m": vol_m,
+                "vol_base": vol_b,
+                "signal": sig,
+            })
+    return pairs_out, is_live
+
+
+@app.get("/api/5m-top-pick")
+async def api_5m_top_pick():
+    adv = await asyncio.to_thread(compute_5m_top_gainer_advisory_sync)
+    return JSONResponse({"status": "success", "advisory": adv})
+
+
 @app.get("/api/okx-top24-volume")
 async def api_okx_top24_volume():
     def _fetch_okx_usdc_gainers_sync():
@@ -4776,10 +5158,12 @@ async def index():
         renderTop24VolumeList();
         renderHaFibChart();
         refreshOkxTop24Volume(false);
+        refresh5mTopPick();
         updateState();
         setInterval(renderHaFibChart, 900);
         setInterval(updateState, 2500);
         setInterval(() => refreshOkxTop24Volume(false), 30000);
+        setInterval(refresh5mTopPick, 20000);
 """
     )
     template = Template(html_clean)
