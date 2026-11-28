@@ -59,35 +59,7 @@ def _resolve_ai_memory_path() -> str:
 
 
 AI_MEMORY_FILE = _resolve_ai_memory_path()
-ALLOWED_TIMEFRAMES = ["5m", "8m", "10m", "15m", "30m", "45m"]
-TF_10M_PRESET = {
-    "max_parallel": 4,
-    "reentry_cooldown_sec": 45,
-    "mode_choice": "BREAKOUT",
-    "require_green_ha_buy": True,
-    "fast_len": 4,
-    "slow_len": 14,
-    "signal_len": 7,
-    "pred_look": 2,
-    "pivot_len": 2,
-    "use_fixed_sl": True,
-    "fixed_sl_pct": 0.85,
-    "use_trailing": True,
-    "trail_pct": 1.1,
-    "use_breakeven": True,
-    "be_trigger_pct": 0.55,
-    "use_trailing_tp": True,
-    "ttp_trigger_pct": 0.65,
-    "ttp_callback_pct": 0.25,
-    "use_ha_exit": True,
-    "ha_exit_consecutive": 2,
-}
-
-
-def apply_10m_preset():
-    for k, v in TF_10M_PRESET.items():
-        SETTINGS[k] = v
-
+ALLOWED_TIMEFRAMES = ["5m", "8m", "15m", "30m", "45m"]
 ALLOWED_BUDGET_CAPS = [500, 1000, 2000, 3000, 5000, 10000]
 
 # Pary, ktore demo ucet nepodporuje alebo ich nechces obchodovat
@@ -2592,10 +2564,6 @@ async def set_tf(tf_val: str):
     tf_lower = tf_val.lower()
     if tf_lower in ALLOWED_TIMEFRAMES:
         CURRENT_TIMEFRAME = tf_val.upper()
-        preset_applied = False
-        if tf_lower == "10m":
-            apply_10m_preset()
-            preset_applied = True
         MARKET_SCANNER_CACHE.clear()
         regime_now, sideways_now = await get_market_regime_and_sideways(tf_lower)
         MARKET_REGIME = regime_now
@@ -2603,21 +2571,8 @@ async def set_tf(tf_val: str):
         if SETTINGS.get("use_ai_filter", False):
             seed_sym = TOP_LIQUID_SYMBOLS[0] if TOP_LIQUID_SYMBOLS else "SOL-USDC"
             await train_ai_model_from_candles(seed_sym, bar_tf=tf_lower, force=True)
-        if preset_applied:
-            save_persistent_data()
-            log_event(
-                "Casovy ramec (TF) zmeneny na: 10M + aplikovany 10m profil (BREAKOUT, SL -0.85%, BE +0.55%, TTP +0.65%/0.25%, TS 1.1%, HA Exit 2x, Cooldown 45s).",
-                persist=True,
-            )
-        else:
-            log_event(f"Casovy ramec (TF) zmeneny na: {CURRENT_TIMEFRAME} (Rezim: {regime_now})", persist=True)
-        return JSONResponse({
-            "status": "success",
-            "tf": CURRENT_TIMEFRAME,
-            "market_regime": regime_now,
-            "preset_10m_applied": preset_applied,
-            "pine_settings": get_pine_settings_dict(),
-        })
+        log_event(f"Casovy ramec (TF) zmeneny na: {CURRENT_TIMEFRAME} (Rezim: {regime_now})", persist=True)
+        return JSONResponse({"status": "success", "tf": CURRENT_TIMEFRAME, "market_regime": regime_now})
     return JSONResponse({"status": "error", "message": "Neplatny casovy ramec."})
 
 
@@ -2985,7 +2940,6 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
             <div class="actions">
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '5M' %}btn-yellow{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
-                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '10M' %}btn-yellow{% endif %}" data-tf="10m" onclick="setTf('10m')">10M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
@@ -3473,22 +3427,6 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                     }
                 });
                 document.getElementById('header-tf').innerText = data.tf;
-                if (data.pine_settings) {
-                    applyPineFormValues(data.pine_settings);
-                    const maxP = data.pine_settings.max_parallel;
-                    if (maxP) {
-                        document.querySelectorAll('.parallel-btn').forEach(b => {
-                            b.classList.toggle('btn-yellow', parseInt(b.getAttribute('data-val'), 10) === parseInt(maxP, 10));
-                        });
-                    }
-                }
-                if (data.preset_10m_applied) {
-                    const statusEl = document.getElementById('pine-save-status');
-                    if (statusEl) {
-                        statusEl.style.color = 'var(--green)';
-                        statusEl.innerText = 'Aplikovany 10M profil (0.65% -> 5%+ vlny, SL -0.85%, BE +0.55%, TTP +0.65%/0.25%, HA Exit 2x, 4x, 45s).';
-                    }
-                }
                 updateState();
             }
         }
