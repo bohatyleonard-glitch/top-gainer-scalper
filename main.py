@@ -75,7 +75,7 @@ def _resolve_ai_memory_path() -> str:
 
 
 AI_MEMORY_FILE = _resolve_ai_memory_path()
-ALLOWED_TIMEFRAMES = ["5m", "8m", "15m", "30m", "45m"]
+ALLOWED_TIMEFRAMES = ["5m", "8m", "10m", "15m", "20m", "30m", "45m", "2h", "4h"]
 ALLOWED_BUDGET_CAPS = [500, 1000, 2000, 3000, 5000, 10000]
 
 # Pary, ktore demo ucet nepodporuje alebo ich nechces obchodovat
@@ -323,14 +323,80 @@ def _http_get_json_sync(url: str, headers: dict | None = None) -> dict:
         return {"code": "-1", "msg": str(e), "data": []}
 
 
+_CUSTOM_BAR_AGGREGATION = {
+    "10m": ("5m", 2),
+    "20m": ("5m", 4),
+}
+
+
+def _aggregate_okx_candles(raw_candles: list, factor: int) -> list:
+    if not raw_candles or factor <= 1:
+        return raw_candles
+    asc = list(reversed(raw_candles))
+    usable_len = (len(asc) // factor) * factor
+    if usable_len < factor:
+        return []
+    asc = asc[-usable_len:]
+    grouped = []
+    for i in range(0, len(asc), factor):
+        chunk = asc[i:i + factor]
+        first_c = chunk[0]
+        last_c = chunk[-1]
+        ts_val = str(first_c[0])
+        o_val = safe_float(first_c[1])
+        h_val = max(safe_float(c[2]) for c in chunk)
+        l_val = min(safe_float(c[3]) for c in chunk)
+        c_val = safe_float(last_c[4])
+        v_val = sum(safe_float(c[5]) for c in chunk)
+        vol_ccy_val = sum(safe_float(c[6]) if len(c) > 6 else 0.0 for c in chunk)
+        vol_ccy_quote_val = sum(safe_float(c[7]) if len(c) > 7 else 0.0 for c in chunk)
+        confirm_val = str(last_c[8]) if len(last_c) > 8 else "1"
+        grouped.append([
+            ts_val,
+            f"{o_val:.8f}".rstrip("0").rstrip(".") or "0",
+            f"{h_val:.8f}".rstrip("0").rstrip(".") or "0",
+            f"{l_val:.8f}".rstrip("0").rstrip(".") or "0",
+            f"{c_val:.8f}".rstrip("0").rstrip(".") or "0",
+            f"{v_val:.8f}".rstrip("0").rstrip(".") or "0",
+            f"{vol_ccy_val:.8f}".rstrip("0").rstrip(".") or "0",
+            f"{vol_ccy_quote_val:.8f}".rstrip("0").rstrip(".") or "0",
+            confirm_val,
+        ])
+    return list(reversed(grouped))
+
+
 def okx_public_request_sync(path_and_query: str) -> dict:
+    parsed_url = urllib.parse.urlparse(path_and_query)
+    qs = urllib.parse.parse_qs(parsed_url.query)
+    bar_val = (qs.get("bar", [""])[0] or "").lower().strip()
+
     for base in [OKX_PUBLIC_URL, "https://www.okx.com", "https://aws.okx.com"]:
         base_clean = base.strip().rstrip("/")
         if not base_clean:
             continue
         res = _http_get_json_sync(f"{base_clean}{path_and_query}")
-        if res.get("code") == "0":
+        if res.get("code") == "0" and res.get("data"):
             return res
+
+    if bar_val in _CUSTOM_BAR_AGGREGATION and parsed_url.path.endswith("/api/v5/market/candles"):
+        src_bar, factor = _CUSTOM_BAR_AGGREGATION[bar_val]
+        orig_limit = int(qs.get("limit", ["120"])[0] or "120")
+        need_limit = min(300, max(60, orig_limit * factor + factor))
+        new_q = dict(qs)
+        new_q["bar"] = [src_bar]
+        new_q["limit"] = [str(need_limit)]
+        flat_pairs = [(k, v_item) for k, v_list in new_q.items() for v_item in v_list]
+        fallback_path = f"{parsed_url.path}?{urllib.parse.urlencode(flat_pairs)}"
+        for base in [OKX_PUBLIC_URL, "https://www.okx.com", "https://aws.okx.com"]:
+            base_clean = base.strip().rstrip("/")
+            if not base_clean:
+                continue
+            fb_res = _http_get_json_sync(f"{base_clean}{fallback_path}")
+            if fb_res.get("code") == "0" and fb_res.get("data"):
+                agg_data = _aggregate_okx_candles(fb_res["data"], factor)
+                if agg_data:
+                    return {"code": "0", "msg": "", "data": agg_data[:orig_limit]}
+
     return _http_get_json_sync(f"{OKX_PUBLIC_URL}{path_and_query}")
 
 
@@ -523,7 +589,7 @@ def classify_trade_style(tf_str: str, source: str = "AUTO") -> str:
     if str(source).upper() == "MANUAL":
         return "MANUAL"
     tf_clean = str(tf_str).lower().strip()
-    if tf_clean in ("30m", "45m", "1h", "4h"):
+    if tf_clean in ("30m", "45m", "1h", "2h", "4h"):
         return "SWING"
     return "SCALPING"
 
@@ -968,12 +1034,14 @@ def get_market_regime_and_sideways_sync(bar_tf: str = "15m") -> tuple[str, bool]
 
         recent_win = closes[-15:]
         rng_pct = ((max(highs[-15:]) - min(lows[-15:])) / recent_win[0] * 100.0) if recent_win[0] > 0 else 0.0
-        if tf_clean in ("5m", "8m"):
-            min_crosses, max_rng_pct = 6, 0.85
-        elif tf_clean == "15m":
-            min_crosses, max_rng_pct = 5, 1.35
-        else:
+        if tf_clean in ("5m", "8m", "10m"):
+            min_crosses, max_rng_pct = 6, 0.90
+        elif tf_clean in ("15m", "20m"):
+            min_crosses, max_rng_pct = 5, 1.45
+        elif tf_clean in ("30m", "45m", "1h"):
             min_crosses, max_rng_pct = 4, 2.20
+        else:
+            min_crosses, max_rng_pct = 4, 3.20
 
         is_sideways = (crosses >= min_crosses) and (rng_pct < max_rng_pct)
         if is_sideways:
@@ -3057,9 +3125,13 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
             <div class="actions">
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '5M' %}btn-yellow{% endif %}" data-tf="5m" onclick="setTf('5m')">5M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '8M' %}btn-yellow{% endif %}" data-tf="8m" onclick="setTf('8m')">8M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '10M' %}btn-yellow{% endif %}" data-tf="10m" onclick="setTf('10m')">10M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '15M' %}btn-yellow{% endif %}" data-tf="15m" onclick="setTf('15m')">15M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '20M' %}btn-yellow{% endif %}" data-tf="20m" onclick="setTf('20m')">20M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '30M' %}btn-yellow{% endif %}" data-tf="30m" onclick="setTf('30m')">30M</button>
                 <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '45M' %}btn-yellow{% endif %}" data-tf="45m" onclick="setTf('45m')">45M</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '2H' %}btn-yellow{% endif %}" data-tf="2h" onclick="setTf('2h')">2H</button>
+                <button class="tf-btn btn {% if CURRENT_TIMEFRAME|upper == '4H' %}btn-yellow{% endif %}" data-tf="4h" onclick="setTf('4h')">4H</button>
 
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 1 %}btn-yellow{% endif %}" data-val="1" onclick="setParallel(1)">1x</button>
                 <button class="parallel-btn btn {% if SETTINGS.max_parallel == 2 %}btn-yellow{% endif %}" data-val="2" onclick="setParallel(2)">2x</button>
