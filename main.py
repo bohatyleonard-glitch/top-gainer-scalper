@@ -40,6 +40,7 @@ OKX_DEMO_BASE_URL = "https://eea.okx.com" if (not _env_demo_url or "www.okx.com"
 OKX_PUBLIC_URL = os.getenv("OKX_PUBLIC_URL", "https://www.okx.com").strip().rstrip("/")
 OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1").strip()
 
+
 def _resolve_state_file_path() -> str:
     custom_path = os.getenv("BOT_STATE_FILE", "").strip()
     if custom_path:
@@ -85,7 +86,7 @@ EXCLUDED_SYMBOLS = {
     "ZEC-USDC", "ENA-USDC", "LIT-USDC", "CT-USDC",
     "XMSTR-USDC", "XSOXL-USDC", "XANT-USDC",
     "HYPE-USDC", "TAO-USDC", "XRP-USDC",
-    "XNVDA-USDC", "RENDER-USDC", "XVID-USDC","PEPE-USDC",
+    "XNVDA-USDC", "RENDER-USDC", "XVID-USDC", "PEPE-USDC",
     "XSKHY-USDC",
 }
 DEMO_REJECTED_COOLDOWN: dict[str, float] = {}
@@ -3168,8 +3169,8 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
         .stat-value { font-family: var(--font-mono); font-size: 1.25rem; font-weight: 700; color: var(--accent-white); margin-top: 5px; }
         .stat-sub { font-family: var(--font-mono); font-size: 0.64rem; color: var(--text-muted); margin-top: 4px; }
 
-        /* Quantum Visual Grid: Candlestick Chart + OKX Top 24h Volume Scanner */
-        .visual-desk-grid { display: grid; grid-template-columns: 1.55fr 1.15fr; gap: 12px; }
+        /* Quantum Visual Grid: Candlestick Chart + OKX Spot Top 24h Gainers (USDC) Scanner */
+        .visual-desk-grid { display: grid; grid-template-columns: 1.48fr 1.22fr; gap: 12px; }
         .visual-card { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
         .visual-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
         .visual-title {
@@ -3194,7 +3195,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
         }
 
         .chart-canvas-wrap {
-            position: relative; width: 100%; height: 245px;
+            position: relative; width: 100%; height: 252px;
             background: #03060f; border: 1px solid var(--border-subtle); border-radius: 7px; overflow: hidden;
         }
         canvas.desk-canvas { width: 100%; height: 100%; display: block; cursor: crosshair; }
@@ -3211,7 +3212,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
         .legend-items { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
         .legend-dot { width: 7px; height: 7px; border-radius: 2px; display: inline-block; margin-right: 4px; }
 
-        .vol-scanner-layout { display: grid; grid-template-columns: 146px 1fr; gap: 12px; align-items: stretch; min-height: 245px; }
+        .vol-scanner-layout { display: grid; grid-template-columns: 146px 1fr; gap: 12px; align-items: stretch; min-height: 252px; }
         .radar-column { display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: 8px; }
         .radar-stage {
             position: relative; width: 142px; height: 142px;
@@ -3250,18 +3251,20 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
             color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px;
         }
 
-        .top24-list-wrap { display: flex; flex-direction: column; gap: 6px; max-height: 245px; overflow-y: auto; }
+        .top24-panel-col { display: flex; flex-direction: column; gap: 6px; min-height: 252px; }
+        .top24-list-wrap { display: flex; flex-direction: column; gap: 5px; max-height: 222px; overflow-y: auto; padding-right: 2px; }
         .top24-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap; }
         .top24-row {
-            display: grid; grid-template-columns: 88px 76px 1fr 64px; gap: 8px; align-items: center;
-            padding: 7px 10px; border-radius: 6px; background: var(--bg-input);
-            border: 1px solid var(--border-subtle); font-family: var(--font-mono); font-size: 0.65rem;
+            display: grid; grid-template-columns: 92px 68px 1fr 72px; gap: 8px; align-items: center;
+            padding: 6px 9px; border-radius: 6px; background: var(--bg-input);
+            border: 1px solid var(--border-subtle); font-family: var(--font-mono); font-size: 0.64rem;
             cursor: pointer; transition: all 0.14s ease;
         }
         .top24-row:hover { border-color: var(--accent-cyan); background: var(--bg-elevated); }
         .top24-row.selected-pair { border-color: var(--accent-cyan); background: rgba(34, 211, 238, 0.08); }
-        .vol-meter-track { width: 100%; height: 5px; background: rgba(148, 163, 184, 0.15); border-radius: 3px; overflow: hidden; margin-top: 3px; }
-        .vol-meter-fill { height: 100%; background: linear-gradient(90deg, var(--accent-cyan), var(--accent-violet)); border-radius: 3px; }
+        .vol-meter-track { width: 100%; height: 4px; background: rgba(148, 163, 184, 0.15); border-radius: 3px; overflow: hidden; margin-top: 3px; }
+        .vol-meter-fill { height: 100%; background: linear-gradient(90deg, #10b981, var(--accent-cyan), var(--accent-violet)); border-radius: 3px; }
+        .gainer-subname { font-size: 0.56rem; color: var(--text-muted); display: block; margin-top: 1px; }
 
         .section-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
         .section-title { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); font-family: var(--font-mono); }
@@ -3359,7 +3362,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
         @media (max-width: 1000px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
         @media (max-width: 720px) {
             .quick-grid, .adv-grid, .stats-grid, .vol-scanner-layout { grid-template-columns: 1fr; }
-            .top24-row { grid-template-columns: 78px 68px 1fr 56px; }
+            .top24-row { grid-template-columns: 82px 62px 1fr 64px; }
             body { padding: 10px; }
         }
     </style>
@@ -3386,7 +3389,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
 
                 <div class="header-actions">
                     <div class="custom-buy-box">
-                        <input type="text" id="custom-coin" class="custom-buy-input" placeholder="SOL">
+                        <input type="text" id="custom-coin" class="custom-buy-input" placeholder="NES">
                         <button class="btn btn-on btn-mini" onclick="manualBuyCustom()">BUY</button>
                     </div>
                     <button id="compounding-btn" class="btn {% if SETTINGS.compounding_enabled %}btn-active-pill{% endif %}" onclick="toggleCompounding()">
@@ -3470,7 +3473,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
             </div>
         </section>
 
-        <!-- Quantum Visual Grid: Heikin-Ashi + FIB Chart & OKX Top 24h Volume Scanner -->
+        <!-- Quantum Visual Grid: Candlestick Chart + OKX 24h Spot Top Gainers (USDC) Scanner -->
         <section class="visual-desk-grid">
             <div class="quantum-panel visual-card">
                 <div class="visual-header">
@@ -3480,10 +3483,10 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                         <span class="violet-pill" id="chart-tf-pill">{{ CURRENT_TIMEFRAME }}</span>
                     </div>
                     <div class="ribbon-group" id="chart-coin-buttons">
-                        <button class="btn btn-mini btn-active-pill chart-coin-btn" data-coin="SOL" onclick="selectChartCoin('SOL')">SOL</button>
-                        <button class="btn btn-mini chart-coin-btn" data-coin="SUI" onclick="selectChartCoin('SUI')">SUI</button>
-                        <button class="btn btn-mini chart-coin-btn" data-coin="AVAX" onclick="selectChartCoin('AVAX')">AVAX</button>
-                        <button class="btn btn-mini chart-coin-btn" data-coin="LINK" onclick="selectChartCoin('LINK')">LINK</button>
+                        <button class="btn btn-mini btn-active-pill chart-coin-btn" data-coin="NES" onclick="selectChartCoin('NES')">NES</button>
+                        <button class="btn btn-mini chart-coin-btn" data-coin="ACE" onclick="selectChartCoin('ACE')">ACE</button>
+                        <button class="btn btn-mini chart-coin-btn" data-coin="SKY" onclick="selectChartCoin('SKY')">SKY</button>
+                        <button class="btn btn-mini chart-coin-btn" data-coin="SPACE" onclick="selectChartCoin('SPACE')">SPACE</button>
                     </div>
                 </div>
                 <div class="chart-canvas-wrap">
@@ -3497,17 +3500,17 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                         <span><i class="legend-dot" style="background:#22d3ee;"></i>EMA9</span>
                         <span><i class="legend-dot" style="background:#f59e0b;"></i>Fib <span id="chart-fib-label">{{ SETTINGS.fib_choice }}</span></span>
                     </div>
-                    <span id="chart-live-readout" class="text-cyan">SOL-USDC · --</span>
+                    <span id="chart-live-readout" class="text-cyan">NES/USDC · --</span>
                 </div>
             </div>
 
             <div class="quantum-panel visual-card">
                 <div class="visual-header">
                     <div class="visual-title">
-                        <span>OKX Top 24h Volume Scanner</span>
-                        <span class="cyan-pill" id="top24-source-pill">OKX LIVE / FEED</span>
+                        <span>OKX Top 24h Volume Scanner · Spot Top Gainers (USDC)</span>
+                        <span class="live-pill" id="top24-source-pill">OKX 24H LIVE</span>
                     </div>
-                    <span id="top24-updated-tag" class="update-tag">24h Vol Scan</span>
+                    <span id="top24-updated-tag" class="update-tag">24h USDC Gainers</span>
                 </div>
 
                 <div class="vol-scanner-layout">
@@ -3519,29 +3522,29 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                             <div class="radar-cross-h"></div>
                             <div class="radar-cross-v"></div>
                             <div class="radar-sweep"></div>
-                            <div class="radar-blip blip-buy" style="top: 26%; left: 68%;" title="High Volume Bull"></div>
-                            <div class="radar-blip blip-scan" style="top: 63%; left: 30%;" title="Active 24h Scan"></div>
-                            <div class="radar-blip blip-warn" style="top: 40%; left: 25%;" title="Volatility Alert"></div>
-                            <div class="radar-blip blip-scan" style="top: 72%; left: 71%;" title="Liquidity Pulse"></div>
+                            <div class="radar-blip blip-buy" style="top: 24%; left: 68%;" title="Top Gainer #1"></div>
+                            <div class="radar-blip blip-buy" style="top: 58%; left: 32%;" title="Top Gainer #2"></div>
+                            <div class="radar-blip blip-scan" style="top: 38%; left: 26%;" title="USDC Spot Scan"></div>
+                            <div class="radar-blip blip-warn" style="top: 72%; left: 70%;" title="24h Range Pulse"></div>
                         </div>
                         <div class="radar-meta-box">
-                            <span>Aktivny par: <b class="text-cyan" id="radar-active-pair">SOL-USDC</b></span>
-                            <span>24h Objem: <b class="text-yellow" id="radar-active-vol">--</b></span>
-                            <span>Klikni par -> graf</span>
+                            <span>Aktivny par: <b class="text-cyan" id="radar-active-pair">NES/USDC</b></span>
+                            <span>24h Rast: <b class="text-green" id="radar-active-chg">+19.24%</b></span>
+                            <span>24h Objem: <b class="text-yellow" id="radar-active-vol">$84.73M</b></span>
                         </div>
                     </div>
 
-                    <div class="top24-list-wrap">
+                    <div class="top24-panel-col">
                         <div class="top24-toolbar">
-                            <span class="update-tag" id="top24-count-lbl">Top likvidita (USDC)</span>
+                            <span class="update-tag" id="top24-count-lbl">Spot Top Gainers · USDC par (zoradene podla 24h %)</span>
                             <button class="btn btn-mini" onclick="refreshOkxTop24Volume(true)">OBNOVIT 24H</button>
                         </div>
-                        <div id="top24-volume-list">
+                        <div class="top24-list-wrap" id="top24-volume-list">
                             <div class="top24-row">
-                                <b>SOL-USDC</b>
-                                <span class="text-cyan">--</span>
-                                <span>Nacitavam OKX 24h objem...</span>
-                                <span class="text-green">SCAN</span>
+                                <b>NES/USDC</b>
+                                <span class="text-green">+19.24%</span>
+                                <span>Nacitavam OKX 24h USDC gainers...</span>
+                                <span class="text-green">TOP #1</span>
                             </div>
                         </div>
                     </div>
@@ -3865,47 +3868,62 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
         let currentScannerFilter = "ALL";
         let currentLogCategory = "ALL";
         let latestLogs24h = [];
-        let selectedChartCoin = "SOL";
+        let selectedChartCoin = "NES";
         let currentFibLevel = parseFloat("{{ SETTINGS.fib_choice }}") || 0.786;
 
-        const COIN_BASE_PRICES = {
-            "SOL": 182.50,
-            "SUI": 3.48,
-            "AVAX": 35.20,
-            "LINK": 19.10,
-            "DOGE": 0.412,
-            "ADA": 0.945,
-            "NEAR": 6.28,
-            "TIA": 7.85
-        };
+        // OKX 24h Spot Top Gainers na páre USDC (zoradené od najvyššieho 24h rastu %)
+        const OKX_SPOT_USDC_GAINERS_SNAPSHOT = [
+            { coin: "NES", instId: "NES/USDC", okxInstId: "NES-USDC", name: "Nesa", last: 0.2839, chgPct: 19.24, range24h: "0.2256 - 0.2925", vol24hM: 84.73, volBase: "89.90K NES", signal: "BUY" },
+            { coin: "ACE", instId: "ACE/USDC", okxInstId: "ACE-USDC", name: "ACE", last: 0.05298, chgPct: 13.54, range24h: "0.04442 - 0.05655", vol24hM: 6.25, volBase: "454.07K ACE", signal: "BUY" },
+            { coin: "SKY", instId: "SKY/USDC", okxInstId: "SKY-USDC", name: "Sky", last: 0.05161, chgPct: 11.86, range24h: "0.04499 - 0.05458", vol24hM: 1210.0, volBase: "989.43K SKY", signal: "BUY" },
+            { coin: "SPACE", instId: "SPACE/USDC", okxInstId: "SPACE-USDC", name: "Spacecoin", last: 0.004543, chgPct: 11.79, range24h: "0.004064 - 0.004677", vol24hM: 29.55, volBase: "2.54M SPACE", signal: "BUY" },
+            { coin: "NIGHT", instId: "NIGHT/USDC", okxInstId: "NIGHT-USDC", name: "Midnight", last: 0.053966, chgPct: 10.16, range24h: "0.047892 - 0.055380", vol24hM: 902.45, volBase: "4.74M NIGHT", signal: "BUY" },
+            { coin: "SENT", instId: "SENT/USDC", okxInstId: "SENT-USDC", name: "Sentient", last: 0.02486, chgPct: 9.13, range24h: "0.02203 - 0.02511", vol24hM: 178.70, volBase: "1.69M SENT", signal: "SCAN" },
+            { coin: "xANT", instId: "xANT/USDC", okxInstId: "XANT-USDC", name: "Anthropic", last: 91.36, chgPct: 6.78, range24h: "84.33 - 93.13", vol24hM: 48.39, volBase: "5.41K xANT", signal: "SCAN" },
+            { coin: "YB", instId: "YB/USDC", okxInstId: "YB-USDC", name: "Yield Basis", last: 0.06104, chgPct: 6.36, range24h: "0.05739 - 0.06348", vol24hM: 18.48, volBase: "22.24K YB", signal: "SCAN" },
+            { coin: "xSNDK", instId: "xSNDK/USDC", okxInstId: "XSNDK-USDC", name: "SanDisk", last: 85.52, chgPct: 5.26, range24h: "77.33 - 86.26", vol24hM: 20.98, volBase: "444.92 xSNDK", signal: "SCAN" },
+            { coin: "CFG", instId: "CFG/USDC", okxInstId: "CFG-USDC", name: "Centrifuge", last: 0.05963, chgPct: 3.90, range24h: "0.05528 - 0.07290", vol24hM: 9.60, volBase: "83.40K CFG", signal: "SCAN" },
+            { coin: "WIN", instId: "WIN/USDC", okxInstId: "WIN-USDC", name: "WINkLink", last: 0.00005520, chgPct: 3.86, range24h: "0.00005264 - 0.00005571", vol24hM: 51.21, volBase: "4.36M WIN", signal: "SCAN" },
+            { coin: "AUCTION", instId: "AUCTION/USDC", okxInstId: "AUCTION-USDC", name: "AUCTION", last: 2.614, chgPct: 3.16, range24h: "2.534 - 2.736", vol24hM: 19.05, volBase: "457.05 AUCTION", signal: "SCAN" },
+            { coin: "BABY", instId: "BABY/USDC", okxInstId: "BABY-USDC", name: "Babylon", last: 0.009644, chgPct: 3.02, range24h: "0.009361 - 0.009781", vol24hM: 49.94, volBase: "108.29K BABY", signal: "SCAN" },
+            { coin: "LQTY", instId: "LQTY/USDC", okxInstId: "LQTY-USDC", name: "Liquity", last: 0.1324, chgPct: 2.87, range24h: "0.1287 - 0.1324", vol24hM: 13.15, volBase: "1.43K LQTY", signal: "SCAN" },
+            { coin: "xTSLA", instId: "xTSLA/USDC", okxInstId: "XTSLA-USDC", name: "Tesla", last: 399.14, chgPct: 2.38, range24h: "383.57 - 401.46", vol24hM: 50.89, volBase: "128.36 xTSLA", signal: "SCAN" }
+        ].sort((a, b) => b.chgPct - a.chgPct);
 
-        const FALLBACK_TOP24_PAIRS = [
-            { instId: "SOL-USDC", last: 182.50, vol24hM: 428.6, chgPct: 4.82, signal: "BUY" },
-            { instId: "SUI-USDC", last: 3.48, vol24hM: 219.4, chgPct: 6.35, signal: "BUY" },
-            { instId: "DOGE-USDC", last: 0.412, vol24hM: 184.2, chgPct: 2.15, signal: "SCAN" },
-            { instId: "AVAX-USDC", last: 35.20, vol24hM: 132.8, chgPct: 3.10, signal: "SCAN" },
-            { instId: "LINK-USDC", last: 19.10, vol24hM: 96.5, chgPct: -1.24, signal: "BLOK" },
-            { instId: "NEAR-USDC", last: 6.28, vol24hM: 78.9, chgPct: 1.94, signal: "SCAN" },
-            { instId: "TIA-USDC", last: 7.85, vol24hM: 64.1, chgPct: 5.40, signal: "BUY" }
-        ];
+        const COIN_BASE_PRICES = Object.fromEntries(
+            OKX_SPOT_USDC_GAINERS_SNAPSHOT.map(item => [item.coin, item.last])
+        );
 
-        let top24Pairs = [...FALLBACK_TOP24_PAIRS];
+        let top24Pairs = [...OKX_SPOT_USDC_GAINERS_SNAPSHOT];
         let hoverChartX = null;
         let hoverChartY = null;
 
+        function formatPairPrice(price) {
+            const p = Number(price || 0);
+            if (!isFinite(p) || p <= 0) return "--";
+            if (p < 0.001) return p.toFixed(8);
+            if (p < 0.05) return p.toFixed(6);
+            if (p < 2) return p.toFixed(4);
+            return p.toFixed(2);
+        }
+
         function generateHaSeries(coin) {
-            const base = COIN_BASE_PRICES[coin] || 100.0;
-            const volScale = base * 0.011;
+            const matched = top24Pairs.find(p => p.coin === coin) || OKX_SPOT_USDC_GAINERS_SNAPSHOT.find(p => p.coin === coin);
+            const base = COIN_BASE_PRICES[coin] || (matched ? matched.last : 0.2839);
+            const chgFactor = matched ? (matched.chgPct / 100.0) : 0.05;
+            const volScale = base * 0.012;
             const list = [];
-            let prevOpen = base * 0.985;
-            let prevClose = base * 0.99;
-            let rawClose = base * 0.99;
+            const startRaw = Math.max(base * 0.65, base / (1 + Math.max(0.02, chgFactor)));
+            let prevOpen = startRaw;
+            let prevClose = startRaw;
+            let rawClose = startRaw;
 
             for (let i = 0; i < 46; i++) {
-                const wave = Math.sin(i * 0.34) * volScale * 1.45 + Math.cos(i * 0.17) * volScale * 0.9;
-                const drift = (i - 20) * (volScale * 0.045);
+                const progress = i / 45;
+                const wave = Math.sin(i * 0.34) * volScale * 1.35 + Math.cos(i * 0.17) * volScale * 0.85;
+                const trendTarget = startRaw + (base - startRaw) * progress;
                 const o = rawClose;
-                const c = Math.max(base * 0.85, base + wave + drift);
+                const c = Math.max(base * 0.60, trendTarget + wave);
                 const h = Math.max(o, c) + Math.abs(Math.sin(i * 0.7)) * volScale * 0.65;
                 const l = Math.min(o, c) - Math.abs(Math.cos(i * 0.5)) * volScale * 0.65;
                 rawClose = c;
@@ -3921,11 +3939,11 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
             return list;
         }
 
-        let haSeries = generateHaSeries("SOL");
+        let haSeries = generateHaSeries("NES");
         let liveTickPhase = 0;
 
         function selectChartCoin(coin) {
-            const clean = String(coin || "SOL").toUpperCase().replace("-USDC", "").trim();
+            const clean = String(coin || "NES").replace("/USDC", "").replace("-USDC", "").trim();
             selectedChartCoin = clean;
             document.querySelectorAll('.chart-coin-btn').forEach(b => {
                 b.classList.toggle('btn-active-pill', b.getAttribute('data-coin') === clean);
@@ -3933,11 +3951,20 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
             document.querySelectorAll('.top24-row').forEach(r => {
                 r.classList.toggle('selected-pair', r.getAttribute('data-coin') === clean);
             });
+            const matched = top24Pairs.find(p => p.coin === clean);
             const radarPairEl = document.getElementById('radar-active-pair');
-            if (radarPairEl) radarPairEl.innerText = `${clean}-USDC`;
-            const matched = top24Pairs.find(p => p.instId.startsWith(clean + "-"));
+            const radarChgEl = document.getElementById('radar-active-chg');
             const radarVolEl = document.getElementById('radar-active-vol');
-            if (radarVolEl && matched) radarVolEl.innerText = `$${matched.vol24hM.toFixed(1)}M`;
+            if (radarPairEl) radarPairEl.innerText = matched ? matched.instId : `${clean}/USDC`;
+            if (radarChgEl && matched) {
+                radarChgEl.innerText = `${matched.chgPct >= 0 ? '+' : ''}${matched.chgPct.toFixed(2)}%`;
+                radarChgEl.className = matched.chgPct >= 0 ? "text-green" : "text-red";
+            }
+            if (radarVolEl && matched) radarVolEl.innerText = `$${matched.vol24hM.toFixed(2)}M`;
+            const customBuyInput = document.getElementById('custom-coin');
+            if (customBuyInput && !customBuyInput.value) {
+                customBuyInput.placeholder = clean;
+            }
             haSeries = generateHaSeries(clean);
         }
 
@@ -3977,895 +4004,794 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
 
             ctx.strokeStyle = 'rgba(34, 211, 238, 0.05)';
             ctx.lineWidth = 1;
-            for (let gx = 42; gx < w - 16; gx += 58) {
-                ctx.beginPath(); ctx.moveTo(gx, 10); ctx.lineTo(gx, h - 22); ctx.stroke();
+            for (let gx = 42; gx < w - 58; gx += 46) {
+                ctx.beginPath(); ctx.moveTo(gx, 12); ctx.lineTo(gx, h - 22); ctx.stroke();
             }
-            for (let gy = 22; gy < h - 22; gy += 38) {
-                ctx.beginPath(); ctx.moveTo(12, gy); ctx.lineTo(w - 64, gy); ctx.stroke();
+            for (let gy = 22; gy < h - 22; gy += 40) {
+                ctx.beginPath(); ctx.moveTo(42, gy); ctx.lineTo(w - 58, gy); ctx.stroke();
             }
 
-            liveTickPhase += 0.048;
-            const lastIdx = haSeries.length - 1;
-            const lastBar = haSeries[lastIdx];
-            const wiggle = Math.sin(liveTickPhase) * (lastBar.c * 0.0022);
-            const liveClose = Math.max(lastBar.l, lastBar.c + wiggle);
-            const liveHigh = Math.max(lastBar.h, liveClose);
-            const liveLow = Math.min(lastBar.l, liveClose);
-
-            const working = haSeries.map((b, idx) => idx === lastIdx ? { ...b, c: liveClose, h: liveHigh, l: liveLow } : b);
-
-            let minP = Infinity, maxP = -Infinity;
-            for (const b of working) {
-                if (b.l < minP) minP = b.l;
-                if (b.h > maxP) maxP = b.h;
+            liveTickPhase += 0.14;
+            const matched = top24Pairs.find(p => p.coin === selectedChartCoin) || OKX_SPOT_USDC_GAINERS_SNAPSHOT.find(p => p.coin === selectedChartCoin);
+            const base = COIN_BASE_PRICES[selectedChartCoin] || (matched ? matched.last : 0.2839);
+            const jitter = Math.sin(liveTickPhase) * base * 0.0022;
+            const lastBar = haSeries[haSeries.length - 1];
+            if (lastBar) {
+                const prevClose = lastBar.c;
+                const nextClose = Math.max(base * 0.65, base + jitter);
+                lastBar.c = nextClose;
+                lastBar.h = Math.max(lastBar.h, nextClose, prevClose);
+                lastBar.l = Math.min(lastBar.l, nextClose, prevClose);
             }
-            const pad = Math.max((maxP - minP) * 0.14, lastBar.c * 0.003);
-            minP -= pad;
-            maxP += pad;
-            const priceSpan = Math.max(1e-6, maxP - minP);
 
-            const plotLeft = 14;
-            const plotRight = w - 66;
-            const plotTop = 14;
-            const plotBottom = h - 22;
-            const plotH = Math.max(20, plotBottom - plotTop);
+            const prices = [];
+            haSeries.forEach(c => { prices.push(c.h, c.l); });
+            const maxP = Math.max(...prices);
+            const minP = Math.min(...prices);
+            const pad = Math.max(1e-9, (maxP - minP) * 0.14);
+            const topP = maxP + pad;
+            const botP = Math.max(1e-9, minP - pad);
+            const plotTop = 24;
+            const plotBot = h - 24;
+            const plotLeft = 44;
+            const plotRight = w - 62;
             const plotW = Math.max(40, plotRight - plotLeft);
+            const plotH = Math.max(30, plotBot - plotTop);
 
-            const priceToY = (p) => plotTop + (1 - (p - minP) / priceSpan) * plotH;
-            const yToPrice = (y) => minP + (1 - (y - plotTop) / plotH) * priceSpan;
+            const yOf = (val) => plotTop + ((topP - val) / (topP - botP)) * plotH;
 
-            const fibPrice = minP + priceSpan * (1 - Math.min(0.88, Math.max(0.15, currentFibLevel)));
-            const fibY = priceToY(fibPrice);
+            const fibLevel = currentFibLevel || 0.786;
+            const fibPrice = topP - (topP - botP) * fibLevel;
+            const fibY = yOf(fibPrice);
             ctx.save();
             ctx.setLineDash([5, 4]);
-            ctx.strokeStyle = 'rgba(245, 158, 11, 0.82)';
-            ctx.lineWidth = 1.25;
-            ctx.beginPath(); ctx.moveTo(plotLeft, fibY); ctx.lineTo(plotRight, fibY); ctx.stroke();
-            ctx.setLineDash([]);
+            ctx.strokeStyle = 'rgba(245, 158, 11, 0.72)';
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.moveTo(plotLeft, fibY);
+            ctx.lineTo(plotRight, fibY);
+            ctx.stroke();
+            ctx.restore();
             ctx.fillStyle = '#f59e0b';
             ctx.font = '600 10px "JetBrains Mono", monospace';
-            ctx.fillText(`FIB ${currentFibLevel.toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}`, plotLeft + 6, Math.max(plotTop + 10, fibY - 4));
-            ctx.restore();
+            ctx.fillText(`FIB ${fibLevel}`, plotRight + 5, fibY + 3);
 
-            const ema9 = [];
-            const kEma = 2 / (9 + 1);
-            for (let i = 0; i < working.length; i++) {
-                ema9.push(i === 0 ? working[i].c : working[i].c * kEma + ema9[i - 1] * (1 - kEma));
-            }
-            ctx.beginPath();
-            for (let i = 0; i < ema9.length; i++) {
-                const x = plotLeft + ((i + 0.5) / working.length) * plotW;
-                const y = priceToY(ema9[i]);
-                if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-            }
+            const ema9Series = [];
+            const k = 2 / (9 + 1);
+            haSeries.forEach((c, idx) => {
+                if (idx === 0) ema9Series.push(c.c);
+                else ema9Series.push(c.c * k + ema9Series[idx - 1] * (1 - k));
+            });
+
+            const stepX = plotW / haSeries.length;
+            const candleW = Math.max(3, Math.min(11, stepX * 0.62));
+
+            haSeries.forEach((c, idx) => {
+                const cx = plotLeft + idx * stepX + stepX * 0.5;
+                const isBull = c.c >= c.o;
+                const color = isBull ? '#10b981' : '#f43f5e';
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1.1;
+                ctx.beginPath();
+                ctx.moveTo(cx, yOf(c.h));
+                ctx.lineTo(cx, yOf(c.l));
+                ctx.stroke();
+
+                const yOpen = yOf(c.o);
+                const yClose = yOf(c.c);
+                const bodyTop = Math.min(yOpen, yClose);
+                const bodyH = Math.max(2, Math.abs(yClose - yOpen));
+                ctx.fillStyle = isBull ? 'rgba(16, 185, 129, 0.85)' : 'rgba(244, 63, 94, 0.85)';
+                ctx.fillRect(cx - candleW / 2, bodyTop, candleW, bodyH);
+            });
+
             ctx.strokeStyle = '#22d3ee';
-            ctx.lineWidth = 1.7;
+            ctx.lineWidth = 1.75;
+            ctx.beginPath();
+            ema9Series.forEach((ev, idx) => {
+                const cx = plotLeft + idx * stepX + stepX * 0.5;
+                const ey = yOf(ev);
+                if (idx === 0) ctx.moveTo(cx, ey);
+                else ctx.lineTo(cx, ey);
+            });
             ctx.stroke();
 
-            const stepW = plotW / working.length;
-            const bodyW = Math.max(4, Math.min(11, stepW * 0.62));
-            for (let i = 0; i < working.length; i++) {
-                const b = working[i];
-                const isBull = b.c >= b.o;
-                const color = isBull ? '#10b981' : '#f43f5e';
-                const cx = plotLeft + (i + 0.5) * stepW;
-                const yHigh = priceToY(b.h);
-                const yLow = priceToY(b.l);
-                const yOpen = priceToY(b.o);
-                const yClose = priceToY(b.c);
+            const lastVal = lastBar ? lastBar.c : base;
+            const lastY = yOf(lastVal);
+            ctx.fillStyle = '#071124';
+            ctx.strokeStyle = 'rgba(34, 211, 238, 0.45)';
+            ctx.fillRect(plotRight + 3, lastY - 8, 56, 16);
+            ctx.strokeRect(plotRight + 3, lastY - 8, 56, 16);
+            ctx.fillStyle = '#22d3ee';
+            ctx.font = '600 9.5px "JetBrains Mono", monospace';
+            ctx.fillText(formatPairPrice(lastVal), plotRight + 6, lastY + 3);
 
-                ctx.strokeStyle = color;
-                ctx.lineWidth = 1.2;
-                ctx.beginPath(); ctx.moveTo(cx, yHigh); ctx.lineTo(cx, yLow); ctx.stroke();
-
-                const topY = Math.min(yOpen, yClose);
-                const bH = Math.max(2, Math.abs(yClose - yOpen));
-                ctx.fillStyle = color;
-                ctx.fillRect(cx - bodyW / 2, topY, bodyW, bH);
-
-                if (i === 15 || i === 33) {
-                    ctx.fillStyle = '#10b981';
-                    ctx.font = '700 9px "JetBrains Mono", monospace';
-                    ctx.fillText('BUY', cx - 8, yLow + 11);
-                }
-            }
-
-            const scanX = plotLeft + ((0.5 + 0.5 * Math.sin(liveTickPhase * 0.85)) * 0.35 + 0.65) * plotW;
-            const grad = ctx.createLinearGradient(scanX - 18, 0, scanX + 18, 0);
-            grad.addColorStop(0, 'rgba(34, 211, 238, 0)');
-            grad.addColorStop(0.5, 'rgba(34, 211, 238, 0.36)');
-            grad.addColorStop(1, 'rgba(34, 211, 238, 0)');
-            ctx.fillStyle = grad;
-            ctx.fillRect(scanX - 18, plotTop, 36, plotH);
-
-            if (hoverChartX !== null && hoverChartY !== null && hoverChartX >= plotLeft && hoverChartX <= plotRight && hoverChartY >= plotTop && hoverChartY <= plotBottom) {
-                const hp = yToPrice(hoverChartY);
+            if (hoverChartX !== null && hoverChartY !== null) {
+                const clampedX = Math.max(plotLeft, Math.min(plotRight, hoverChartX));
+                const clampedY = Math.max(plotTop, Math.min(plotBot, hoverChartY));
                 ctx.save();
                 ctx.setLineDash([3, 3]);
-                ctx.strokeStyle = 'rgba(226, 232, 240, 0.45)';
+                ctx.strokeStyle = 'rgba(226, 232, 240, 0.35)';
+                ctx.lineWidth = 1;
                 ctx.beginPath();
-                ctx.moveTo(hoverChartX, plotTop); ctx.lineTo(hoverChartX, plotBottom);
-                ctx.moveTo(plotLeft, hoverChartY); ctx.lineTo(plotRight, hoverChartY);
+                ctx.moveTo(clampedX, plotTop); ctx.lineTo(clampedX, plotBot);
+                ctx.moveTo(plotLeft, clampedY); ctx.lineTo(plotRight, clampedY);
                 ctx.stroke();
                 ctx.restore();
-                const hInfo = document.getElementById('chart-hover-info');
-                if (hInfo) hInfo.innerText = `${selectedChartCoin}-USDC · Kurz: ${hp.toFixed(4)} | Fib: ${fibPrice.toFixed(4)}`;
-            }
 
-            const lastY = priceToY(liveClose);
-            ctx.fillStyle = liveClose >= lastBar.o ? '#10b981' : '#f43f5e';
-            ctx.fillRect(plotRight + 4, lastY - 9, 58, 18);
-            ctx.fillStyle = '#02040a';
-            ctx.font = '700 10px "JetBrains Mono", monospace';
-            ctx.fillText(liveClose.toFixed(liveClose < 2 ? 4 : 2), plotRight + 8, lastY + 3);
+                const hoveredPrice = topP - ((clampedY - plotTop) / plotH) * (topP - botP);
+                const hInfo = document.getElementById('chart-hover-info');
+                if (hInfo) {
+                    hInfo.innerText = `${selectedChartCoin}/USDC · Cena: ${formatPairPrice(hoveredPrice)} · Fib ${fibLevel}: ${formatPairPrice(fibPrice)}`;
+                }
+            }
 
             const readout = document.getElementById('chart-live-readout');
             if (readout) {
-                const diffPct = ((liveClose - working[0].o) / working[0].o) * 100;
-                readout.innerText = `${selectedChartCoin}-USDC · ${liveClose.toFixed(liveClose < 2 ? 4 : 4)} (${diffPct >= 0 ? '+' : ''}${diffPct.toFixed(2)}%)`;
+                const chgTxt = matched ? ` (${matched.chgPct >= 0 ? '+' : ''}${matched.chgPct.toFixed(2)}% 24h)` : '';
+                readout.innerText = `${selectedChartCoin}/USDC · HA ${formatPairPrice(lastVal)}${chgTxt}`;
             }
-
             ctx.restore();
         }
 
-        function renderTop24VolumeList(scannerData) {
+        function renderTop24VolumeList() {
             const listEl = document.getElementById('top24-volume-list');
             if (!listEl) return;
-            const maxVol = Math.max(1, ...top24Pairs.map(p => p.vol24hM || 0));
-            let html = "";
-            for (const p of top24Pairs.slice(0, 7)) {
-                const coin = p.instId.split("-")[0];
-                const scInfo = (scannerData && scannerData[coin]) ? scannerData[coin] : null;
-                const execTxt = scInfo ? (scInfo.exec_signal || p.signal) : p.signal;
-                const isBuy = String(execTxt).includes("NAKUPIT") || p.signal === "BUY";
-                const isBlk = String(execTxt).includes("BLOK") || p.signal === "BLOK";
-                const badgeCls = isBuy ? "text-green" : (isBlk ? "text-red" : "text-cyan");
-                const tagShort = isBuy ? "BUY" : (isBlk ? "BLOK" : "SCAN");
-                const widthPct = Math.min(100, Math.max(12, ((p.vol24hM || 0) / maxVol) * 100));
-                const selCls = coin === selectedChartCoin ? " selected-pair" : "";
-                const priceFmt = p.last < 1 ? p.last.toFixed(4) : p.last.toFixed(2);
-                html += `<div class="top24-row${selCls}" data-coin="${coin}" onclick="selectChartCoin('${coin}')">
-                    <b>${p.instId}</b>
-                    <span class="text-yellow">$${p.vol24hM.toFixed(1)}M</span>
-                    <div>
-                        <div style="display:flex; justify-content:space-between; font-size:0.6rem; color:var(--text-secondary);">
-                            <span>${priceFmt}</span>
-                            <span class="${p.chgPct >= 0 ? 'text-green' : 'text-red'}">${p.chgPct >= 0 ? '+' : ''}${p.chgPct.toFixed(2)}%</span>
+            const sortedPairs = [...top24Pairs].sort((a, b) => Number(b.chgPct || 0) - Number(a.chgPct || 0));
+            const maxGainer = Math.max(1.0, ...sortedPairs.map(p => Math.abs(Number(p.chgPct || 0))));
+
+            listEl.innerHTML = sortedPairs.map((item, idx) => {
+                const chg = Number(item.chgPct || 0);
+                const chgCls = chg >= 0 ? "text-green" : "text-red";
+                const chgStr = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`;
+                const meterPct = Math.min(100, Math.max(10, (Math.abs(chg) / maxGainer) * 100));
+                const isSel = item.coin === selectedChartCoin ? "selected-pair" : "";
+                const sigCls = item.signal === "BUY" ? "text-green" : "text-cyan";
+                const badgeText = item.signal === "BUY" ? `BUY #${idx + 1}` : `#${idx + 1} · ${item.signal}`;
+                return `
+                    <div class="top24-row ${isSel}" data-coin="${item.coin}" onclick="selectChartCoin('${item.coin}')" title="${item.name} · 24h rozsah ${item.range24h} · Objem ${item.volBase}">
+                        <div>
+                            <b>${item.instId}</b>
+                            <span class="gainer-subname">${item.name} · ${formatPairPrice(item.last)}</span>
                         </div>
-                        <div class="vol-meter-track"><div class="vol-meter-fill" style="width:${widthPct.toFixed(0)}%;"></div></div>
+                        <span class="${chgCls}">${chgStr}</span>
+                        <div>
+                            <div style="display:flex;justify-content:space-between;font-size:0.57rem;color:var(--text-secondary);">
+                                <span>24h: ${item.range24h}</span>
+                                <span>$${Number(item.vol24hM || 0).toFixed(2)}M</span>
+                            </div>
+                            <div class="vol-meter-track"><div class="vol-meter-fill" style="width:${meterPct.toFixed(0)}%;"></div></div>
+                        </div>
+                        <span class="${sigCls}" style="text-align:right;">${badgeText}</span>
                     </div>
-                    <span class="${badgeCls}" style="text-align:right;">${tagShort}</span>
-                </div>`;
-            }
-            listEl.innerHTML = html;
-
-            const activeMatched = top24Pairs.find(p => p.instId.startsWith(selectedChartCoin + "-")) || top24Pairs[0];
-            if (activeMatched) {
-                const rPair = document.getElementById('radar-active-pair');
-                const rVol = document.getElementById('radar-active-vol');
-                if (rPair) rPair.innerText = activeMatched.instId;
-                if (rVol) rVol.innerText = `$${activeMatched.vol24hM.toFixed(1)}M`;
-            }
+                `;
+            }).join('');
         }
 
-        async function refreshOkxTop24Volume(notifyUser = false) {
-            const pill = document.getElementById('top24-source-pill');
-            const tag = document.getElementById('top24-updated-tag');
+        async function refreshOkxTop24Volume(showToast = false) {
             try {
-                const resp = await fetch('https://www.okx.com/api/v5/market/tickers?instType=SPOT', { cache: 'no-store' });
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                const json = await resp.json();
-                if (json && json.code === '0' && Array.isArray(json.data) && json.data.length > 0) {
-                    const filtered = json.data
-                        .filter(t => String(t.instId || '').endsWith('-USDC') && !['BTC-USDC','ETH-USDC','USDT-USDC'].includes(t.instId))
-                        .map(t => {
-                            const last = parseFloat(t.last || 0);
-                            const open24 = parseFloat(t.open24h || last || 1);
-                            const volCcy = parseFloat(t.volCcy24h || 0);
-                            const chgPct = open24 > 0 ? ((last - open24) / open24) * 100 : 0;
-                            const coinKey = String(t.instId).split('-')[0];
-                            if (last > 0 && COIN_BASE_PRICES[coinKey] === undefined) {
-                                COIN_BASE_PRICES[coinKey] = last;
-                            }
-                            return {
-                                instId: t.instId,
-                                last,
-                                vol24hM: volCcy / 1e6,
-                                chgPct,
-                                signal: chgPct > 2.0 ? "BUY" : (chgPct < -2.0 ? "BLOK" : "SCAN")
-                            };
-                        })
-                        .filter(item => item.last > 0 && item.vol24hM > 0)
-                        .sort((a, b) => b.vol24hM - a.vol24hM)
-                        .slice(0, 8);
+                const res = await fetch('/api/okx-top24-volume');
+                const data = await res.json();
+                if (data.status === 'success' && Array.isArray(data.pairs) && data.pairs.length > 0) {
+                    top24Pairs = data.pairs.map((p, idx) => {
+                        const baseCoin = String(p.coin || String(p.instId || "").split("-")[0] || "").trim();
+                        const snapMeta = OKX_SPOT_USDC_GAINERS_SNAPSHOT.find(s => s.coin.toUpperCase() === baseCoin.toUpperCase());
+                        const chgVal = Number(p.chg_24h_pct !== undefined ? p.chg_24h_pct : (snapMeta ? snapMeta.chgPct : 0));
+                        const lastVal = Number(p.last_price || (snapMeta ? snapMeta.last : 0));
+                        const volM = Number(p.vol_24h_m || 0);
+                        return {
+                            coin: snapMeta ? snapMeta.coin : baseCoin,
+                            instId: `${snapMeta ? snapMeta.coin : baseCoin}/USDC`,
+                            okxInstId: String(p.instId || `${baseCoin}-USDC`),
+                            name: snapMeta ? snapMeta.name : baseCoin,
+                            last: lastVal > 0 ? lastVal : (snapMeta ? snapMeta.last : 0),
+                            chgPct: chgVal,
+                            range24h: p.range_24h || (snapMeta ? snapMeta.range24h : "--"),
+                            vol24hM: volM,
+                            volBase: p.vol_base || (snapMeta ? snapMeta.volBase : ""),
+                            signal: p.signal || (idx < 5 ? "BUY" : "SCAN")
+                        };
+                    }).sort((a, b) => Number(b.chgPct || 0) - Number(a.chgPct || 0));
 
-                    if (filtered.length >= 3) {
-                        top24Pairs = filtered;
-                        if (pill) { pill.innerText = "OKX 24H LIVE"; pill.className = "live-pill"; }
-                        if (tag) tag.innerText = `24h Vol · ${new Date().toLocaleTimeString('sk-SK', {hour12:false})}`;
-                        renderTop24VolumeList();
-                        if (notifyUser) showToast("OKX Top 24h objem aktualizovany.", "ok");
-                        return;
+                    top24Pairs.forEach(item => {
+                        if (Number(item.last) > 0) {
+                            COIN_BASE_PRICES[item.coin] = Number(item.last);
+                        }
+                    });
+                    haSeries = generateHaSeries(selectedChartCoin);
+                    renderTop24VolumeList();
+
+                    const matchedSel = top24Pairs.find(p => p.coin === selectedChartCoin) || top24Pairs[0];
+                    if (matchedSel) {
+                        const radarPairEl = document.getElementById('radar-active-pair');
+                        const radarChgEl = document.getElementById('radar-active-chg');
+                        const radarVolEl = document.getElementById('radar-active-vol');
+                        if (radarPairEl) radarPairEl.innerText = matchedSel.instId;
+                        if (radarChgEl) {
+                            radarChgEl.innerText = `${matchedSel.chgPct >= 0 ? '+' : ''}${Number(matchedSel.chgPct).toFixed(2)}%`;
+                            radarChgEl.className = matchedSel.chgPct >= 0 ? "text-green" : "text-red";
+                        }
+                        if (radarVolEl) radarVolEl.innerText = `$${Number(matchedSel.vol24hM || 0).toFixed(2)}M`;
                     }
+
+                    const tag = document.getElementById('top24-updated-tag');
+                    const pill = document.getElementById('top24-source-pill');
+                    const cntLbl = document.getElementById('top24-count-lbl');
+                    if (tag) tag.innerText = `OKX ${data.updated_at || ''}`;
+                    if (pill) pill.innerText = data.is_live ? "OKX 24H LIVE" : "OKX 24H SNAPSHOT";
+                    if (cntLbl) cntLbl.innerText = `Spot Top Gainers · ${top24Pairs.length} USDC par (zoradene podla 24h %)`;
+                    if (showToast) showToastMessage("OKX 24h USDC gainers obnovene.", "ok");
                 }
-                throw new Error("Prazdne data z OKX");
-            } catch (_err) {
-                top24Pairs = top24Pairs.map(p => ({
-                    ...p,
-                    vol24hM: Math.max(10, p.vol24hM + (Math.random() - 0.48) * 1.4),
-                    chgPct: parseFloat((p.chgPct + (Math.random() - 0.5) * 0.18).toFixed(2))
-                })).sort((a, b) => b.vol24hM - a.vol24hM);
-                if (pill) { pill.innerText = "QUANTUM STREAM"; pill.className = "cyan-pill"; }
-                if (tag) tag.innerText = `24h Feed · ${new Date().toLocaleTimeString('sk-SK', {hour12:false})}`;
-                renderTop24VolumeList();
-                if (notifyUser) showToast("Aktualizovany 24h objemovy prúd skenera.", "info");
+            } catch (e) {
+                if (showToast) showToastMessage("Chyba pri nacitani 24h USDC gainers z OKX.", "err");
             }
         }
 
-        function showToast(msg, type = "info") {
-            const container = document.getElementById('toast-container');
+        function showToastMessage(msg, kind = "info") {
+            const container = document.getElementById("toast-container");
             if (!container) return;
-            const el = document.createElement('div');
-            el.className = `toast ${type === "ok" ? "toast-ok" : (type === "err" ? "toast-err" : "")}`;
+            const el = document.createElement("div");
+            el.className = `toast ${kind === "ok" ? "toast-ok" : (kind === "err" ? "toast-err" : "")}`;
             el.innerText = msg;
             container.appendChild(el);
             setTimeout(() => { el.remove(); }, 3400);
         }
 
-        function askConfirm(title, message) {
-            return new Promise((resolve) => {
-                const modal = document.getElementById('confirm-modal');
-                const titleEl = document.getElementById('modal-title');
-                const msgEl = document.getElementById('modal-msg');
-                const okBtn = document.getElementById('modal-confirm-btn');
-                const cancelBtn = document.getElementById('modal-cancel-btn');
-                if (!modal || !okBtn || !cancelBtn) { resolve(true); return; }
-
-                titleEl.innerText = title;
-                msgEl.innerText = message;
-                modal.classList.add('open');
-
-                const cleanup = (result) => {
-                    modal.classList.remove('open');
-                    okBtn.removeEventListener('click', onOk);
-                    cancelBtn.removeEventListener('click', onCancel);
-                    resolve(result);
-                };
-                const onOk = () => cleanup(true);
-                const onCancel = () => cleanup(false);
-                okBtn.addEventListener('click', onOk);
-                cancelBtn.addEventListener('click', onCancel);
-            });
+        function askConfirmation(title, message, onConfirm) {
+            const modal = document.getElementById("confirm-modal");
+            document.getElementById("modal-title").innerText = title;
+            document.getElementById("modal-msg").innerText = message;
+            const cancelBtn = document.getElementById("modal-cancel-btn");
+            const confirmBtn = document.getElementById("modal-confirm-btn");
+            const close = () => {
+                modal.classList.remove("open");
+                cancelBtn.onclick = null;
+                confirmBtn.onclick = null;
+            };
+            cancelBtn.onclick = close;
+            confirmBtn.onclick = async () => { close(); if (onConfirm) await onConfirm(); };
+            modal.classList.add("open");
         }
 
-        function setScannerFilter(flt) {
-            currentScannerFilter = flt;
-            document.querySelectorAll('.scanner-filter-btn').forEach(b => {
-                b.classList.toggle('btn-active-pill', b.getAttribute('data-filter') === flt);
-            });
-            updateState();
+        async function toggleBot() {
+            const res = await fetch('/api/toggle-bot', { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'success') { showToastMessage(data.is_bot_active ? "Bot aktivovany." : "Bot pozastaveny.", "ok"); updateState(); }
+        }
+        async function toggleBtcFilter() {
+            const res = await fetch('/api/toggle-btc-filter', { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'success') { showToastMessage(`BTC filter: ${data.use_btc_filter ? 'ON' : 'OFF'}`, "ok"); updateState(); }
+        }
+        async function toggleCompounding() {
+            const res = await fetch('/api/toggle-compounding', { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'success') { showToastMessage(`Compounding: ${data.compounding_enabled ? 'ON' : 'OFF'}`, "ok"); updateState(); }
+        }
+        async function setBudget(amt) {
+            const res = await fetch(`/api/set-budget/${amt}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'success') { showToastMessage(`Rozpocet nastaveny na ${amt}.`, "ok"); updateState(); }
+        }
+        async function setParallel(cnt) {
+            const res = await fetch(`/api/set-parallel/${cnt}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'success') { showToastMessage(`Paralelne obchody: ${cnt}x`, "ok"); updateState(); }
+        }
+        async function setTf(tfVal) {
+            const res = await fetch(`/api/set-tf/${tfVal}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'success') { showToastMessage(`Timeframe zmeneny na ${data.tf}.`, "ok"); updateState(); }
         }
 
-        function setLogFilter(cat) {
-            currentLogCategory = cat;
-            document.querySelectorAll('.log-filter-btn').forEach(b => {
-                b.classList.toggle('btn-active-pill', b.getAttribute('data-logcat') === cat);
+        function collectPinePayload() {
+            return {
+                mode_choice: document.getElementById('pine-mode').value,
+                fib_choice: document.getElementById('pine-fib-choice').value,
+                require_green_ha_buy: document.getElementById('pine-green-ha').checked,
+                require_bull_tf_buy: document.getElementById('pine-require-bull').checked,
+                require_sell_before_rebuy: document.getElementById('pine-sell-before-rebuy').checked,
+                use_ai_filter: document.getElementById('pine-use-ai').checked,
+                use_fixed_sl: document.getElementById('pine-use-fixed-sl').checked,
+                fixed_sl_pct: parseFloat(document.getElementById('pine-fixed-sl-pct').value || "1.5"),
+                use_fixed_tp: document.getElementById('pine-use-fixed-tp').checked,
+                fixed_tp_pct: parseFloat(document.getElementById('pine-fixed-tp-pct').value || "1.2"),
+                use_ha_exit: document.getElementById('pine-use-ha-exit').checked,
+                ha_exit_consecutive: parseInt(document.getElementById('pine-ha-consec').value || "1", 10),
+                sell_on_osc_reversal: document.getElementById('pine-use-osc-sell').checked,
+                simulate_fees: document.getElementById('pine-sim-fees').checked,
+                taker_fee_pct: parseFloat(document.getElementById('pine-taker-fee').value || "0.10"),
+                use_trailing: document.getElementById('pine-use-trailing').checked,
+                trail_pct: parseFloat(document.getElementById('pine-trail-pct').value || "1.5"),
+                use_breakeven: document.getElementById('pine-use-be').checked,
+                be_trigger_pct: parseFloat(document.getElementById('pine-be-trigger').value || "1.2"),
+                use_trailing_tp: document.getElementById('pine-use-ttp').checked,
+                ttp_trigger_pct: parseFloat(document.getElementById('pine-ttp-trigger').value || "1.2"),
+                ttp_callback_pct: parseFloat(document.getElementById('pine-ttp-callback').value || "0.4"),
+                strict_buy_filter: document.getElementById('pine-strict-buy').checked,
+                fast_len: parseInt(document.getElementById('pine-fast-len').value || "5", 10),
+                slow_len: parseInt(document.getElementById('pine-slow-len').value || "20", 10),
+                signal_len: parseInt(document.getElementById('pine-signal-len').value || "9", 10),
+                pred_look: parseInt(document.getElementById('pine-pred-look').value || "3", 10),
+                pivot_len: parseInt(document.getElementById('pine-pivot-len').value || "2", 10),
+                use_anti_chase: document.getElementById('pine-use-anti-top').checked,
+                max_candle_pump_pct: parseFloat(document.getElementById('pine-max-pump').value || "0.9"),
+                max_ema9_dist_pct: parseFloat(document.getElementById('pine-max-ema-dist').value || "0.7"),
+                max_upper_wick_ratio: parseFloat(document.getElementById('pine-max-wick').value || "0.45")
+            };
+        }
+
+        function applySettingsToForm(s) {
+            if (!s) return;
+            document.getElementById('pine-mode').value = s.mode_choice || "FIB";
+            document.getElementById('pine-fib-choice').value = s.fib_choice || "0.786";
+            document.getElementById('pine-green-ha').checked = Boolean(s.require_green_ha_buy);
+            document.getElementById('pine-require-bull').checked = Boolean(s.require_bull_tf_buy);
+            document.getElementById('pine-sell-before-rebuy').checked = Boolean(s.require_sell_before_rebuy);
+            document.getElementById('pine-use-ai').checked = Boolean(s.use_ai_filter);
+            document.getElementById('pine-use-fixed-sl').checked = Boolean(s.use_fixed_sl);
+            document.getElementById('pine-fixed-sl-pct').value = s.fixed_sl_pct ?? 1.5;
+            document.getElementById('pine-use-fixed-tp').checked = Boolean(s.use_fixed_tp);
+            document.getElementById('pine-fixed-tp-pct').value = s.fixed_tp_pct ?? 1.2;
+            document.getElementById('pine-use-ha-exit').checked = Boolean(s.use_ha_exit);
+            document.getElementById('pine-ha-consec').value = String(s.ha_exit_consecutive ?? 1);
+            document.getElementById('pine-use-osc-sell').checked = Boolean(s.sell_on_osc_reversal);
+            document.getElementById('pine-sim-fees').checked = s.simulate_fees !== undefined ? Boolean(s.simulate_fees) : true;
+            document.getElementById('pine-taker-fee').value = s.taker_fee_pct ?? 0.10;
+            document.getElementById('pine-use-trailing').checked = Boolean(s.use_trailing);
+            document.getElementById('pine-trail-pct').value = s.trail_pct ?? 1.5;
+            document.getElementById('pine-use-be').checked = Boolean(s.use_breakeven);
+            document.getElementById('pine-be-trigger').value = s.be_trigger_pct ?? 1.2;
+            document.getElementById('pine-use-ttp').checked = Boolean(s.use_trailing_tp);
+            document.getElementById('pine-ttp-trigger').value = s.ttp_trigger_pct ?? 1.2;
+            document.getElementById('pine-ttp-callback').value = s.ttp_callback_pct ?? 0.4;
+            document.getElementById('pine-strict-buy').checked = Boolean(s.strict_buy_filter);
+            document.getElementById('pine-fast-len').value = s.fast_len ?? 5;
+            document.getElementById('pine-slow-len').value = s.slow_len ?? 20;
+            document.getElementById('pine-signal-len').value = s.signal_len ?? 9;
+            document.getElementById('pine-pred-look').value = s.pred_look ?? 3;
+            document.getElementById('pine-pivot-len').value = s.pivot_len ?? 2;
+            document.getElementById('pine-use-anti-top').checked = Boolean(s.use_anti_chase);
+            document.getElementById('pine-max-pump').value = s.max_candle_pump_pct ?? 0.9;
+            document.getElementById('pine-max-ema-dist').value = s.max_ema9_dist_pct ?? 0.7;
+            document.getElementById('pine-max-wick').value = s.max_upper_wick_ratio ?? 0.45;
+            document.getElementById('header-fib').innerText = s.fib_choice || "0.786";
+            document.getElementById('scanner-fib-level').innerText = s.fib_choice || "0.786";
+            document.getElementById('chart-fib-label').innerText = s.fib_choice || "0.786";
+            currentFibLevel = parseFloat(s.fib_choice || "0.786") || 0.786;
+            document.getElementById('header-sl').innerText = s.use_fixed_sl ? `-${s.fixed_sl_pct ?? 1.5}%` : "OFF";
+            document.getElementById('pine-active-badge').innerText = `REZIM: ${s.mode_choice || "FIB"} · FIB ${s.fib_choice || "0.786"}`;
+        }
+
+        async function savePineSettings() {
+            const payload = collectPinePayload();
+            const res = await fetch('/api/update-pine-settings', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
             });
-            updateState();
+            const data = await res.json();
+            if (data.status === 'success') {
+                applySettingsToForm(data.pine_settings);
+                document.getElementById('pine-save-status').innerText = "Ulozene v trvalej pamati!";
+                showToastMessage("Nastavenia ulozene.", "ok");
+                updateState();
+            } else {
+                showToastMessage(data.message || "Chyba pri ukladani.", "err");
+            }
+        }
+
+        async function resetPineDefaults() {
+            const defaults = {
+                mode_choice: "FIB", fib_choice: "0.786", require_green_ha_buy: false,
+                require_bull_tf_buy: false, require_sell_before_rebuy: false, use_ai_filter: false,
+                use_fixed_sl: false, fixed_sl_pct: 1.5, use_fixed_tp: false, fixed_tp_pct: 1.2,
+                use_ha_exit: true, ha_exit_consecutive: 1, sell_on_osc_reversal: false,
+                simulate_fees: true, taker_fee_pct: 0.10, use_trailing: true, trail_pct: 1.5,
+                use_breakeven: true, be_trigger_pct: 1.2, use_trailing_tp: true, ttp_trigger_pct: 1.2,
+                ttp_callback_pct: 0.4, strict_buy_filter: false, fast_len: 5, slow_len: 20,
+                signal_len: 9, pred_look: 3, pivot_len: 2, use_anti_chase: false,
+                max_candle_pump_pct: 0.9, max_ema9_dist_pct: 0.7, max_upper_wick_ratio: 0.45
+            };
+            applySettingsToForm(defaults);
+            await savePineSettings();
+        }
+
+        async function manualTrainAi() {
+            const res = await fetch('/api/train-ai', { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'success') { showToastMessage("AI model dotrenovany.", "ok"); updateState(); }
+            else showToastMessage(data.message || "Chyba trenovania AI.", "err");
+        }
+
+        async function cleanResetLearning() {
+            askConfirmation(
+                "Cisty reset AI pamate",
+                "Vymaze historiu obchodov, vzory a natrenovane vahy AI a spusti novy trening. Pokracovat?",
+                async () => {
+                    const res = await fetch('/api/clean-reset-learning', { method: 'POST' });
+                    const data = await res.json();
+                    if (data.status === 'success') { showToastMessage("Cisty reset AI dokonceny.", "ok"); updateState(); }
+                }
+            );
         }
 
         async function clearLogsNow() {
-            const ok = await askConfirm("Vycistit 2h logy", "Vycistit aktualne 2h exekucne logy? (24h register ostane zachovany na export)");
-            if (!ok) return;
-            await fetch('/api/clear-logs', {method: 'POST'});
-            showToast("2h logy boli precistene.", "ok");
-            updateState();
+            const res = await fetch('/api/clear-logs', { method: 'POST' });
+            const data = await res.json();
+            if (data.status === 'success') { showToastMessage("2h logy precistene.", "ok"); updateState(); }
         }
 
         function exportLogs24h() {
-            const rows = (latestLogs24h && latestLogs24h.length > 0)
-                ? latestLogs24h.map(item => typeof item === 'string' ? item : (item.line || `[${item.time}] [${item.category}] ${item.symbol}: ${item.message}`))
-                : Array.from(document.querySelectorAll('#logs-container .log-line')).map(el => el.innerText);
-            const blob = new Blob([rows.join("\n")], {type: "text/plain;charset=utf-8"});
+            const items = latestLogs24h.length ? latestLogs24h : [];
+            const txt = items.map(e => e.line || `[${e.time || ''}] ${e.message || ''}`).join('\n');
+            const blob = new Blob([txt || "Ziadne 24h logy."], { type: "text/plain;charset=utf-8" });
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
             a.download = `apex_logs_24h_${new Date().toISOString().slice(0, 10)}.txt`;
             a.click();
             URL.revokeObjectURL(url);
-            showToast("24h logy exportovane.", "ok");
-        }
-
-        function syncSlUi(slVal, slEnabled) {
-            const numVal = parseFloat(slVal);
-            const hSl = document.getElementById('header-sl');
-            if (hSl) {
-                hSl.innerText = (slEnabled && !isNaN(numVal)) ? `-${numVal}%` : "OFF";
-            }
-            const pineSlInput = document.getElementById('pine-fixed-sl-pct');
-            if (pineSlInput && !isNaN(numVal)) pineSlInput.value = numVal;
-            const pineSlCheck = document.getElementById('pine-use-fixed-sl');
-            if (pineSlCheck && slEnabled !== undefined) pineSlCheck.checked = !!slEnabled;
-        }
-
-        function syncFibUi(fibVal) {
-            if (!fibVal) return;
-            const parsed = parseFloat(fibVal);
-            if (!isNaN(parsed)) currentFibLevel = parsed;
-            const hFib = document.getElementById('header-fib');
-            if (hFib) hFib.innerText = fibVal;
-            const sFib = document.getElementById('scanner-fib-level');
-            if (sFib) sFib.innerText = fibVal;
-            const cFib = document.getElementById('chart-fib-label');
-            if (cFib) cFib.innerText = fibVal;
-        }
-
-        async function toggleBot() {
-            const res = await fetch('/api/toggle-bot', {method: 'POST'});
-            const data = await res.json();
-            const btn = document.getElementById('bot-btn');
-            btn.className = data.is_bot_active ? "btn btn-on" : "btn btn-off";
-            btn.innerText = data.is_bot_active ? "ACTIVE" : "PAUSED";
-            showToast(`Bot je ${data.is_bot_active ? "AKTIVNY" : "POZASTAVENY"}.`, "ok");
-            updateState();
-        }
-
-        async function toggleBtcFilter() {
-            const res = await fetch('/api/toggle-btc-filter', {method: 'POST'});
-            const data = await res.json();
-            const btn = document.getElementById('btc-btn');
-            btn.className = data.use_btc_filter ? "btn btn-on" : "btn btn-off";
-            btn.innerText = data.use_btc_filter ? "BTC: ON" : "BTC: OFF";
-            showToast(`BTC filter: ${data.use_btc_filter ? "ON" : "OFF"}`, "ok");
-        }
-
-        async function toggleCompounding() {
-            const res = await fetch('/api/toggle-compounding', {method: 'POST'});
-            const data = await res.json();
-            const btn = document.getElementById('compounding-btn');
-            if (data.compounding_enabled) {
-                btn.className = "btn btn-active-pill";
-                btn.innerText = "COMPOUND: ON";
-            } else {
-                btn.className = "btn";
-                btn.innerText = "COMPOUND: OFF";
-            }
-            showToast(`Auto-Compounding: ${data.compounding_enabled ? "ON" : "OFF"}`, "ok");
-        }
-
-        async function setBudget(amount) {
-            const res = await fetch(`/api/set-budget/${amount}`, {method: 'POST'});
-            const data = await res.json();
-            if (data.status === 'success') {
-                document.querySelectorAll('.budget-btn').forEach(b => {
-                    b.classList.toggle('btn-active-pill', parseInt(b.getAttribute('data-val')) === amount);
-                });
-                showToast(`Rozpoctovy strop: ${amount}`, "ok");
-            }
-        }
-
-        async function setParallel(count) {
-            const res = await fetch(`/api/set-parallel/${count}`, {method: 'POST'});
-            const data = await res.json();
-            if (data.status === 'success') {
-                document.querySelectorAll('.parallel-btn').forEach(b => {
-                    b.classList.toggle('btn-active-pill', parseInt(b.getAttribute('data-val')) === count);
-                });
-                showToast(`Max paralelnych obchodov: ${count}x`, "ok");
-            }
-        }
-
-        async function setTf(tfVal) {
-            const res = await fetch(`/api/set-tf/${tfVal}`, {method: 'POST'});
-            const data = await res.json();
-            if (data.status === 'success') {
-                document.querySelectorAll('.tf-btn').forEach(b => {
-                    b.classList.toggle('btn-active-pill', b.getAttribute('data-tf').toLowerCase() === tfVal.toLowerCase());
-                });
-                document.getElementById('header-tf').innerText = data.tf;
-                const tfPill = document.getElementById('chart-tf-pill');
-                if (tfPill) tfPill.innerText = data.tf;
-                showToast(`Timeframe prepnuty na ${data.tf}`, "ok");
-                updateState();
-            }
-        }
-
-        async function manualTrainAi() {
-            showToast("Trenujem AI model na aktualnych datach...", "info");
-            const res = await fetch('/api/train-ai', {method: 'POST'});
-            const data = await res.json();
-            if (data.status === 'success') {
-                showToast("AI model bol dotrenovany.", "ok");
-                updateState();
-            } else {
-                showToast(data.message || "Chyba pri trenovani AI.", "err");
-            }
-        }
-
-        function applyPineFormValues(ps) {
-            if (!ps) return;
-            document.getElementById('pine-mode').value = ps.mode_choice;
-            document.getElementById('pine-green-ha').checked = !!ps.require_green_ha_buy;
-            document.getElementById('pine-require-bull').checked = !!ps.require_bull_tf_buy;
-            if (document.getElementById('pine-sell-before-rebuy')) document.getElementById('pine-sell-before-rebuy').checked = !!ps.require_sell_before_rebuy;
-            document.getElementById('pine-strict-buy').checked = !!ps.strict_buy_filter;
-            document.getElementById('pine-fast-len').value = ps.fast_len;
-            document.getElementById('pine-slow-len').value = ps.slow_len;
-            document.getElementById('pine-signal-len').value = ps.signal_len;
-            document.getElementById('pine-pred-look').value = ps.pred_look;
-            document.getElementById('pine-use-ai').checked = !!ps.use_ai_filter;
-            document.getElementById('pine-use-anti-top').checked = !!ps.use_anti_chase;
-            if (ps.max_candle_pump_pct !== undefined) document.getElementById('pine-max-pump').value = ps.max_candle_pump_pct;
-            if (ps.max_ema9_dist_pct !== undefined) document.getElementById('pine-max-ema-dist').value = ps.max_ema9_dist_pct;
-            if (ps.max_upper_wick_ratio !== undefined) document.getElementById('pine-max-wick').value = ps.max_upper_wick_ratio;
-            document.getElementById('pine-pivot-len').value = ps.pivot_len;
-            document.getElementById('pine-fib-choice').value = ps.fib_choice;
-            syncFibUi(ps.fib_choice);
-            syncSlUi(ps.fixed_sl_pct, ps.use_fixed_sl);
-            document.getElementById('pine-use-fixed-tp').checked = !!ps.use_fixed_tp;
-            document.getElementById('pine-fixed-tp-pct').value = ps.fixed_tp_pct;
-            document.getElementById('pine-use-trailing').checked = !!ps.use_trailing;
-            document.getElementById('pine-trail-pct').value = ps.trail_pct;
-            document.getElementById('pine-use-be').checked = !!ps.use_breakeven;
-            document.getElementById('pine-be-trigger').value = ps.be_trigger_pct;
-            document.getElementById('pine-use-ttp').checked = !!ps.use_trailing_tp;
-            document.getElementById('pine-ttp-trigger').value = ps.ttp_trigger_pct;
-            document.getElementById('pine-ttp-callback').value = ps.ttp_callback_pct;
-            document.getElementById('pine-use-osc-sell').checked = !!ps.sell_on_osc_reversal;
-            document.getElementById('pine-use-ha-exit').checked = !!ps.use_ha_exit;
-            document.getElementById('pine-ha-consec').value = String(ps.ha_exit_consecutive);
-            if (document.getElementById('pine-sim-fees')) document.getElementById('pine-sim-fees').checked = ps.simulate_fees !== undefined ? !!ps.simulate_fees : true;
-            if (document.getElementById('pine-taker-fee') && ps.taker_fee_pct !== undefined) document.getElementById('pine-taker-fee').value = ps.taker_fee_pct;
-            document.getElementById('pine-active-badge').innerText = `REZIM: ${ps.mode_choice} · FIB ${ps.fib_choice}`;
-        }
-
-        async function savePineSettings() {
-            const payload = {
-                mode_choice: document.getElementById('pine-mode').value,
-                require_green_ha_buy: document.getElementById('pine-green-ha').checked,
-                require_bull_tf_buy: document.getElementById('pine-require-bull').checked,
-                require_sell_before_rebuy: document.getElementById('pine-sell-before-rebuy').checked,
-                strict_buy_filter: document.getElementById('pine-strict-buy').checked,
-                fast_len: parseInt(document.getElementById('pine-fast-len').value, 10),
-                slow_len: parseInt(document.getElementById('pine-slow-len').value, 10),
-                signal_len: parseInt(document.getElementById('pine-signal-len').value, 10),
-                pred_look: parseInt(document.getElementById('pine-pred-look').value, 10),
-                use_ai_filter: document.getElementById('pine-use-ai').checked,
-                use_anti_chase: document.getElementById('pine-use-anti-top').checked,
-                max_candle_pump_pct: parseFloat(document.getElementById('pine-max-pump').value),
-                max_ema9_dist_pct: parseFloat(document.getElementById('pine-max-ema-dist').value),
-                max_upper_wick_ratio: parseFloat(document.getElementById('pine-max-wick').value),
-                pivot_len: parseInt(document.getElementById('pine-pivot-len').value, 10),
-                fib_choice: document.getElementById('pine-fib-choice').value,
-                use_fixed_sl: document.getElementById('pine-use-fixed-sl').checked,
-                fixed_sl_pct: parseFloat(document.getElementById('pine-fixed-sl-pct').value),
-                use_fixed_tp: document.getElementById('pine-use-fixed-tp').checked,
-                fixed_tp_pct: parseFloat(document.getElementById('pine-fixed-tp-pct').value),
-                use_trailing: document.getElementById('pine-use-trailing').checked,
-                trail_pct: parseFloat(document.getElementById('pine-trail-pct').value),
-                use_breakeven: document.getElementById('pine-use-be').checked,
-                be_trigger_pct: parseFloat(document.getElementById('pine-be-trigger').value),
-                use_trailing_tp: document.getElementById('pine-use-ttp').checked,
-                ttp_trigger_pct: parseFloat(document.getElementById('pine-ttp-trigger').value),
-                ttp_callback_pct: parseFloat(document.getElementById('pine-ttp-callback').value),
-                sell_on_osc_reversal: document.getElementById('pine-use-osc-sell').checked,
-                use_ha_exit: document.getElementById('pine-use-ha-exit').checked,
-                ha_exit_consecutive: parseInt(document.getElementById('pine-ha-consec').value, 10),
-                simulate_fees: document.getElementById('pine-sim-fees').checked,
-                taker_fee_pct: parseFloat(document.getElementById('pine-taker-fee').value)
-            };
-
-            const res = await fetch('/api/update-pine-settings', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(payload)
-            });
-            const data = await res.json();
-            const statusEl = document.getElementById('pine-save-status');
-            if (data.status === 'success') {
-                applyPineFormValues(data.pine_settings);
-                statusEl.style.color = 'var(--accent-emerald)';
-                statusEl.innerText = 'Ulozene! Nastavenia boli aplikovane.';
-                showToast("Nastavenia ulozene.", "ok");
-                updateState();
-            } else {
-                statusEl.style.color = 'var(--accent-crimson)';
-                statusEl.innerText = 'Chyba: ' + data.message;
-                showToast('Chyba: ' + data.message, "err");
-            }
-        }
-
-        async function cleanResetLearning() {
-            const ok = await askConfirm("Cisty reset AI", "Naozaj chces vykonat CISTY RESET AI pamate, vzorov a historie obchodov? Tento krok sa neda vratit.");
-            if (!ok) return;
-            const statusEl = document.getElementById('pine-save-status');
-            if (statusEl) {
-                statusEl.style.color = 'var(--accent-amber)';
-                statusEl.innerText = 'Vymazavam AI pamat, vzory a historiu obchodov a trenujem novy zaklad...';
-            }
-            const res = await fetch('/api/clean-reset-learning', {method: 'POST'});
-            const data = await res.json();
-            if (data.status === 'success') {
-                if (statusEl) {
-                    statusEl.style.color = 'var(--accent-emerald)';
-                    statusEl.innerText = 'Cisty reset dokonceny! AI zacina zbierat nove vzory odznova.';
-                }
-                showToast("Cisty reset AI dokonceny.", "ok");
-                updateState();
-            } else if (statusEl) {
-                statusEl.style.color = 'var(--accent-crimson)';
-                statusEl.innerText = 'Chyba pri cistom resete.';
-            }
-        }
-
-        async function resetPineDefaults() {
-            const defaults = {
-                mode_choice: "FIB",
-                require_green_ha_buy: false,
-                require_bull_tf_buy: false,
-                require_sell_before_rebuy: false,
-                strict_buy_filter: false,
-                fast_len: 5,
-                slow_len: 20,
-                signal_len: 9,
-                pred_look: 3,
-                use_ai_filter: false,
-                ai_min_prob: 0.38,
-                min_rel_volume: 0.0,
-                block_sideways_buy: false,
-                use_anti_chase: false,
-                max_candle_pump_pct: 0.9,
-                max_ema9_dist_pct: 0.7,
-                max_upper_wick_ratio: 0.45,
-                max_entry_slip_pct: 0.35,
-                pivot_len: 2,
-                fib_choice: "0.786",
-                use_fixed_sl: false,
-                fixed_sl_pct: 1.5,
-                use_fixed_tp: false,
-                fixed_tp_pct: 1.2,
-                use_trailing: true,
-                trail_pct: 1.5,
-                use_breakeven: true,
-                be_trigger_pct: 1.2,
-                use_trailing_tp: true,
-                ttp_trigger_pct: 1.2,
-                ttp_callback_pct: 0.4,
-                sell_on_osc_reversal: false,
-                use_ha_exit: true,
-                ha_exit_consecutive: 1,
-                simulate_fees: true,
-                taker_fee_pct: 0.10
-            };
-            applyPineFormValues(defaults);
-            await savePineSettings();
         }
 
         async function manualBuyCustom() {
-            const coinInput = document.getElementById('custom-coin');
-            const coin = coinInput.value.trim().toUpperCase();
-            if (!coin) { showToast("Zadajte skratku tokenu (napr. SOL, SUI)!", "err"); return; }
-            const ok = await askConfirm("Manualny nakup", `Naozaj vykonat manualny nakup ${coin}-USDC?`);
-            if (!ok) return;
-
-            const res = await fetch(`/api/manual-buy/${coin}`, {method: 'POST'});
+            const inp = document.getElementById('custom-coin');
+            const coin = (inp.value || inp.placeholder || "").trim().toUpperCase();
+            if (!coin) return;
+            const res = await fetch(`/api/manual-buy/${encodeURIComponent(coin)}`, { method: 'POST' });
             const data = await res.json();
-            if (data.status === 'success') {
-                coinInput.value = "";
-                showToast(`Nakup ${data.symbol} odoslany.`, "ok");
-                updateState();
-            } else {
-                showToast("Chyba: " + data.message, "err");
-            }
+            if (data.status === 'success') { inp.value = ""; showToastMessage(`Manualny nakup ${data.symbol} odoslany.`, "ok"); updateState(); }
+            else showToastMessage(data.message || "Nakup zamietnuty.", "err");
         }
 
         async function sellSingleCoin(coin) {
-            const ok = await askConfirm("Nudzovy predaj", `Naozaj nudzovo predat ${coin}-USDC?`);
-            if (!ok) return;
-            await fetch(`/api/sell-coin/${coin}`, {method: 'POST'});
-            showToast(`Predaj ${coin}-USDC spracovany.`, "ok");
-            updateState();
+            askConfirmation(`Predat ${coin}`, `Naozaj chcete okamzite predat poziciu ${coin}?`, async () => {
+                const res = await fetch(`/api/sell-coin/${encodeURIComponent(coin)}`, { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'success') { showToastMessage(`Pozicia ${data.sold} predana.`, "ok"); updateState(); }
+                else showToastMessage(data.message || "Chyba predaja.", "err");
+            });
         }
 
         async function sellNow() {
-            const ok = await askConfirm("Zatvorit vsetko", "Naozaj nudzovo zatvorit vsetky pozicie?");
-            if (!ok) return;
-            await fetch('/api/sell-now', {method: 'POST'});
-            showToast("Vsetky pozicie boli odoslane na predaj.", "ok");
+            askConfirmation("Predat vsetky pozicie", "Naozaj chcete okamzite uzavriet vsetky otvorene pozicie?", async () => {
+                const res = await fetch('/api/sell-now', { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'success') { showToastMessage("Vsetky pozicie zatvorene.", "ok"); updateState(); }
+                else showToastMessage(data.message || "Chyba predaja.", "err");
+            });
+        }
+
+        function setScannerFilter(f) {
+            currentScannerFilter = f;
+            document.querySelectorAll('.scanner-filter-btn').forEach(b => b.classList.toggle('btn-active-pill', b.getAttribute('data-filter') === f));
+            updateState();
+        }
+        function setLogFilter(cat) {
+            currentLogCategory = cat;
+            document.querySelectorAll('.log-filter-btn').forEach(b => b.classList.toggle('btn-active-pill', b.getAttribute('data-logcat') === cat));
             updateState();
         }
 
         async function updateState() {
             try {
-                const res = await fetch('/api/state', {cache: 'no-store'});
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const res = await fetch('/api/state');
                 const data = await res.json();
-                if (!data || typeof data !== 'object') throw new Error("Neplatna JSON odpoved z /api/state");
 
-                const nowStr = new Date().toLocaleTimeString('sk-SK', {hour12: false});
-                const updTag = document.getElementById('last-update-tag');
-                if (updTag) updTag.innerText = `Aktualizacia: ${nowStr}`;
+                document.getElementById('header-balance').innerText = `${Number(data.balance || 0).toFixed(2)} ${data.balance_ccy || 'USDC'}`;
+                document.getElementById('header-tf').innerText = data.timeframe || '15M';
+                document.getElementById('chart-tf-pill').innerText = data.timeframe || '15M';
+                document.getElementById('current-stage').innerText = data.stage || '';
+                document.getElementById('last-update-tag').innerText = `Aktualizacia: ${data.last_update || '--:--:--'}`;
 
-                const ccy = data.balance_ccy || "USDC";
-                const balNum = Number(data.balance || 0);
-                document.getElementById('header-balance').innerText = (isNaN(balNum) ? "0.00" : balNum.toFixed(2)) + " " + ccy;
-                document.getElementById('current-stage').innerText = data.current_stage || "STAV: Aktivny";
-                document.getElementById('header-tf').innerText = data.current_tf || "15M";
-                const tfPill = document.getElementById('chart-tf-pill');
-                if (tfPill) tfPill.innerText = data.current_tf || "15M";
+                const regime = String(data.market_regime || 'BULL').toUpperCase();
+                const badge = document.getElementById('market-regime-badge');
+                badge.className = 'regime-badge ' + (regime === 'SIDEWAYS' ? 'regime-sideways' : (regime === 'BEAR' ? 'regime-bear' : 'regime-bull'));
+                badge.innerText = regime === 'SIDEWAYS' ? 'BOCNY TRH (SIDEWAYS)' : (regime === 'BEAR' ? 'MEDVEDI TRH (BEAR)' : 'BYCI TRH (BULL)');
 
-                const ps = data.pine_settings || {};
-                const slOn = ps.use_fixed_sl !== undefined ? !!ps.use_fixed_sl : !!data.use_fixed_sl;
-                const slPct = data.fixed_sl_pct ?? ps.fixed_sl_pct ?? 1.5;
-                document.getElementById('header-sl').innerText = slOn ? `-${slPct}%` : "OFF";
+                document.querySelectorAll('.tf-btn').forEach(b => b.classList.toggle('btn-active-pill', b.getAttribute('data-tf').toUpperCase() === String(data.timeframe || '').toUpperCase()));
+                document.querySelectorAll('.parallel-btn').forEach(b => b.classList.toggle('btn-active-pill', Number(b.getAttribute('data-val')) === Number(data.max_parallel)));
+                document.querySelectorAll('.budget-btn').forEach(b => b.classList.toggle('btn-active-pill', Number(b.getAttribute('data-val')) === Number(data.max_budget_cap)));
 
-                if (ps.fib_choice) syncFibUi(ps.fib_choice);
-                document.getElementById('pine-active-badge').innerText = `REZIM: ${ps.mode_choice || 'FIB'} · FIB ${ps.fib_choice || '0.786'}`;
+                const botBtn = document.getElementById('bot-btn');
+                botBtn.className = 'btn ' + (data.is_bot_active ? 'btn-on' : 'btn-off');
+                botBtn.innerText = data.is_bot_active ? 'ACTIVE' : 'PAUSED';
 
-                if (data.ai_state) {
-                    const sc = data.ai_state.samples_count || 0;
-                    const lc = data.ai_state.live_learned_count || 0;
-                    const lw = data.ai_state.live_wins_count || 0;
-                    const ll = Math.max(0, lc - lw);
-                    const rd = data.ai_readiness || {};
-                    const rPctNum = Number(rd.readiness_pct || 0);
-                    const rPct = rPctNum.toFixed(1);
-                    const remTr = Number(rd.remaining_trades_to_80 ?? 160);
-                    const advMode = rd.advisor_mode || "ZBIERA VZORY";
-                    const lastProbNum = data.ai_state.last_prob !== null && data.ai_state.last_prob !== undefined ? (Number(data.ai_state.last_prob) * 100).toFixed(1) + "%" : "--";
-                    document.getElementById('header-ai').innerText = `Naucenie: ${rPct}% / 80% (${advMode})`;
-                    const hLearned = document.getElementById('header-ai-learned');
-                    if (hLearned) hLearned.innerText = `${lc} obchodov (${lw}W / ${ll}L) | P: ${lastProbNum}`;
-                    const sumEl = document.getElementById('ai-learned-summary');
-                    if (sumEl) sumEl.innerText = `AI naucenie: ${rPct}% / ciel 80% (chyba ~${remTr} obchodov) | Ulozene obchody: ${lc} (${lw}W / ${ll}L) | Pravdepodobnost: ${lastProbNum} | Vzorky: ${sc}`;
-                    const barEl = document.getElementById('ai-readiness-bar');
-                    if (barEl) barEl.style.width = `${Math.max(0, Math.min(100, rPctNum))}%`;
-                }
+                const btcBtn = document.getElementById('btc-btn');
+                btcBtn.className = 'btn ' + (data.use_btc_filter ? 'btn-on' : 'btn-off');
+                btcBtn.innerText = `BTC: ${data.use_btc_filter ? 'ON' : 'OFF'}`;
 
-                const regimeBadge = document.getElementById('market-regime-badge');
-                if (regimeBadge) {
-                    const regime = data.market_regime || (data.is_sideways_market ? "SIDEWAYS" : "BULL");
-                    const tfLabel = data.current_tf || "15M";
-                    regimeBadge.classList.remove('regime-bull', 'regime-bear', 'regime-sideways');
-                    if (regime === "SIDEWAYS") {
-                        regimeBadge.classList.add('regime-sideways');
-                        regimeBadge.innerText = `BOCNY TRH (${tfLabel})`;
-                    } else if (regime === "BEAR") {
-                        regimeBadge.classList.add('regime-bear');
-                        regimeBadge.innerText = `MEDVEDI TRH (${tfLabel})`;
-                    } else {
-                        regimeBadge.classList.add('regime-bull');
-                        regimeBadge.innerText = `BYCI TRH (${tfLabel})`;
-                    }
-                }
+                const cmpBtn = document.getElementById('compounding-btn');
+                cmpBtn.className = 'btn ' + (data.compounding_enabled ? 'btn-active-pill' : '');
+                cmpBtn.innerText = `COMPOUND: ${data.compounding_enabled ? 'ON' : 'OFF'}`;
 
-                const stats = data.stats || {};
-                const winRateNum = Number(stats.win_rate || 0);
-                const totalTradesNum = Number(stats.total_trades || 0);
-                const winsNum = Number(stats.wins || 0);
-                const lossesNum = Number(stats.losses || 0);
-                const totalPnlNum = Number(stats.total_pnl || 0);
-                const grossPnlNum = Number(stats.gross_pnl ?? totalPnlNum);
-                const totalFeesNum = Number(stats.total_fees || 0);
-                document.getElementById('stat-winrate').innerText = winRateNum.toFixed(1) + "%";
-                document.getElementById('stat-trades').innerText = totalTradesNum;
-                document.getElementById('stat-winloss').innerText = winsNum + "W / " + lossesNum + "L";
+                const st = data.stats || {};
+                document.getElementById('stat-winrate').innerText = `${Number(st.win_rate || 0).toFixed(1)}%`;
+                document.getElementById('stat-trades').innerText = st.total_trades ?? 0;
+                document.getElementById('stat-winloss').innerText = `${st.wins ?? 0}W / ${st.losses ?? 0}L`;
+                const pnlVal = Number(st.total_pnl || 0);
                 const pnlEl = document.getElementById('stat-pnl');
-                pnlEl.innerText = (totalPnlNum >= 0 ? "+" : "") + totalPnlNum.toFixed(2) + " $";
-                pnlEl.className = "stat-value " + (totalPnlNum >= 0 ? "text-green" : "text-red");
-                const pnlSubEl = document.getElementById('stat-pnl-sub');
-                if (pnlSubEl) {
-                    pnlSubEl.innerText = `Hruby: ${grossPnlNum >= 0 ? "+" : ""}${grossPnlNum.toFixed(2)} $ | Poplatky: -${totalFeesNum.toFixed(2)} $`;
-                }
+                pnlEl.innerText = `${pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)} $`;
+                pnlEl.className = 'stat-value ' + (pnlVal > 0 ? 'text-green' : (pnlVal < 0 ? 'text-red' : ''));
+                const grossPnl = Number(st.gross_pnl || 0);
+                const totalFees = Number(st.total_fees || 0);
+                document.getElementById('stat-pnl-sub').innerText = `Hruby: ${grossPnl >= 0 ? '+' : ''}${grossPnl.toFixed(2)} $ | Poplatky: -${totalFees.toFixed(2)} $`;
 
-                const activeTbody = document.getElementById('active-position-tbody');
-                const sellBtn = document.getElementById('sell-btn');
-                const activeTradesObj = data.active_trades || {};
-                if (Object.keys(activeTradesObj).length > 0) {
-                    let html = "";
-                    for (const [coin, t] of Object.entries(activeTradesObj)) {
-                        const pnlPct = Number(t.live_pnl_pct || 0);
+                const ai = data.ai_state || {};
+                const rInfo = data.ai_readiness || {};
+                const liveCnt = Number(ai.live_learned_count || 0);
+                const liveWins = Number(ai.live_wins_count || 0);
+                const liveLosses = Math.max(0, liveCnt - liveWins);
+                document.getElementById('header-ai').innerText = (ai.samples_count || 0) >= 10 ? `${ai.accuracy_train || 0}% (${ai.samples_count} vz.)` : "Zbieram data...";
+                document.getElementById('header-ai-learned').innerText = `${liveCnt} obchodov (${liveWins}W / ${liveLosses}L)`;
+
+                const readPct = Number(rInfo.readiness_pct || 0);
+                const remTrades = Number(rInfo.remaining_trades_to_80 ?? 160);
+                const probTxt = (ai.last_prob !== null && ai.last_prob !== undefined) ? `${(Number(ai.last_prob) * 100).toFixed(1)}%` : "--";
+                document.getElementById('ai-learned-summary').innerText =
+                    `AI naucenie: ${readPct.toFixed(1)}% / ciel 80% (chyba ~${remTrades} obchodov) | Ulozene obchody: ${liveCnt} (${liveWins}W / ${liveLosses}L) | Pravdepodobnost: ${probTxt}`;
+                document.getElementById('ai-readiness-bar').style.width = `${Math.min(100, Math.max(2, readPct))}%`;
+
+                const activeList = Object.entries(data.active_trades || {});
+                document.getElementById('sell-btn').disabled = activeList.length === 0;
+                const posTbody = document.getElementById('active-position-tbody');
+                if (activeList.length === 0) {
+                    posTbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Ziadne otvorene pozicie — cakam na BUY signal...</td></tr>';
+                } else {
+                    posTbody.innerHTML = activeList.map(([coin, t]) => {
+                        const pnl = Number(t.live_pnl_pct || 0);
                         const pnlUsd = Number(t.live_pnl_usdc || 0);
-                        const grossUsd = Number(t.gross_pnl_usdc ?? pnlUsd);
-                        const estFeeUsd = Number(t.est_total_fee_usdc || 0);
-                        const entryP = Number(t.entry_price || 0);
-                        const currP = Number(t.current_price || entryP);
-                        const fixedSlP = Number(t.fixed_sl_price || 0);
-                        const fixedSlPct = Number(t.fixed_sl_pct || 1.5);
-                        const investedUsd = Number(t.invested_usdc || 0);
-                        const pnlClass = pnlPct >= 0 ? "text-green" : "text-red";
-                        let tpCell = "";
-                        if (t.ttp_active && t.ttp_stop_price) {
-                            tpCell = `<span class="text-green">TTP AKTIVNY (stop ${Number(t.ttp_stop_price).toFixed(4)})</span>`;
-                        } else if (t.use_fixed_tp && t.fixed_tp_price) {
-                            tpCell = `<span class="text-yellow">${Number(t.fixed_tp_price).toFixed(4)} (+${Number(t.fixed_tp_pct || 1.2)}% -> TTP)</span>`;
-                        } else {
-                            tpCell = `<span style="color:var(--text-muted);">VYPNUTY</span>`;
-                        }
-
-                        let slCell = "";
-                        if (t.use_fixed_sl && fixedSlP > 0) {
-                            slCell = `<span class="text-red">SL ${fixedSlP.toFixed(4)} (-${fixedSlPct}%)</span>`;
-                        } else if (t.trail_stop_price) {
-                            slCell = `<span class="text-yellow">TS ${Number(t.trail_stop_price).toFixed(4)}</span>`;
-                        } else {
-                            slCell = `<span style="color:var(--text-muted);">FIXNY SL OFF</span>`;
-                        }
-
-                        html += `<tr>
-                            <td><b>${t.market_pair || coin}</b><br><span style="font-size:0.6rem; color:var(--text-muted);">TF: ${t.tf || '15M'}</span></td>
-                            <td>${entryP.toFixed(4)}</td>
-                            <td>${currP.toFixed(4)}</td>
-                            <td>${tpCell}</td>
-                            <td>${slCell}</td>
-                            <td>${investedUsd.toFixed(2)} ${ccy}</td>
-                            <td class="${pnlClass}">${pnlPct >= 0 ? "+" : ""}${pnlPct.toFixed(2)}% (${pnlUsd >= 0 ? "+" : ""}${pnlUsd.toFixed(2)} $)${estFeeUsd > 0 ? `<br><span style="font-size:0.58rem; color:var(--text-muted);">Hruby: ${grossUsd >= 0 ? "+" : ""}${grossUsd.toFixed(2)}$ | Fee: -${estFeeUsd.toFixed(2)}$</span>` : ""}</td>
+                        const cls = pnl >= 0 ? 'text-green' : 'text-red';
+                        const slTxt = t.use_fixed_sl && t.fixed_sl_price ? `SL ${Number(t.fixed_sl_price).toFixed(4)}` : (t.trail_stop_price ? `TS ${Number(t.trail_stop_price).toFixed(4)}` : 'Sleduje');
+                        const ttpTxt = t.ttp_active && t.ttp_stop_price ? `TTP ${Number(t.ttp_stop_price).toFixed(4)}` : (t.use_fixed_tp ? `TP +${t.fixed_tp_pct}%` : 'Caka');
+                        return `<tr>
+                            <td><b>${t.market_pair}</b> <span class="text-cyan">[${t.tf || '15M'}]</span></td>
+                            <td>${Number(t.entry_price || 0).toFixed(4)}</td>
+                            <td>${Number(t.current_price || t.entry_price || 0).toFixed(4)}</td>
+                            <td class="text-yellow">${ttpTxt}</td>
+                            <td>${slTxt}</td>
+                            <td>${Number(t.invested_usdc || 0).toFixed(2)}</td>
+                            <td class="${cls}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}% (${pnlUsd >= 0 ? '+' : ''}${pnlUsd.toFixed(2)}$)</td>
                             <td><button class="btn btn-sell btn-mini" onclick="sellSingleCoin('${coin}')">SELL</button></td>
                         </tr>`;
-                    }
-                    activeTbody.innerHTML = html;
-                    sellBtn.disabled = false;
+                    }).join('');
+                }
+
+                const hist = data.history || [];
+                document.getElementById('closed-trades-count').innerText = `${hist.length} obchodov`;
+                const histTbody = document.getElementById('closed-trades-tbody');
+                if (hist.length === 0) {
+                    histTbody.innerHTML = '<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Zatial ziadne uzavrete obchody.</td></tr>';
                 } else {
-                    activeTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Skenujem trh podla nastaveni v APEX...</td></tr>`;
-                    sellBtn.disabled = true;
-                }
-
-                const closedTbody = document.getElementById('closed-trades-tbody');
-                const closedList = data.history || [];
-                const closedCntEl = document.getElementById('closed-trades-count');
-                if (closedCntEl) closedCntEl.innerText = `${closedList.length} obchodov`;
-                if (closedTbody) {
-                    if (closedList.length > 0) {
-                        let cHtml = "";
-                        for (const tr of closedList) {
-                            const pctVal = parseFloat(tr.pnl_pct || 0);
-                            const usdVal = parseFloat(tr.pnl_usdc || 0);
-                            const grossVal = parseFloat(tr.gross_pnl_usdc ?? usdVal);
-                            const feeVal = parseFloat(tr.fee_usdc || 0);
-                            const cls = usdVal >= 0 ? "text-green" : "text-red";
-                            const badge = tr.result_badge || (usdVal >= 0 ? "🟩" : "🟥");
-                            cHtml += `<tr>
-                                <td>${tr.time || '--'}</td>
-                                <td>${badge} <b>${tr.symbol || '--'}</b></td>
-                                <td>${tr.style || 'SCALPING'}</td>
-                                <td class="${cls}">${pctVal >= 0 ? "+" : ""}${pctVal.toFixed(2)}%</td>
-                                <td class="${cls}">${usdVal >= 0 ? "+" : ""}${usdVal.toFixed(2)} $</td>
-                                <td style="font-size:0.64rem; color:var(--text-muted);">${grossVal >= 0 ? "+" : ""}${grossVal.toFixed(2)}$ / -${feeVal.toFixed(2)}$</td>
-                                <td>${tr.reason || '--'}</td>
-                            </tr>`;
-                        }
-                        closedTbody.innerHTML = cHtml;
-                    } else {
-                        closedTbody.innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-muted);">Zatial ziadne uzavrete obchody.</td></tr>`;
-                    }
-                }
-
-                const scannerTbody = document.getElementById('scanner-tbody');
-                const scannerData = data.scanner_cache || {};
-                renderTop24VolumeList(scannerData);
-                const searchVal = (document.getElementById('scanner-search')?.value || "").trim().toUpperCase();
-                if (Object.keys(scannerData).length > 0) {
-                    let sHtml = "";
-                    for (const [coin, info] of Object.entries(scannerData)) {
-                        const symUpper = (info.symbol || coin).toUpperCase();
-                        if (searchVal && !symUpper.includes(searchVal)) continue;
-                        const isInTr = info.trade_status && info.trade_status !== "---";
-                        if (currentScannerFilter === "BUY" && !(info.exec_signal || "").includes("NAKUPIT")) continue;
-                        if (currentScannerFilter === "BLOK" && !(info.exec_signal || "").includes("BLOK")) continue;
-                        if (currentScannerFilter === "IN_TRADE" && !isInTr) continue;
-
-                        const priceNum = Number(info.price || 0);
-                        const momClass = info.momentum === "SILNE" ? "text-green" : "text-red";
-                        const impClass = (info.impulse || "").includes("AKTIVNY") ? "text-green" : "text-yellow";
-                        const execSig = info.exec_signal || "CAKAJ";
-                        const execClass = execSig.includes("NAKUPIT") ? "text-green" : (execSig.includes("PREDAT") || execSig.includes("BLOK") ? "text-red" : "text-yellow");
-                        const factorTitle = info.ai_factors && info.ai_factors !== "--" ? ` title="Faktory: ${info.ai_factors}"` : "";
-
-                        sHtml += `<tr>
-                            <td><b>${info.symbol || coin}</b></td>
-                            <td>${priceNum > 0 ? priceNum.toFixed(4) : '--'}</td>
-                            <td class="${momClass}">${info.momentum || 'SLABE'}</td>
-                            <td class="${impClass}">${info.impulse || 'CAKA'}</td>
-                            <td class="text-yellow">${info.trade_status || '---'}</td>
-                            <td${factorTitle}>${info.ai_score || '--'}${info.ai_factors && info.ai_factors !== "--" ? `<br><span style="font-size:0.58rem; color:var(--text-muted);">${info.ai_factors}</span>` : ""}</td>
-                            <td>${info.ts_status || '--'}</td>
-                            <td class="${execClass}">${execSig}</td>
+                    histTbody.innerHTML = hist.slice(0, 30).map(h => {
+                        const pUsd = Number(h.pnl_usdc || 0);
+                        const pPct = Number(h.pnl_pct || 0);
+                        const cls = pUsd >= 0 ? 'text-green' : 'text-red';
+                        return `<tr>
+                            <td>${h.time || '--'}</td>
+                            <td><b>${h.symbol}</b></td>
+                            <td>${h.style || 'SCALPING'}</td>
+                            <td class="${cls}">${pPct >= 0 ? '+' : ''}${pPct.toFixed(2)}%</td>
+                            <td class="${cls}">${pUsd >= 0 ? '+' : ''}${pUsd.toFixed(2)} $</td>
+                            <td>${Number(h.gross_pnl_usdc || pUsd).toFixed(2)}$ / -${Number(h.fee_usdc || 0).toFixed(2)}$</td>
+                            <td>${h.reason || '--'}</td>
                         </tr>`;
-                    }
-                    scannerTbody.innerHTML = sHtml || `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Ziadne pary nezodpovedaju filtru.</td></tr>`;
+                    }).join('');
+                }
+
+                const searchVal = (document.getElementById('scanner-search').value || "").trim().toUpperCase();
+                const scanEntries = Object.entries(data.scanner || {}).filter(([coin, row]) => {
+                    if (searchVal && !coin.toUpperCase().includes(searchVal) && !String(row.symbol || "").toUpperCase().includes(searchVal)) return false;
+                    if (currentScannerFilter === "BUY") return String(row.signal || "").toUpperCase() === "BUY";
+                    if (currentScannerFilter === "BLOK") return String(row.exec_signal || "").toUpperCase().includes("BLOK");
+                    if (currentScannerFilter === "IN_TRADE") return row.trade_status && row.trade_status !== "---";
+                    return true;
+                });
+                const scanTbody = document.getElementById('scanner-tbody');
+                if (scanEntries.length === 0) {
+                    scanTbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Ziadne pary nezodpovedaju filtru.</td></tr>';
                 } else {
-                    scannerTbody.innerHTML = `<tr><td colspan="8" style="text-align: center; color: var(--text-muted);">Prebieha uvodne skenovanie trhu...</td></tr>`;
+                    scanTbody.innerHTML = scanEntries.map(([coin, r]) => {
+                        const sigCls = r.signal === "BUY" ? "text-green" : (String(r.exec_signal || "").includes("BLOK") ? "text-red" : "text-secondary");
+                        return `<tr>
+                            <td><b>${r.symbol || coin}</b></td>
+                            <td>${Number(r.price || 0) > 0 ? Number(r.price).toFixed(4) : '--'}</td>
+                            <td>${r.momentum || '--'}</td>
+                            <td>${r.impulse || '--'}</td>
+                            <td>${r.trade_status || '---'}</td>
+                            <td class="text-cyan">${r.ai_score || '--'}</td>
+                            <td>${r.ts_status || '--'}</td>
+                            <td class="${sigCls}">${r.exec_signal || r.signal || '--'}</td>
+                        </tr>`;
+                    }).join('');
                 }
 
-                latestLogs24h = data.logs_24h || [];
-                const logSearch = (document.getElementById('log-search')?.value || "").trim().toUpperCase();
-                const pruneInfoEl = document.getElementById('log-prune-info');
-                if (pruneInfoEl) {
-                    pruneInfoEl.innerText = `Auto-cistenie: kazde 2h (posledne: ${data.last_log_prune || '--'}) · 24h register: ${latestLogs24h.length}`;
-                }
-
+                latestLogs24h = data.log_entries_24h || [];
+                const logSearch = (document.getElementById('log-search').value || "").trim().toUpperCase();
+                const logList = (data.log_entries || []).filter(e => {
+                    if (currentLogCategory !== "ALL" && e.category !== currentLogCategory) return false;
+                    if (logSearch && !String(e.line || "").toUpperCase().includes(logSearch)) return false;
+                    return true;
+                });
+                document.getElementById('log-prune-info').innerText = `Auto-cistenie: kazde 2h (posledne: ${data.last_log_prune || '--'}) · 24h register: ${latestLogs24h.length}`;
                 const logsBox = document.getElementById('logs-container');
-                let lHtml = "";
-                const logEntries = data.log_entries || [];
-                if (logEntries.length > 0) {
-                    for (const item of logEntries) {
-                        const cat = item.category || "INFO";
-                        if (currentLogCategory !== "ALL" && cat !== currentLogCategory) continue;
-                        const lineStr = item.line || `[${item.time || '--'}] ${item.message || ''}`;
-                        if (logSearch && !lineStr.toUpperCase().includes(logSearch) && !(item.symbol || "").toUpperCase().includes(logSearch)) continue;
-                        const catClass = cat === "ERROR" ? "text-red" : (cat === "TRADE" ? "text-green" : (cat === "FILTER" ? "text-yellow" : ""));
-                        lHtml += `<div class="log-line ${catClass}">${lineStr}</div>`;
-                    }
+                if (logList.length === 0) {
+                    logsBox.innerHTML = '<div class="log-line">Ziadne logy pre zvoleny filter.</div>';
                 } else {
-                    for (const log of (data.logs || [])) {
-                        if (logSearch && !String(log).toUpperCase().includes(logSearch)) continue;
-                        lHtml += `<div class="log-line">${log}</div>`;
-                    }
+                    logsBox.innerHTML = logList.slice(0, 120).map(e => {
+                        const cls = e.category === "ERROR" ? "text-red" : (e.category === "TRADE" ? "text-green" : (e.category === "FILTER" ? "text-yellow" : ""));
+                        return `<div class="log-line ${cls}">${e.line || ''}</div>`;
+                    }).join('');
                 }
-                logsBox.innerHTML = lHtml || `<div class="log-line">Ziadne zaznamy pre zvoleny filter.</div>`;
-
-            } catch (err) {
-                console.error("Chyba pri obnove stavu:", err);
-                const updTag = document.getElementById('last-update-tag');
-                if (updTag) updTag.innerText = `Chyba aktualizacie (${err.message || 'API'})`;
-            }
+            } catch (err) {}
         }
 
-        attachChartHover();
-        setInterval(renderHaFibChart, 85);
-        setInterval(() => refreshOkxTop24Volume(false), 15000);
-        setInterval(updateState, 4000);
-        renderHaFibChart();
-        refreshOkxTop24Volume(false);
-        updateState();
+        @app.get("/")
+        async def dashboard():
+            pass
     </script>
 </body>
 </html>
 """
 
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    balance = await fetch_account_capital("USDC")
-    t = Template(HTML_TEMPLATE_CONTENT)
-    return t.render(
-        SETTINGS=SETTINGS,
-        IS_BOT_ACTIVE=IS_BOT_ACTIVE,
-        CURRENT_TIMEFRAME=CURRENT_TIMEFRAME,
-        CURRENT_STAGE=CURRENT_STAGE,
-        balance=balance,
-    )
+
+@app.get("/api/okx-top24-volume")
+async def api_okx_top24_volume():
+    def _fetch_okx_usdc_gainers_sync():
+        res = okx_public_request_sync("/api/v5/market/tickers?instType=SPOT")
+        pairs_out = []
+        is_live = False
+        if res.get("code") == "0" and res.get("data"):
+            is_live = True
+            snap_by_coin = {item["coin"].upper(): item for item in [
+                {"coin": "NES", "name": "Nesa", "volBase": "89.90K NES", "signal": "BUY"},
+                {"coin": "ACE", "name": "ACE", "volBase": "454.07K ACE", "signal": "BUY"},
+                {"coin": "SKY", "name": "Sky", "volBase": "989.43K SKY", "signal": "BUY"},
+                {"coin": "SPACE", "name": "Spacecoin", "volBase": "2.54M SPACE", "signal": "BUY"},
+                {"coin": "NIGHT", "name": "Midnight", "volBase": "4.74M NIGHT", "signal": "BUY"},
+                {"coin": "SENT", "name": "Sentient", "volBase": "1.69M SENT", "signal": "SCAN"},
+                {"coin": "xANT", "name": "Anthropic", "volBase": "5.41K xANT", "signal": "SCAN"},
+                {"coin": "YB", "name": "Yield Basis", "volBase": "22.24K YB", "signal": "SCAN"},
+                {"coin": "xSNDK", "name": "SanDisk", "volBase": "444.92 xSNDK", "signal": "SCAN"},
+                {"coin": "CFG", "name": "Centrifuge", "volBase": "83.40K CFG", "signal": "SCAN"},
+                {"coin": "WIN", "name": "WINkLink", "volBase": "4.36M WIN", "signal": "SCAN"},
+                {"coin": "AUCTION", "name": "AUCTION", "volBase": "457.05 AUCTION", "signal": "SCAN"},
+                {"coin": "BABY", "name": "Babylon", "volBase": "108.29K BABY", "signal": "SCAN"},
+                {"coin": "LQTY", "name": "Liquity", "volBase": "1.43K LQTY", "signal": "SCAN"},
+                {"coin": "xTSLA", "name": "Tesla", "volBase": "128.36 xTSLA", "signal": "SCAN"},
+            ]}
+            rows = []
+            for t in res["data"]:
+                inst = str(t.get("instId", "")).strip()
+                if not inst.endswith("-USDC"):
+                    continue
+                base_raw = inst[:-5]
+                last_p = safe_float(t.get("last"), 0.0)
+                open24 = safe_float(t.get("open24h"), 0.0)
+                high24 = safe_float(t.get("high24h"), 0.0)
+                low24 = safe_float(t.get("low24h"), 0.0)
+                vol_ccy = safe_float(t.get("volCcy24h"), 0.0)
+                if last_p <= 0 or open24 <= 0 or vol_ccy < 25000.0:
+                    continue
+                chg_pct = ((last_p - open24) / open24) * 100.0
+                if chg_pct <= 0:
+                    continue
+                rows.append((chg_pct, vol_ccy, inst, base_raw, last_p, high24, low24))
+
+            rows.sort(key=lambda x: x[0], reverse=True)
+            for idx, (chg_pct, vol_ccy, inst, base_raw, last_p, high24, low24) in enumerate(rows[:15]):
+                meta = snap_by_coin.get(base_raw.upper())
+                disp_coin = meta["coin"] if meta else base_raw
+                fmt_p = lambda v: f"{v:.8f}" if (0 < v < 0.001) else (f"{v:.6f}" if v < 0.05 else (f"{v:.4f}" if v < 2 else f"{v:.2f}"))
+                rng_txt = f"{fmt_p(low24)} - {fmt_p(high24)}" if (high24 > 0 and low24 > 0) else "--"
+                pairs_out.append({
+                    "coin": disp_coin,
+                    "instId": inst,
+                    "last_price": last_p,
+                    "chg_24h_pct": round(chg_pct, 2),
+                    "range_24h": rng_txt,
+                    "vol_24h_m": round(vol_ccy / 1e6, 2),
+                    "vol_base": meta["volBase"] if meta else f"{vol_ccy/1e3:.1f}K {disp_coin}",
+                    "signal": "BUY" if idx < 5 else "SCAN",
+                })
+
+        if not pairs_out:
+            is_live = False
+            fallback_items = [
+                ("NES", "NES-USDC", 0.2839, 19.24, "0.2256 - 0.2925", 84.73, "89.90K NES", "BUY"),
+                ("ACE", "ACE-USDC", 0.05298, 13.54, "0.04442 - 0.05655", 6.25, "454.07K ACE", "BUY"),
+                ("SKY", "SKY-USDC", 0.05161, 11.86, "0.04499 - 0.05458", 1210.0, "989.43K SKY", "BUY"),
+                ("SPACE", "SPACE-USDC", 0.004543, 11.79, "0.004064 - 0.004677", 29.55, "2.54M SPACE", "BUY"),
+                ("NIGHT", "NIGHT-USDC", 0.053966, 10.16, "0.047892 - 0.055380", 902.45, "4.74M NIGHT", "BUY"),
+                ("SENT", "SENT-USDC", 0.02486, 9.13, "0.02203 - 0.02511", 178.70, "1.69M SENT", "SCAN"),
+                ("xANT", "XANT-USDC", 91.36, 6.78, "84.33 - 93.13", 48.39, "5.41K xANT", "SCAN"),
+                ("YB", "YB-USDC", 0.06104, 6.36, "0.05739 - 0.06348", 18.48, "22.24K YB", "SCAN"),
+                ("xSNDK", "XSNDK-USDC", 85.52, 5.26, "77.33 - 86.26", 20.98, "444.92 xSNDK", "SCAN"),
+                ("CFG", "CFG-USDC", 0.05963, 3.90, "0.05528 - 0.07290", 9.60, "83.40K CFG", "SCAN"),
+                ("WIN", "WIN-USDC", 0.00005520, 3.86, "0.00005264 - 0.00005571", 51.21, "4.36M WIN", "SCAN"),
+                ("AUCTION", "AUCTION-USDC", 2.614, 3.16, "2.534 - 2.736", 19.05, "457.05 AUCTION", "SCAN"),
+                ("BABY", "BABY-USDC", 0.009644, 3.02, "0.009361 - 0.009781", 49.94, "108.29K BABY", "SCAN"),
+                ("LQTY", "LQTY-USDC", 0.1324, 2.87, "0.1287 - 0.1324", 13.15, "1.43K LQTY", "SCAN"),
+                ("xTSLA", "XTSLA-USDC", 399.14, 2.38, "383.57 - 401.46", 50.89, "128.36 xTSLA", "SCAN"),
+            ]
+            for coin, inst, last_p, chg_pct, rng_txt, vol_m, vol_b, sig in fallback_items:
+                pairs_out.append({
+                    "coin": coin,
+                    "instId": inst,
+                    "last_price": last_p,
+                    "chg_24h_pct": chg_pct,
+                    "range_24h": rng_txt,
+                    "vol_24h_m": vol_m,
+                    "vol_base": vol_b,
+                    "signal": sig,
+                })
+        return pairs_out, is_live
+
+    pairs_list, is_live = await asyncio.to_thread(_fetch_okx_usdc_gainers_sync)
+    return JSONResponse({
+        "status": "success",
+        "is_live": is_live,
+        "updated_at": get_sk_time_str(),
+        "pairs": pairs_list,
+    })
 
 
 @app.get("/api/state")
 async def get_state():
     _prune_old_logs()
-    balance = await fetch_account_capital("USDC")
+    balance = await fetch_account_capital("USDC", force_refresh=False)
     stats = calculate_stats()
-    ai_public = {k: v for k, v in AI_STATE.items() if not k.startswith("_")}
+    ai_readiness = compute_ai_readiness_info()
     return JSONResponse({
-        "balance": balance,
-        "balance_ccy": ACTIVE_BALANCE_CCY,
         "is_bot_active": IS_BOT_ACTIVE,
-        "current_stage": CURRENT_STAGE,
-        "current_tf": CURRENT_TIMEFRAME,
-        "is_sideways_market": IS_SIDEWAYS_MARKET,
+        "balance": round(balance, 2),
+        "balance_ccy": ACTIVE_BALANCE_CCY,
+        "timeframe": CURRENT_TIMEFRAME,
         "market_regime": MARKET_REGIME,
-        "use_fixed_sl": SETTINGS.get("use_fixed_sl", False),
-        "fixed_sl_pct": SETTINGS.get("fixed_sl_pct", 1.5),
+        "is_sideways_market": IS_SIDEWAYS_MARKET,
+        "max_parallel": SETTINGS["max_parallel"],
+        "max_budget_cap": SETTINGS["max_budget_cap"],
+        "compounding_enabled": SETTINGS.get("compounding_enabled", False),
+        "use_btc_filter": SETTINGS.get("use_btc_filter", False),
         "pine_settings": get_pine_settings_dict(),
-        "ai_state": ai_public,
-        "ai_readiness": compute_ai_readiness_info(),
-        "stats": stats,
+        "ai_state": {k: v for k, v in AI_STATE.items() if not str(k).startswith("_")},
+        "ai_readiness": ai_readiness,
+        "stage": CURRENT_STAGE,
+        "last_update": get_sk_time_str(),
         "active_trades": ACTIVE_TRADES,
-        "scanner_cache": MARKET_SCANNER_CACHE,
-        "history": CLOSED_TRADES_HISTORY[:20],
-        "logs": SYSTEM_LOGS,
-        "log_entries": SYSTEM_LOG_ENTRIES[:200],
-        "logs_24h": SYSTEM_LOG_24H_ENTRIES[:300],
+        "history": CLOSED_TRADES_HISTORY[:50],
+        "scanner": MARKET_SCANNER_CACHE,
+        "stats": stats,
+        "logs": SYSTEM_LOGS[:120],
+        "log_entries": SYSTEM_LOG_ENTRIES[:120],
+        "log_entries_24h": SYSTEM_LOG_24H_ENTRIES[:400],
         "last_log_prune": LAST_LOG_PRUNE_STR,
     })
 
 
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    html_clean = HTML_TEMPLATE_CONTENT.replace(
+        '        @app.get("/")\n        async def dashboard():\n            pass\n',
+        """
+        attachChartHover();
+        renderTop24VolumeList();
+        renderHaFibChart();
+        refreshOkxTop24Volume(false);
+        updateState();
+        setInterval(renderHaFibChart, 900);
+        setInterval(updateState, 2500);
+        setInterval(() => refreshOkxTop24Volume(false), 30000);
+"""
+    )
+    template = Template(html_clean)
+    rendered = template.render(
+        IS_BOT_ACTIVE=IS_BOT_ACTIVE,
+        CURRENT_TIMEFRAME=CURRENT_TIMEFRAME,
+        CURRENT_STAGE=CURRENT_STAGE,
+        SETTINGS=SETTINGS,
+    )
+    return HTMLResponse(content=rendered)
+
+
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
-    uvicorn.run(app, host="0.0.0.0", port=port, reload=False)
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
