@@ -1,4 +1,4 @@
-import asyncio
+ asyncio
 import base64
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -43,7 +43,8 @@ OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1").strip()
 STATE_FILE = os.getenv("BOT_STATE_FILE", "/var/data/apex_ai_bot_state.json")
 LOG_RETENTION_SEC = 2 * 3600
 LOG_24H_RETENTION_SEC = 24 * 3600
-BALANCE_CACHE_TTL_SEC = 4.0
+BALANCE_CACHE_TTL_SEC = 15.0
+_BALANCE_429_BACKOFF_UNTIL = 0.0
 
 
 def _resolve_ai_memory_path() -> str:
@@ -94,7 +95,7 @@ LAST_LOG_PRUNE_STR = "--"
 INITIAL_TOP_SYMBOLS = [
     "SOL-USDC", "SUI-USDC", "DOGE-USDC", "ADA-USDC",
     "AVAX-USDC", "LINK-USDC", "TON-USDC", "NEAR-USDC",
-    "APT-USDC", "TRX-USDC", "LTC-USDC", 
+    "APT-USDC", "TRX-USDC", "LTC-USDC", "PEPE-USDC",
     "AAVE-USDC", "UNI-USDC", "POL-USDC", "TIA-USDC",
     "PUMP-USDC"
 ]
@@ -103,6 +104,7 @@ TOP_LIQUID_SYMBOLS: list[str] = [s for s in INITIAL_TOP_SYMBOLS if s not in EXCL
 ACTIVE_TRADES: dict[str, dict] = {}
 LAST_TRADE_TIME: dict[str, float] = {}
 WAIT_FOR_SIGNAL_RESET: dict[str, bool] = {}
+WAITING_FOR_SELL_AFTER_EXIT: dict[str, bool] = {}
 CLOSED_TRADES_HISTORY: list[dict] = []
 AI_LEARNED_TRADES: list[dict] = []
 MARKET_SCANNER_CACHE: dict[str, dict] = {}
@@ -117,6 +119,7 @@ SETTINGS = {
     "compounding_enabled": False,
     "use_btc_filter": False,
     "reentry_cooldown_sec": 120,
+    "require_sell_before_rebuy": False,
     "mode_choice": "FIB",
     "require_green_ha_buy": False,
     "require_bull_tf_buy": False,
@@ -403,11 +406,14 @@ async def okx_request(method: str, request_path: str, body: str = "") -> dict:
 
 
 def fetch_account_capital_sync(ccy: str = "USDC", force_refresh: bool = False) -> float:
-    global LAST_BALANCE_ERROR_LOG_TS, ACTIVE_BALANCE_CCY
+    global LAST_BALANCE_ERROR_LOG_TS, ACTIVE_BALANCE_CCY, _BALANCE_429_BACKOFF_UNTIL
     preferred = str(ccy).upper()
     now_ts = time.time()
     cached = _BALANCE_CACHE.get(preferred)
     if not force_refresh and cached is not None and (now_ts - cached[0]) < BALANCE_CACHE_TTL_SEC:
+        ACTIVE_BALANCE_CCY = cached[2]
+        return cached[1]
+    if not force_refresh and cached is not None and now_ts < _BALANCE_429_BACKOFF_UNTIL:
         ACTIVE_BALANCE_CCY = cached[2]
         return cached[1]
     try:
@@ -443,14 +449,17 @@ def fetch_account_capital_sync(ccy: str = "USDC", force_refresh: bool = False) -
             _BALANCE_CACHE[preferred] = (now_ts, 0.0, ACTIVE_BALANCE_CCY)
             return 0.0
 
-        is_503 = str(res.get("code")) == "503" or "503" in str(res.get("msg", ""))
-        if is_503 and cached is not None:
-            _BALANCE_CACHE[preferred] = (now_ts - max(0.0, BALANCE_CACHE_TTL_SEC - 25.0), cached[1], cached[2])
-            ACTIVE_BALANCE_CCY = cached[2]
-            if now_ts - LAST_BALANCE_ERROR_LOG_TS >= 300:
-                LAST_BALANCE_ERROR_LOG_TS = now_ts
-                log_event(f"OKX zostatok docasne 503 (pouzivam posledny zostatok {cached[1]:.2f} {cached[2]}).")
-            return cached[1]
+        err_code = str(res.get("code", ""))
+        err_msg = str(res.get("msg", ""))
+        is_rate_or_busy = err_code in {"429", "503", "50013"} or any(k in err_msg for k in ["429", "503", "50013", "Too Many Requests", "System is busy"])
+        if is_rate_or_busy:
+            _BALANCE_429_BACKOFF_UNTIL = now_ts + 25.0
+            if cached is not None:
+                ACTIVE_BALANCE_CCY = cached[2]
+                if now_ts - LAST_BALANCE_ERROR_LOG_TS >= 300:
+                    LAST_BALANCE_ERROR_LOG_TS = now_ts
+                    log_event(f"OKX zostatok docasne zatazeny ({err_code}) - pouzivam posledny zostatok {cached[1]:.2f} {cached[2]}.")
+                return cached[1]
 
         if now_ts - LAST_BALANCE_ERROR_LOG_TS >= 300:
             LAST_BALANCE_ERROR_LOG_TS = now_ts
@@ -1652,6 +1661,26 @@ def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_overri
         curr_osc = oscillator[-1]
         is_in_trade = coin_key in ACTIVE_TRADES
 
+        ha_is_red_now = ha_closes[-1] < ha_opens[-1]
+        ha_signal_now = False
+        if use_ha_exit:
+            if ha_exit_consecutive == 1:
+                ha_signal_now = ha_is_red_now
+            elif ha_exit_consecutive == 2:
+                ha_signal_now = (n >= 2) and ha_is_red_now and (ha_closes[-2] < ha_opens[-2])
+            else:
+                ha_signal_now = (n >= 3) and ha_is_red_now and (ha_closes[-2] < ha_opens[-2]) and (ha_closes[-3] < ha_opens[-3])
+
+        osc_signal_now = (
+            sell_on_osc_reversal
+            and n >= 2
+            and (
+                ((oscillator[-2] >= signal_line[-2]) and (oscillator[-1] < signal_line[-1]))
+                or ((oscillator[-2] >= 0.0) and (oscillator[-1] < 0.0))
+            )
+        )
+        pine_sell_signal_now = bool(last_bar_sell or ha_signal_now or osc_signal_now)
+
         live_exit_now = False
         live_exit_reason = ""
         if is_in_trade:
@@ -1863,6 +1892,7 @@ def evaluate_pine_strategy_sync(symbol: str, bar_tf: str = "15m", bull_ok_overri
             "buy": False if exit_only_for_active else final_buy,
             "raw_buy": False if exit_only_for_active else last_bar_buy,
             "sell": live_exit_now,
+            "pine_sell_signal": pine_sell_signal_now,
             "sell_reason": live_exit_reason,
             "ai_prob": ai_prob,
             "ai_factors": ai_factors_txt,
@@ -1943,8 +1973,18 @@ async def autonomous_scanner_loop():
 
                 sig = await evaluate_pine_strategy(symbol, bar_tf=tf_str, bull_ok_override=(bull_ok, bull_reason))
 
+                if sig.get("sell", False) or sig.get("pine_sell_signal", False):
+                    if WAITING_FOR_SELL_AFTER_EXIT.get(coin_name, False):
+                        WAITING_FOR_SELL_AFTER_EXIT[coin_name] = False
+                        log_event(f"Signal SELL pre {symbol} zaznamenany -> odomknuty dalsi nakup.")
+
                 if not can_buy_now or len(ACTIVE_TRADES) >= SETTINGS.get("max_parallel", 1) or coin_name in ACTIVE_TRADES:
-                    await asyncio.sleep(0.15)
+                    await asyncio.sleep(0.2)
+                    continue
+
+                if bool(SETTINGS.get("require_sell_before_rebuy", False)) and WAITING_FOR_SELL_AFTER_EXIT.get(coin_name, False):
+                    log_block_throttled(symbol, "Caka na signal SELL po predošlom obchode", cooldown_sec=180.0)
+                    await asyncio.sleep(0.2)
                     continue
 
                 if WAIT_FOR_SIGNAL_RESET.get(coin_name, False):
@@ -2240,6 +2280,10 @@ async def close_trade_position(coin: str, reason: str):
             learn_from_closed_trade(feats, pnl_usdc, trade_style=t_style, pnl_pct=pnl_pct, persist=False)
             LAST_TRADE_TIME[coin] = time.time()
             WAIT_FOR_SIGNAL_RESET[coin] = True
+            if "SELL" in str(reason).upper():
+                WAITING_FOR_SELL_AFTER_EXIT[coin] = False
+            else:
+                WAITING_FOR_SELL_AFTER_EXIT[coin] = True
 
             fee_log_txt = f" | Hruby: {gross_pnl_usdc:+.2f}$ | Poplatky: -{total_fee_usdc:.2f}$" if SETTINGS.get("simulate_fees", True) else ""
             log_event(f"{result_square} Uzavreta pozicia ({reason}) pre {symbol} | Cisty PnL: {pnl_pct:+.2f}% ({pnl_usdc:+.2f} $){fee_log_txt}", persist=False)
@@ -2271,7 +2315,7 @@ async def fixed_stoploss_monitor_loop():
                 CURRENT_STAGE = f"STAV: Bot aktivny ({mode_lbl} · Max {max_p}x{sl_txt}{tp_txt}{ai_txt}). Cakam na BUY/SELL..."
             else:
                 CURRENT_STAGE = "STAV: Bot pozastaveny."
-            await asyncio.sleep(2)
+            await asyncio.sleep(4)
             continue
 
         try:
@@ -2393,7 +2437,7 @@ async def fixed_stoploss_monitor_loop():
                         trade["trail_stop_price"] = None
         except Exception as e:
             log_event(f"Chyba v monitore rizik: {e}")
-        await asyncio.sleep(2)
+        await asyncio.sleep(4)
 
 
 @asynccontextmanager
@@ -2436,6 +2480,7 @@ def get_pine_settings_dict():
         "mode_choice": SETTINGS["mode_choice"],
         "require_green_ha_buy": SETTINGS["require_green_ha_buy"],
         "require_bull_tf_buy": SETTINGS.get("require_bull_tf_buy", False),
+        "require_sell_before_rebuy": SETTINGS.get("require_sell_before_rebuy", False),
         "strict_buy_filter": SETTINGS["strict_buy_filter"],
         "fast_len": SETTINGS["fast_len"],
         "slow_len": SETTINGS["slow_len"],
@@ -2644,6 +2689,7 @@ async def update_pine_settings(request: Request):
         SETTINGS["mode_choice"] = mode_val
         SETTINGS["require_green_ha_buy"] = bool(payload.get("require_green_ha_buy", SETTINGS["require_green_ha_buy"]))
         SETTINGS["require_bull_tf_buy"] = bool(payload.get("require_bull_tf_buy", SETTINGS.get("require_bull_tf_buy", False)))
+        SETTINGS["require_sell_before_rebuy"] = bool(payload.get("require_sell_before_rebuy", SETTINGS.get("require_sell_before_rebuy", False)))
         SETTINGS["strict_buy_filter"] = bool(payload.get("strict_buy_filter", SETTINGS["strict_buy_filter"]))
         SETTINGS["fast_len"] = max(1, min(200, int(payload.get("fast_len", SETTINGS["fast_len"]))))
         SETTINGS["slow_len"] = max(1, min(300, int(payload.get("slow_len", SETTINGS["slow_len"]))))
@@ -3037,6 +3083,10 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                         <div class="pine-row">
                             <label for="pine-require-bull">Len BYCI trh (BULL) na TF</label>
                             <input type="checkbox" id="pine-require-bull" class="pine-checkbox" {% if SETTINGS.require_bull_tf_buy %}checked{% endif %}>
+                        </div>
+                        <div class="pine-row">
+                            <label for="pine-sell-before-rebuy">Dalsi BUY az po signale SELL</label>
+                            <input type="checkbox" id="pine-sell-before-rebuy" class="pine-checkbox" {% if SETTINGS.require_sell_before_rebuy %}checked{% endif %}>
                         </div>
                         <div class="pine-row">
                             <label for="pine-use-ai">Autonomny AI filter</label>
@@ -3436,6 +3486,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
             document.getElementById('pine-mode').value = ps.mode_choice;
             document.getElementById('pine-green-ha').checked = !!ps.require_green_ha_buy;
             document.getElementById('pine-require-bull').checked = !!ps.require_bull_tf_buy;
+            if (document.getElementById('pine-sell-before-rebuy')) document.getElementById('pine-sell-before-rebuy').checked = !!ps.require_sell_before_rebuy;
             document.getElementById('pine-strict-buy').checked = !!ps.strict_buy_filter;
             document.getElementById('pine-fast-len').value = ps.fast_len;
             document.getElementById('pine-slow-len').value = ps.slow_len;
@@ -3472,6 +3523,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 mode_choice: document.getElementById('pine-mode').value,
                 require_green_ha_buy: document.getElementById('pine-green-ha').checked,
                 require_bull_tf_buy: document.getElementById('pine-require-bull').checked,
+                require_sell_before_rebuy: document.getElementById('pine-sell-before-rebuy').checked,
                 strict_buy_filter: document.getElementById('pine-strict-buy').checked,
                 fast_len: parseInt(document.getElementById('pine-fast-len').value, 10),
                 slow_len: parseInt(document.getElementById('pine-slow-len').value, 10),
@@ -3546,6 +3598,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
                 mode_choice: "FIB",
                 require_green_ha_buy: false,
                 require_bull_tf_buy: false,
+                require_sell_before_rebuy: false,
                 strict_buy_filter: false,
                 fast_len: 5,
                 slow_len: 20,
