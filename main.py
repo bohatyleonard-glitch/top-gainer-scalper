@@ -40,7 +40,22 @@ OKX_DEMO_BASE_URL = "https://eea.okx.com" if (not _env_demo_url or "www.okx.com"
 OKX_PUBLIC_URL = os.getenv("OKX_PUBLIC_URL", "https://www.okx.com").strip().rstrip("/")
 OKX_SIMULATED = os.getenv("OKX_SIMULATED", "1").strip()
 
-STATE_FILE = os.getenv("BOT_STATE_FILE", "/var/data/apex_ai_bot_state.json")
+def _resolve_state_file_path() -> str:
+    custom_path = os.getenv("BOT_STATE_FILE", "").strip()
+    if custom_path:
+        return custom_path
+    try:
+        os.makedirs("/var/data", exist_ok=True)
+        test_p = "/var/data/.write_test"
+        with open(test_p, "w", encoding="utf-8") as tf:
+            tf.write("ok")
+        os.remove(test_p)
+        return "/var/data/apex_ai_bot_state.json"
+    except Exception:
+        return "apex_ai_bot_state.json"
+
+
+STATE_FILE = _resolve_state_file_path()
 LOG_RETENTION_SEC = 2 * 3600
 LOG_24H_RETENTION_SEC = 24 * 3600
 BALANCE_CACHE_TTL_SEC = 15.0
@@ -783,8 +798,28 @@ def save_ai_memory():
 
 
 def load_ai_memory():
-    # Cisty start od nuly: nespustame nacitavanie starych zaznamov
-    return
+    global AI_STATE, AI_LEARNED_TRADES, PATTERN_MEMORY
+    try:
+        if not os.path.exists(AI_MEMORY_FILE):
+            return
+        with open(AI_MEMORY_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return
+        saved_ai = payload.get("ai_state")
+        if isinstance(saved_ai, dict):
+            for k, v in saved_ai.items():
+                if not str(k).startswith("_"):
+                    AI_STATE[k] = v
+        saved_learned = payload.get("learned_trades")
+        if isinstance(saved_learned, list):
+            AI_LEARNED_TRADES[:] = saved_learned[:200]
+        saved_patterns = payload.get("pattern_memory")
+        if isinstance(saved_patterns, dict):
+            PATTERN_MEMORY.clear()
+            PATTERN_MEMORY.update(saved_patterns)
+    except Exception:
+        pass
 
 
 def save_ai_model():
@@ -816,14 +851,50 @@ def save_persistent_data():
 
 
 def load_persistent_data():
-    # Cisty start od nuly: vymazeme vsetky stare zaznamy a ulozime cisty zaklad
-    CLOSED_TRADES_HISTORY.clear()
-    AI_LEARNED_TRADES.clear()
-    PATTERN_MEMORY.clear()
-    SYSTEM_LOG_ENTRIES.clear()
-    SYSTEM_LOG_24H_ENTRIES.clear()
-    SYSTEM_LOGS.clear()
-    save_persistent_data()
+    global SETTINGS, AI_STATE, ACTIVE_TRADES, CLOSED_TRADES_HISTORY, SYSTEM_LOG_ENTRIES, SYSTEM_LOG_24H_ENTRIES, SYSTEM_LOGS
+    load_ai_memory()
+    try:
+        if not os.path.exists(STATE_FILE):
+            return
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return
+        saved_settings = payload.get("settings")
+        if isinstance(saved_settings, dict):
+            for k, v in saved_settings.items():
+                if k in SETTINGS:
+                    SETTINGS[k] = v
+        saved_ai = payload.get("ai_state")
+        if isinstance(saved_ai, dict):
+            for k, v in saved_ai.items():
+                if not str(k).startswith("_"):
+                    AI_STATE[k] = v
+        saved_active = payload.get("active_trades")
+        if isinstance(saved_active, dict):
+            ACTIVE_TRADES.clear()
+            ACTIVE_TRADES.update(saved_active)
+        saved_history = payload.get("history")
+        if isinstance(saved_history, list):
+            CLOSED_TRADES_HISTORY[:] = saved_history[:200]
+        if not AI_LEARNED_TRADES and CLOSED_TRADES_HISTORY:
+            for t in CLOSED_TRADES_HISTORY:
+                if t.get("entry_features") and len(t.get("entry_features")) >= 6:
+                    AI_LEARNED_TRADES.append(t)
+        saved_log_24h = payload.get("log_entries_24h")
+        if isinstance(saved_log_24h, list):
+            SYSTEM_LOG_24H_ENTRIES[:] = saved_log_24h[:1500]
+        saved_log_2h = payload.get("log_entries")
+        if isinstance(saved_log_2h, list):
+            SYSTEM_LOG_ENTRIES[:] = saved_log_2h[:500]
+        saved_logs_txt = payload.get("logs")
+        if isinstance(saved_logs_txt, list):
+            SYSTEM_LOGS[:] = saved_logs_txt[:200]
+        if not SYSTEM_LOGS and SYSTEM_LOG_ENTRIES:
+            SYSTEM_LOGS[:] = [e.get("line", "") for e in SYSTEM_LOG_ENTRIES[:200] if e.get("line")]
+        _prune_old_logs()
+    except Exception:
+        pass
 
 
 def calc_ema_series(values, length):
@@ -3230,7 +3301,7 @@ HTML_TEMPLATE_CONTENT = r"""<!DOCTYPE html>
 
                 <div class="pine-footer">
                     <div style="display:flex; flex-direction:column; gap:3px;">
-                        <span id="pine-save-status" class="pine-save-status">Cisty start aktivny — ziadne stare zaznamy.</span>
+                        <span id="pine-save-status" class="pine-save-status">Trvala pamat aktivna — data sa pri restartoch nemazu.</span>
                         <span id="ai-learned-summary" style="font-size:0.68rem; color:var(--yellow); font-weight:600;">AI naucenie: 0.0% / ciel 80% (chyba ~160 obchodov) | Ulozene obchody: 0 (0W / 0L) | Pravdepodobnost: --</span>
                     </div>
                     <div style="display: flex; gap: 6px; flex-wrap: wrap;">
